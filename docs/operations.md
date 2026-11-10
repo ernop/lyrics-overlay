@@ -120,6 +120,14 @@ the next start as a disabled sideload, and enabling it starts it with
 and silently reports nothing. auto-load-from-archive shows the effect: it
 asks for every site but holds only the one origin granted by hand.
 
+## Publishing lessons (2026-11-10)
+
+- **A force-push does not take history off GitHub.** The repository's
+  Activity page lists each force push with the commit it replaced, and
+  GitHub serves a replaced commit by its ID for as long as it keeps the
+  objects. Anything committed here is public for good; to start over, push
+  to a newly created repository.
+
 ## Testing lessons (2026-11-09)
 
 - **A private bus started from the real environment is not private.**
