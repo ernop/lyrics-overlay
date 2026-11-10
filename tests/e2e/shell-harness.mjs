@@ -217,15 +217,20 @@ export default class UnsafeForTests extends Extension {
                     throw new Error(`the answer was refused (HTTP ${answered.status}): ${answered.body}`);
                 return command;
             },
-            /** A plain GTK window titled `title` in the headless shell; it closes with the harness. */
-            async openWindow(title) {
+            /**
+             * A GTK window titled `title` in the headless shell, drawn by
+             * `program` (a plain window unless given), once the shell has
+             * placed and shown it; it closes with the harness.
+             */
+            async openWindow(title, program = path.join(root, 'tests', 'e2e', 'titled-window.js')) {
                 const socket = fs.readdirSync(env.XDG_RUNTIME_DIR).find(name => /^wayland-\d+$/u.test(name));
                 if (!socket)
                     throw new Error('the headless shell has no Wayland socket');
-                processes.push(spawn('gjs', ['-m', path.join(root, 'tests', 'e2e', 'titled-window.js'), title],
+                processes.push(spawn('gjs', ['-m', program, title],
                     {env: {...env, WAYLAND_DISPLAY: socket, GDK_BACKEND: 'wayland'}, stdio: 'ignore'}));
-                await waitFor(() => evalJs(`global.display.list_all_windows().some(window => window.get_title() === ${JSON.stringify(title)})`),
-                    `the window "${title}"`);
+                const shown = `global.display.list_all_windows().some(window =>
+                    window.get_title() === ${JSON.stringify(title)} && window.get_compositor_private()?.visible === true)`;
+                await waitFor(() => evalJs(shown), `the window "${title}"`);
             },
             /**
              * Reports like a page whose video runs: now, then every

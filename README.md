@@ -1,15 +1,16 @@
 # Lyrics overlay
 
-One line of timed lyrics above your windows while YouTube plays music in
-Firefox, on a GNOME Shell 50 desktop.
+This adds a global overlay of the lyrics, plus a pitch meter, so you can sing
+along to YouTube videos of songs.
 
-![A lyric line, white with a double border](docs/line.png)
+![A desktop with a song's video in a window; at the bottom of the screen, the line being sung and the pitch meter's trace of the singer's voice](docs/desktop.png)
 
-When a YouTube or YouTube Music tab plays sound, an indicator appears in the
-panel. Pressing it shows the current line of the song's lyrics in a box above
-the other windows, timed to the video. Lyrics come from
-[LRCLIB](https://lrclib.net), found from the video's title and YouTube's own
-song details. An optional trace shows the pitch you sing into the microphone.
+It runs on a GNOME Shell 50 desktop with YouTube in Firefox. When a YouTube
+or YouTube Music tab plays a song, the line about to be sung shows above all
+your windows, timed to the video, and the pitch meter draws the pitch you
+sing into the microphone. Lyrics come from [LRCLIB](https://lrclib.net),
+found from the video's title and YouTube's own song details; a song without
+timed lyrics there shows no line.
 
 It has three parts:
 
@@ -103,7 +104,10 @@ Where no lyric is drawn, clicks reach the windows below.
 | Mouse controls on the lyric | the pointer actions above |
 | Open the lyrics status page | http://lyrics.localhost:8792/ |
 
-Yellow, single border, left-aligned:
+White with a double border (the default), then yellow with a single border,
+left-aligned:
+
+![A lyric line, white with a double border](docs/line.png)
 
 ![A lyric line, yellow with a single border, left-aligned](docs/line-yellow-left.png)
 
