@@ -176,7 +176,10 @@ const lyricMenuFacts = `(() => {
     const labels = flatten(menu._getMenuItems()).filter(item => item.visible && item.label?.text).map(item => item.label);
     return {
         open: lyricMenu.isOpen,
-        box: rect(menu.box),
+        // The open animation fades the menu in while it slides and grows into place.
+        settled: menu.actor.opacity === 255 && !menu.actor.get_transition('opacity'),
+        // The frame; the item box sits inside its border.
+        box: rect(menu.actor),
         pitch: rect(lyricMenu._contents._pitchItem),
         items: labels.map(label => label.text),
         help: lyricMenu._contents._helpItem.menu._getMenuItems().map(item => item.label.text),
@@ -281,10 +284,13 @@ async function overlayScenario(h) {
     await h.gsettings.set('text-align', "'left'");
     await h.gsettings.set('text-color', "'yellow'");
     await h.gsettings.set('text-border', "'single'");
+    // The second line holds for half a minute, so the picture never catches
+    // the change from the first.
     const left = await h.waitFor(async () => {
         const facts = await h.evalJs(overlayFacts);
-        return facts.align === 'left' && facts.fill === '1,0.92,0' && facts.ring[1] === false && facts;
-    }, 'the left-aligned yellow single-bordered line');
+        return facts.align === 'left' && facts.fill === '1,0.92,0' && facts.ring[1] === false &&
+            facts.text === 'Second line arrives here' && facts;
+    }, 'the left-aligned yellow single-bordered second line');
     assert.equal(left.ring[0], true);
     assert.ok(left.ink.x < 16 && left.ink.width < left.layerWidth - 40, JSON.stringify(left));
     await sleep(300);
@@ -381,12 +387,20 @@ async function overlayScenario(h) {
     await h.evalJs(`${EXTENSION}.stateObj._indicator.menu.close(); true`);
 
     // A right press on the lyric opens the same menu at the pointer, whole on
-    // the screen and in pure black ink on this light style.
-    const lyric = await h.evalJs(overlayFacts);
+    // the screen and in pure black ink on this light style. The chosen set's
+    // only line is gone 8 s into the song, so the presses on the lyric use the
+    // first set again, whose second line holds for half a minute.
+    await h.evalJs(`${EXTENSION}.stateObj._client.command({op: 'choose', id: 77}); true`);
+    const lyric = await h.waitFor(async () => {
+        const facts = await h.evalJs(overlayFacts);
+        return facts.grip.visible && facts.text === 'Second line arrives here' && facts;
+    }, 'the second line to show');
     const pressedAt = center(lyric.grip);
-    await h.evalJs(inputScript([{move: pressedAt}, {button: 3, down: true}, {button: 3, down: false, wait: 250}]));
-    const lyricMenu = await h.evalJs(lyricMenuFacts);
-    assert.equal(lyricMenu.open, true);
+    await h.evalJs(inputScript([{move: pressedAt}, {button: 3, down: true}, {button: 3, down: false}]));
+    const lyricMenu = await h.waitFor(async () => {
+        const facts = await h.evalJs(lyricMenuFacts);
+        return facts.open && facts.settled && facts;
+    }, 'the lyric menu to open');
     assert.equal((await h.evalJs(indicatorFacts)).menuOpen, false, 'the panel menu stays closed');
     assert.equal(await h.gsettings.get('overlay-enabled'), 'true', 'a right press on the lyric does not toggle');
     assert.ok(lyricMenu.box.y >= 0 && lyricMenu.box.y + lyricMenu.box.height <= MONITOR.height, JSON.stringify(lyricMenu.box));
@@ -423,9 +437,6 @@ async function overlayScenario(h) {
         return true;
     })()`);
     await h.waitFor(async () => (await h.evalJs(focusedTitle)) === 'Another window', 'the other window to take focus');
-    // The chosen set's only line has ended, leaving nothing to click; the
-    // first set's second line holds for half a minute.
-    await h.evalJs(`${EXTENSION}.stateObj._client.command({op: 'choose', id: 77}); true`);
     const beforeClick = await h.waitFor(async () => {
         const facts = await h.evalJs(overlayFacts);
         return facts.grip.visible && facts.text === 'Second line arrives here' && facts;
