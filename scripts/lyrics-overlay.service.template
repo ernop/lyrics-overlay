@@ -1,0 +1,14 @@
+[Unit]
+Description=Lyrics overlay service (timed lyrics for YouTube playback, http://lyrics.localhost:8792/)
+
+[Service]
+# TEMPLATE: rendered by scripts/install.sh. Do not install directly.
+Type=simple
+WorkingDirectory=__WORKDIR__
+ExecStart=/usr/bin/gjs -m __WORKDIR__/service/main.js
+Restart=always
+RestartSec=5
+UMask=0077
+
+[Install]
+WantedBy=default.target

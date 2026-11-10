@@ -1,0 +1,76 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<schemalist>
+  <schema id="org.gnome.shell.extensions.lyrics-overlay" path="/org/gnome/shell/extensions/lyrics-overlay/">
+    <key name="overlay-enabled" type="b">
+      <default>false</default>
+      <summary>Show the lyric overlay while a song with timed lyrics plays</summary>
+    </key>
+    <key name="font-size" type="d">
+      <range min="16" max="256"/>
+      <default>48</default>
+      <summary>Lyric text size in pixels; a line too long for the box shrinks to fit</summary>
+    </key>
+    <key name="font-family" type="s">
+      <default>''</default>
+      <summary>Font family; empty means the desktop interface font</summary>
+    </key>
+    <key name="font-bold" type="b">
+      <default>true</default>
+    </key>
+    <key name="text-color" type="s">
+      <choices>
+        <choice value="white"/>
+        <choice value="yellow"/>
+        <choice value="orange"/>
+        <choice value="red"/>
+        <choice value="pink"/>
+        <choice value="magenta"/>
+        <choice value="purple"/>
+        <choice value="blue"/>
+        <choice value="cyan"/>
+        <choice value="green"/>
+        <choice value="black"/>
+      </choices>
+      <default>'white'</default>
+      <summary>Letter color</summary>
+    </key>
+    <key name="text-border" type="s">
+      <choices>
+        <choice value="none"/>
+        <choice value="single"/>
+        <choice value="double"/>
+      </choices>
+      <default>'double'</default>
+      <summary>Rings around the letters: black or white, whichever contrasts more with the letter color, then the other</summary>
+    </key>
+    <key name="text-align" type="s">
+      <choices>
+        <choice value="center"/>
+        <choice value="left"/>
+      </choices>
+      <default>'center'</default>
+      <summary>Where the lyric sits across its box</summary>
+    </key>
+    <key name="transition" type="s">
+      <choices>
+        <choice value="instant"/>
+        <choice value="fade-in"/>
+        <choice value="crossfade-quick"/>
+        <choice value="crossfade-soft"/>
+      </choices>
+      <default>'fade-in'</default>
+    </key>
+    <key name="pitch-enabled" type="b">
+      <default>false</default>
+      <summary>Show a trace of the sung pitch from the microphone under the lyric</summary>
+    </key>
+    <key name="box" type="a{sd}">
+      <default>{'cx': 0.5, 'cy': 0.86, 'width': 0.6, 'height': 0.14}</default>
+      <summary>Overlay box center and size as fractions of its monitor's work area</summary>
+    </key>
+    <key name="box-monitor" type="i">
+      <default>-1</default>
+      <summary>Monitor index of the box; -1 follows the primary monitor</summary>
+    </key>
+  </schema>
+</schemalist>

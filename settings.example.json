@@ -1,0 +1,7 @@
+{
+  "port": 8792,
+  "hostname": "lyrics.localhost",
+  "lrclibBaseUrl": "https://lrclib.net",
+  "ytarchiveUrl": null,
+  "stateDir": "~/.local/state/lyrics-overlay"
+}

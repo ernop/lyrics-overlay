@@ -1,0 +1,11 @@
+[Unit]
+Description=Lyrics overlay: put a pending GNOME Shell extension update in place before the shell starts
+Before=graphical-session-pre.target
+
+[Service]
+# TEMPLATE: rendered by scripts/install-gnome-extension.sh. Do not install directly.
+Type=oneshot
+ExecStart=__WORKDIR__/scripts/install-gnome-extension.sh --apply-pending
+
+[Install]
+WantedBy=graphical-session-pre.target

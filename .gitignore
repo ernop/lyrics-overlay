@@ -1,0 +1,10 @@
+settings.json
+amo-credentials.local
+node_modules/
+build/
+dist/
+web-ext-artifacts/
+*.xpi
+gnome-extension/lyrics-overlay@ernop/schemas/gschemas.compiled
+.amo-upload-uuid
+__pycache__/

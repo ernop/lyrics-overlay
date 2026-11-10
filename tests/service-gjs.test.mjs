@@ -1,0 +1,249 @@
+// Runs the real gjs service in an isolated session (temporary HOME, a
+// private bus that activates nothing) against a stub LRCLIB.
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {spawn, execFile} from 'node:child_process';
+import http from 'node:http';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import {fileURLToPath} from 'node:url';
+import {promisify} from 'node:util';
+
+import {isolatedEnv, startBus} from './isolated-session.mjs';
+
+const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
+const run = promisify(execFile);
+
+const LRC = '[00:01.00] One\n[00:03.00] Two\n[00:30.00] Three';
+const TOPIC = 'Provided to YouTube by Label\n\nStub Song · Stub Band\n\nStub Album\n\n℗ 2003 Label';
+
+/** Stub LRCLIB (GET /api/search) and stub ytarchive (POST /api/get, /api/lyrics) on one port. */
+function startStubLrclib() {
+    const requests = [];
+    const archived = [];
+    const server = http.createServer((request, response) => {
+        const url = new URL(request.url, 'http://stub');
+        if (request.method === 'POST' && ['/api/get', '/api/lyrics'].includes(url.pathname)) {
+            let body = '';
+            request.on('data', chunk => { body += chunk; });
+            request.on('end', () => {
+                archived.push({path: url.pathname, body: JSON.parse(body), origin: request.headers.origin,
+                    host: request.headers.host, type: request.headers['content-type']});
+                response.writeHead(url.pathname === '/api/get' ? 202 : 200, {'Content-Type': 'application/json'});
+                response.end(JSON.stringify(url.pathname === '/api/get' ? {status: 'queued'} : {lyrics: 'pending'}));
+            });
+            return;
+        }
+        requests.push({path: url.pathname, track: url.searchParams.get('track_name'), artist: url.searchParams.get('artist_name'), agent: request.headers['user-agent']});
+        if (url.searchParams.get('track_name') === 'Busy Song') {
+            response.writeHead(429, {'Retry-After': '120'});
+            response.end();
+            return;
+        }
+        response.setHeader('Content-Type', 'application/json');
+        response.end(JSON.stringify(url.searchParams.get('track_name') === 'Stub Song' ? [{
+            id: 77, trackName: 'Stub Song', artistName: 'Stub Band', albumName: 'Stub Album', duration: 180,
+            instrumental: false, plainLyrics: 'One\nTwo\nThree', syncedLyrics: LRC,
+        }] : []));
+    });
+    return new Promise(resolve => server.listen(0, '127.0.0.1', () => resolve({server, requests, archived, port: server.address().port})));
+}
+
+let serviceLog = '';
+
+async function waitFor(check, what) {
+    const deadline = Date.now() + 10000;
+    for (;;) {
+        const value = await check();
+        if (value)
+            return value;
+        if (Date.now() > deadline)
+            throw new Error(`timed out waiting for ${what}; service log:\n${serviceLog}`);
+        await new Promise(resolve => setTimeout(resolve, 50));
+    }
+}
+
+function request(port, {method = 'GET', urlPath = '/api/state', headers = {}, body} = {}) {
+    return new Promise((resolve, reject) => {
+        const req = http.request({host: '127.0.0.1', port, method, path: urlPath, agent: false, headers: {Host: `127.0.0.1:${port}`, ...headers}}, response => {
+            let data = '';
+            response.on('data', chunk => { data += chunk; });
+            response.on('end', () => resolve({status: response.statusCode, body: data, headers: response.headers}));
+        });
+        req.on('error', reject);
+        if (body !== undefined)
+            req.write(body);
+        req.end();
+    });
+}
+
+const EXTENSION_HEADERS = {'Content-Type': 'application/json', Origin: 'moz-extension://abc'};
+
+const report = (port, payload, headers = {}) => request(port, {
+    method: 'POST', urlPath: '/api/report', body: JSON.stringify(payload), headers: {...EXTENSION_HEADERS, ...headers},
+});
+
+/** The real service on a private bus; stopped and removed when the test ends. */
+async function startService(t) {
+    const stub = await startStubLrclib();
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lyrics-overlay-test-'));
+    const env = isolatedEnv(dir);
+    const bus = await startBus(dir, 'session', env, null);
+    env.DBUS_SESSION_BUS_ADDRESS = bus.address;
+    const port = 20000 + Math.floor(Math.random() * 20000);
+    const settingsPath = path.join(dir, 'settings.json');
+    fs.writeFileSync(settingsPath, JSON.stringify({
+        port, hostname: 'lyrics.localhost', lrclibBaseUrl: `http://127.0.0.1:${stub.port}`,
+        ytarchiveUrl: `http://127.0.0.1:${stub.port}`, stateDir: path.join(dir, 'service-state'),
+    }));
+    serviceLog = '';
+    const service = spawn('gjs', ['-m', path.join(root, 'tests/service-under-gc.js'), '--settings', settingsPath], {env, stdio: ['ignore', 'inherit', 'pipe']});
+    service.stderr.on('data', data => { serviceLog += data; });
+    t.after(() => {
+        service.kill('SIGTERM');
+        bus.daemon.kill();
+        stub.server.close();
+        fs.rmSync(dir, {recursive: true, force: true});
+    });
+
+    await waitFor(async () => (await request(port).catch(() => null))?.status === 200, 'the service to listen');
+    const gdbus = async (method, ...args) => {
+        const {stdout} = await run('gdbus', ['call', '--session', '--dest', 'net.fuseki.LyricsOverlay', '--object-path', '/net/fuseki/LyricsOverlay',
+            '--method', `net.fuseki.LyricsOverlay1.${method}`, ...args], {env});
+        return JSON.parse(JSON.parse(`"${stdout.trim().replace(/^\('|',\)$/gu, '').replaceAll('"', '\\"')}"`));
+    };
+    return {stub, dir, port, gdbus};
+}
+
+test('the gjs service looks up lyrics, serves state and accepts shell commands', async t => {
+    const {stub, dir, port, gdbus} = await startService(t);
+
+    // Guards: Host, Origin, content type, shape.
+    assert.equal((await request(port, {headers: {Host: 'evil.example'}})).status, 403);
+    assert.equal((await request(port, {headers: {Host: `lyrics.localhost:${port}`}})).status, 200, 'the browser add-on’s address');
+    const media = {videoId: 'abcdefghijk', currentTime: 0.5, duration: 180, paused: false, ended: false, stalled: false, playbackRate: 1, muted: false, volume: 1, adShowing: false};
+    const metadata = {host: 'www.youtube.com', videoId: 'abcdefghijk', title: 'Stub Song', author: 'Stub Band - Topic', lengthSeconds: 180,
+        category: 'Music', musicVideoType: '', description: TOPIC, musicCards: [], mediaSession: null, ytmByline: ''};
+    assert.equal((await report(port, {tabId: 3, sampledAt: Date.now(), heartbeatMs: 5000, media}, {Origin: 'https://evil.example'})).status, 403);
+    assert.equal((await report(port, {tabId: 3, sampledAt: Date.now(), heartbeatMs: 5000, media}, {Origin: 'null'})).status, 403);
+    const withoutOrigin = siteHeader => request(port, {method: 'POST', urlPath: '/api/report',
+        body: JSON.stringify({tabId: 4, sampledAt: Date.now(), heartbeatMs: 5000, media}), headers: {'Content-Type': 'application/json', ...siteHeader}});
+    assert.equal((await withoutOrigin({'Sec-Fetch-Site': 'cross-site'})).status, 403);
+    assert.equal((await withoutOrigin({})).status, 204, 'a local client sends no Origin');
+    assert.equal((await request(port, {method: 'POST', urlPath: '/api/gone', body: JSON.stringify({tabId: 4}), headers: {'Content-Type': 'application/json'}})).status, 204);
+    assert.equal((await request(port, {method: 'POST', urlPath: '/api/report', body: '{}', headers: {'Content-Type': 'text/plain'}})).status, 415);
+    assert.equal((await report(port, {tabId: 3, sampledAt: Date.now(), heartbeatMs: 5000, media: {...media, videoId: '../../etc'}})).status, 400);
+    assert.equal((await report(port, {tabId: 3, sampledAt: 0, heartbeatMs: 5000, media})).status, 400);
+    assert.equal((await request(port)).headers['access-control-allow-origin'], undefined);
+
+    assert.equal((await report(port, {tabId: 3, sampledAt: Date.now(), heartbeatMs: 5000, media, metadata, next: null})).status, 204);
+    const state = await waitFor(async () => {
+        const answer = JSON.parse((await request(port)).body);
+        return answer.state.lyrics === 'timed' ? answer : null;
+    }, 'timed lyrics');
+    assert.equal(state.state.identityText, 'Stub Band - Stub Song - 2003 - Stub Album');
+    assert.equal(stub.requests.length, 1);
+    assert.deepEqual(stub.requests[0], {path: '/api/search', track: 'Stub Song', artist: 'Stub Band', agent: 'Mozilla/5.0'});
+    assert.equal(state.line.text, 'One', 'no identity intro: the first line, led by 0.75 s');
+
+    await waitFor(async () => JSON.parse((await request(port)).body).line.text === 'Two', 'the second line on time');
+
+    assert.deepEqual(await gdbus('Command', JSON.stringify({op: 'tooFast'})), {ok: true});
+    assert.equal((await gdbus('GetState')).offsetSeconds, -0.5);
+    assert.deepEqual(await gdbus('Command', JSON.stringify({op: 'reject'})), {ok: true});
+    assert.equal((await gdbus('GetState')).lyrics, 'none');
+    assert.deepEqual(await gdbus('Command', JSON.stringify({op: 'choose', id: 77})), {ok: true});
+    assert.equal((await gdbus('GetState')).chosen.id, 77);
+
+    const saved = JSON.parse(fs.readFileSync(path.join(dir, 'service-state', 'videos', 'abcdefghijk.json'), 'utf8'));
+    assert.deepEqual([saved.offsetSeconds, saved.chosenId, saved.rejectedIds], [-0.5, 77, []]);
+    assert.equal(fs.statSync(path.join(dir, 'service-state', 'videos', 'abcdefghijk.json')).mode & 0o077, 0);
+
+    const page = await request(port, {urlPath: '/'});
+    assert.equal(page.status, 200);
+    assert.match(page.body, /Stub Band - Stub Song - Stub Album - 3:00/u);
+    assert.match(page.body, /fetch\('\/status-body'/u, 'the page keeps itself current');
+    const body = await request(port, {urlPath: '/status-body'});
+    assert.equal(body.status, 200);
+    assert.match(body.body, /Stub Band - Stub Song - Stub Album - 3:00/u);
+    assert.doesNotMatch(body.body, /<html|<script/u);
+    const icon = await request(port, {urlPath: '/favicon.svg'});
+    assert.equal(icon.headers['content-type'], 'image/svg+xml');
+    assert.equal(icon.body, fs.readFileSync(new URL('../firefox/icon.svg', import.meta.url), 'utf8'));
+
+    // The shell's FocusSong reaches the extension through its open request,
+    // and the extension's answer returns to the shell.
+    const commandRequest = headers => request(port, {method: 'POST', urlPath: '/api/commands', body: '{}', headers});
+    assert.equal((await commandRequest({...EXTENSION_HEADERS, Origin: 'https://evil.example'})).status, 403);
+    assert.equal((await commandRequest({...EXTENSION_HEADERS, 'Content-Type': 'text/plain'})).status, 415);
+    // A newer request takes a held one's place, and the held one is told so
+    // rather than answered empty: asking again at once would only take the
+    // place back, and two listening browsers would trade it without pause.
+    const displaced = commandRequest(EXTENSION_HEADERS);
+    await new Promise(resolve => setTimeout(resolve, 200));
+    const waiting = commandRequest(EXTENSION_HEADERS);
+    const displacedAnswer = await displaced;
+    assert.equal(displacedAnswer.status, 409);
+    assert.match(JSON.parse(displacedAnswer.body).error, /newer request/u);
+    const focused = gdbus('FocusSong');
+    const delivered = await waiting;
+    assert.equal(delivered.status, 200);
+    const command = JSON.parse(delivered.body);
+    assert.deepEqual(command, {op: 'focusTab', tabId: 3, id: 1});
+    const title = 'Stub Song - YouTube — Mozilla Firefox';
+    const answer = result => request(port, {method: 'POST', urlPath: '/api/command-result', body: JSON.stringify(result), headers: EXTENSION_HEADERS});
+    assert.equal((await answer({id: command.id, ok: true})).status, 400, 'a success names its window');
+    assert.equal((await answer({id: command.id, ok: true, windowTitle: title})).status, 204);
+    assert.deepEqual(await focused, {ok: true, windowTitle: title});
+    assert.equal((await answer({id: command.id, ok: true, windowTitle: title})).status, 409, 'answered once');
+    assert.deepEqual(await gdbus('FocusSong'), {ok: false, error: 'the browser extension is not listening'});
+
+    assert.equal((await request(port, {method: 'POST', urlPath: '/api/gone', body: JSON.stringify({tabId: 3}), headers: {'Content-Type': 'application/json'}})).status, 204);
+    assert.deepEqual(await gdbus('FocusSong'), {ok: false, error: 'no song is playing'});
+    assert.equal(JSON.parse((await request(port)).body).state.active, false);
+    assert.doesNotMatch(serviceLog, /CRITICAL|WARNING|Error/u, serviceLog);
+});
+
+test('an LRCLIB rate-limit refusal pauses lookups for the time it names instead of failing them', async t => {
+    const {stub, dir, port} = await startService(t);
+    const media = {videoId: 'busybusybus', currentTime: 0.5, duration: 180, paused: false, ended: false, stalled: false, playbackRate: 1, muted: false, volume: 1, adShowing: false};
+    const metadata = {host: 'www.youtube.com', videoId: 'busybusybus', title: 'Busy Song', author: 'Stub Band - Topic', lengthSeconds: 180,
+        category: 'Music', musicVideoType: '', description: 'Provided to YouTube by Label\n\nBusy Song · Stub Band\n\nStub Album\n\n℗ 2003 Label',
+        musicCards: [], mediaSession: null, ytmByline: ''};
+    const sentAt = Date.now();
+    assert.equal((await report(port, {tabId: 5, sampledAt: sentAt, heartbeatMs: 5000, media, metadata, next: null})).status, 204);
+    await waitFor(() => serviceLog.includes('LRCLIB refused for its rate limit (HTTP 429); resuming lookups at '), 'the pause');
+    assert.equal(JSON.parse((await request(port)).body).state.lyrics, 'waiting');
+    assert.equal(stub.requests.length, 1);
+    const budget = JSON.parse(fs.readFileSync(path.join(dir, 'service-state', 'budget.json'), 'utf8'));
+    assert.ok(budget.pausedUntil >= sentAt + 120_000 && budget.pausedUntil <= Date.now() + 120_000, JSON.stringify(budget));
+    assert.doesNotMatch(serviceLog, /not a valid value|CRITICAL|WARNING|Error/u, serviceLog);
+});
+
+test('a video that starts sounding is handed to ytarchive once, then the lyrics found for it', async t => {
+    const {stub, dir, port} = await startService(t);
+    const media = {videoId: 'handoffvid1', currentTime: 0.5, duration: 180, paused: true, ended: false, stalled: false, playbackRate: 1, muted: false, volume: 1, adShowing: false};
+    const metadata = {host: 'www.youtube.com', videoId: 'handoffvid1', title: 'Stub Song', author: 'Stub Band - Topic', lengthSeconds: 180,
+        category: 'Music', musicVideoType: '', description: TOPIC, musicCards: [], mediaSession: null, ytmByline: ''};
+    assert.equal((await report(port, {tabId: 6, sampledAt: Date.now(), heartbeatMs: 5000, media, metadata, next: null})).status, 204);
+    await new Promise(resolve => setTimeout(resolve, 300));
+    assert.deepEqual(stub.archived, [], 'a paused video was not heard');
+
+    assert.equal((await report(port, {tabId: 6, sampledAt: Date.now(), heartbeatMs: 5000, media: {...media, paused: false}, metadata, next: null})).status, 204);
+    await waitFor(() => stub.archived.length === 2, 'the add and the lyrics');
+    // ytarchive trusts these because they are local and carry no Origin.
+    assert.deepEqual(stub.archived[0], {path: '/api/get', body: {url: 'https://www.youtube.com/watch?v=handoffvid1', via: 'played'},
+        origin: undefined, host: `127.0.0.1:${stub.port}`, type: 'application/json'});
+    assert.deepEqual(stub.archived[1].body, {video_id: 'handoffvid1',
+        lrc: `[ar:Stub Band]\n[ti:Stub Song]\n[al:Stub Album]\n[length:03:00]\n${LRC}\n`});
+
+    assert.equal((await report(port, {tabId: 6, sampledAt: Date.now(), heartbeatMs: 5000, media: {...media, paused: false, currentTime: 2}, metadata, next: null})).status, 204);
+    await new Promise(resolve => setTimeout(resolve, 300));
+    assert.equal(stub.archived.length, 2, 'once per video, not per report');
+    const record = JSON.parse(fs.readFileSync(path.join(dir, 'service-state', 'archive', 'handoffvid1.json'), 'utf8'));
+    assert.deepEqual(record, {version: 1, videoId: 'handoffvid1', added: true, lyricsKey: '1:77'});
+    assert.equal((await request(port, {method: 'POST', urlPath: '/api/archive', body: '{}', headers: EXTENSION_HEADERS})).status, 404);
+    assert.match(serviceLog, /ytarchive: added handoffvid1/u);
+    assert.doesNotMatch(serviceLog, /CRITICAL|WARNING|failed|unreachable/u, serviceLog);
+});

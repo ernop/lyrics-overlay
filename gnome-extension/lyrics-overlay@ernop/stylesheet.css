@@ -1,0 +1,55 @@
+.lyrics-overlay-menu {
+  min-width: 30em;
+}
+
+.lyrics-overlay-menu-light .popup-menu-item,
+.lyrics-overlay-menu-light .popup-inactive-menu-item,
+.lyrics-overlay-menu-light .popup-menu-item:active,
+.lyrics-overlay-menu-light .popup-menu-item:selected,
+.lyrics-overlay-menu-light .lyrics-overlay-button,
+.lyrics-overlay-menu-light .lyrics-overlay-size-slider {
+  color: #000000;
+}
+
+.lyrics-overlay-menu-dark .popup-menu-item,
+.lyrics-overlay-menu-dark .popup-inactive-menu-item,
+.lyrics-overlay-menu-dark .popup-menu-item:active,
+.lyrics-overlay-menu-dark .popup-menu-item:selected,
+.lyrics-overlay-menu-dark .lyrics-overlay-button,
+.lyrics-overlay-menu-dark .lyrics-overlay-size-slider {
+  color: #ffffff;
+}
+
+.lyrics-overlay-identity {
+  font-weight: bold;
+}
+
+.lyrics-overlay-value {
+  font-weight: bold;
+  font-size: 1.15em;
+  font-feature-settings: "tnum";
+  min-width: 4.2em;
+  text-align: center;
+}
+
+.lyrics-overlay-button {
+  padding: 4px 10px;
+  margin: 0 3px;
+}
+
+.lyrics-overlay-size-row {
+  spacing: 10px;
+}
+
+.lyrics-overlay-size-slider {
+  min-width: 15em;
+}
+
+.lyrics-overlay-swatch {
+  width: 18px;
+  height: 18px;
+  border-width: 2px;
+  border-style: solid;
+  border-radius: 3px;
+  margin-right: 10px;
+}

@@ -1,0 +1,8 @@
+{
+  "uuid": "lyrics-overlay@ernop",
+  "name": "Lyrics Overlay",
+  "description": "Shows the current lyric line of the YouTube song that is playing, above other windows. Driven by the lyrics-overlay service.",
+  "shell-version": ["50"],
+  "settings-schema": "org.gnome.shell.extensions.lyrics-overlay",
+  "version-name": "1"
+}
