@@ -15,6 +15,7 @@ export const INTERFACE_XML = `<node>
       <arg type="s" direction="out" name="result"/>
     </method>
     <method name="FocusSong"><arg type="s" direction="out" name="result"/></method>
+    <method name="OpenSettings"><arg type="s" direction="out" name="result"/></method>
     <signal name="StateChanged"><arg type="s" name="state"/></signal>
     <signal name="LineChanged"><arg type="s" name="line"/></signal>
     <signal name="PitchFrames"><arg type="s" name="frames"/></signal>

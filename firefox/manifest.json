@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Lyrics Overlay",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Tells the local lyrics overlay service what YouTube is playing. Sends nothing off this computer.",
   "icons": {
     "48": "icon.svg",
@@ -10,10 +10,12 @@
   "host_permissions": [
     "*://www.youtube.com/*",
     "*://music.youtube.com/*",
-    "http://lyrics.localhost/*"
+    "http://lyrics.localhost/*",
+    "http://localhost/*"
   ],
   "background": {
     "scripts": [
+      "settings-access.js",
       "background.js"
     ]
   },

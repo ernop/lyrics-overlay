@@ -1,0 +1,273 @@
+/* Owner display rules: pure white on black, values out-rank labels,
+   headers out-rank body, fluid widths, one line per list row. */
+:root {
+    color-scheme: dark;
+    --accent: #2563eb;
+    --edge: #8a8a8a;
+    --panel: #111;
+    --thumb: 22px;
+}
+
+* {
+    box-sizing: border-box;
+}
+
+/* The page hides with the attribute; display rules below would undo it. */
+[hidden] {
+    display: none !important;
+}
+
+body {
+    margin: 0;
+    padding: 1.25rem 2%;
+    background: #000;
+    color: #fff;
+    font: 17px/1.35 system-ui, sans-serif;
+}
+
+header {
+    display: flex;
+    align-items: baseline;
+    gap: 1.5rem;
+    flex-wrap: wrap;
+}
+
+h1 {
+    margin: 0 0 1rem;
+    font-size: 2.1rem;
+    font-weight: 800;
+}
+
+h2 {
+    margin: 0 0 0.75rem;
+    font-size: 1.55rem;
+    font-weight: 800;
+}
+
+#banner {
+    margin: 0;
+    font-size: 1.1rem;
+    font-weight: 700;
+    color: #fca5a5;
+}
+
+main {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 36rem), 1fr));
+    gap: 1.25rem;
+    align-items: start;
+}
+
+section {
+    background: var(--panel);
+    border: 1px solid var(--edge);
+    border-radius: 10px;
+    padding: 1rem 1.25rem 1.25rem;
+}
+
+.row {
+    display: grid;
+    grid-template-columns: minmax(9rem, 30%) 1fr;
+    align-items: center;
+    gap: 0.4rem 1rem;
+    padding: 0.55rem 0;
+    border-top: 1px solid #333;
+}
+
+.row:first-of-type {
+    border-top: none;
+}
+
+.row > .label {
+    font-weight: 700;
+    font-size: 1.05rem;
+}
+
+.value {
+    font-weight: 800;
+    font-size: 1.35rem;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.note {
+    font-size: 0.95rem;
+}
+
+.controls {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+    align-items: center;
+    min-width: 0;
+}
+
+button {
+    font: inherit;
+    font-weight: 600;
+    color: #fff;
+    background: #000;
+    border: 1px solid var(--edge);
+    border-radius: 7px;
+    padding: 0.35rem 0.8rem;
+    cursor: pointer;
+}
+
+button:hover {
+    border-color: #fff;
+}
+
+button[aria-pressed="true"] {
+    background: var(--accent);
+    border-color: var(--accent);
+}
+
+button:disabled {
+    cursor: default;
+    border-style: dashed;
+}
+
+button.big {
+    font-size: 1.35rem;
+    font-weight: 800;
+    min-width: 2.6rem;
+    padding: 0.1rem 0.6rem;
+}
+
+.switch {
+    min-width: 5.5rem;
+}
+
+/* Slider: the current value, then the track with notches and numbered ends. */
+.slider {
+    flex: 1 1 18rem;
+    min-width: 0;
+    display: grid;
+    grid-template-columns: minmax(5.5rem, auto) 1fr;
+    align-items: center;
+    gap: 0.8rem;
+}
+
+.track {
+    min-width: 0;
+}
+
+.track input {
+    width: 100%;
+    margin: 0;
+    accent-color: var(--accent);
+    height: var(--thumb);
+}
+
+.ticks {
+    position: relative;
+    height: 1.6rem;
+    margin: 0 calc(var(--thumb) / 2);
+}
+
+.tick {
+    position: absolute;
+    top: 0;
+    transform: translateX(-50%);
+    font-size: 0.85rem;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+}
+
+.tick::before {
+    content: "";
+    display: block;
+    width: 2px;
+    height: 0.4rem;
+    margin: 0 auto 0.1rem;
+    background: #fff;
+}
+
+.swatch {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+}
+
+.chip {
+    display: inline-block;
+    width: 1.1rem;
+    height: 1.1rem;
+    border-radius: 3px;
+    border: 1px solid #fff;
+}
+
+input[type="color"] {
+    width: 3rem;
+    height: 2.1rem;
+    padding: 0;
+    border: 1px solid var(--edge);
+    border-radius: 7px;
+    background: #000;
+}
+
+input[type="search"] {
+    font: inherit;
+    color: #fff;
+    background: #000;
+    border: 1px solid var(--edge);
+    border-radius: 7px;
+    padding: 0.35rem 0.6rem;
+    width: 100%;
+}
+
+input[type="search"]::placeholder {
+    color: #fff;
+}
+
+.list {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    max-height: 22rem;
+    overflow-y: auto;
+    border: 1px solid var(--edge);
+    border-radius: 7px;
+    padding: 3px;
+}
+
+.list.short {
+    max-height: none;
+}
+
+.list button {
+    text-align: left;
+    border: none;
+    border-radius: 5px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    flex: none;
+    content-visibility: auto;
+    contain-intrinsic-size: auto 2.4rem;
+}
+
+.fonts button {
+    font-size: 1.3rem;
+    font-weight: 400;
+}
+
+.wide {
+    grid-column: 1 / -1;
+}
+
+ul.help {
+    margin: 0;
+    padding-left: 1.2rem;
+}
+
+ul.help li {
+    padding: 0.2rem 0;
+}
+
+kbd {
+    font: inherit;
+    font-weight: 800;
+}

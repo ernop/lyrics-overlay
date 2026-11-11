@@ -46,6 +46,19 @@ function busConfig(socketDir, serviceDir) {
 }
 
 /**
+ * A services dir under tmp that activates only dconf-service, for a bus
+ * whose clients store settings: started by that bus, it writes the
+ * session's own XDG_CONFIG_HOME.
+ * @returns {string} the dir, for startBus
+ */
+export function dconfServiceDir(tmp) {
+    const dir = path.join(tmp, 'services');
+    fs.mkdirSync(dir, {mode: 0o700});
+    fs.copyFileSync('/usr/share/dbus-1/services/ca.desrt.dconf.service', path.join(dir, 'ca.desrt.dconf.service'));
+    return dir;
+}
+
+/**
  * @param {string} dir temporary dir for the socket and config
  * @param {string} name distinguishes several buses in one dir
  * @param {Record<string, string>} env from isolatedEnv()

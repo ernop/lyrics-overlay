@@ -27,7 +27,8 @@ indicator changes quietly.
   disappears after it stops. It never flashes, animates or notifies. What
   it looks like: [indicator-icons.png](indicator-icons.png).
 - **One press to toggle.** A primary-button press on the indicator turns the
-  overlay on or off; the choice persists. A secondary press opens the menu.
+  overlay on or off; the choice persists. A secondary press shows the
+  settings page.
 - **The overlay** is a single line of lyrics above all normal windows, not
   above fullscreen ones. It shows the line about to be sung, slightly
   ahead of it, and a seconds countdown before a line that follows an intro
@@ -39,65 +40,100 @@ indicator changes quietly.
 - **Timing nudges.** Too fast / Too slow move the song's lyric clock in
   0.5 s steps (voice-wei's convention: Too fast shows every line later);
   Reset returns to zero. Each video remembers its offset.
-- **Text.** Size adjusts smoothly (16-256 px, a notched slider in the menu,
-  or Ctrl+wheel over the text). Font: the desktop font or any installed
-  standard family, listed by kind (sans, serif, monospace, the Z003
-  script) with a line between kinds and each name drawn in its own font,
-  bold or not. The standard families are the text families of Ubuntu's
-  font packages; per-script, symbol and duplicate builds are left out
-  because they cannot set a Latin lyric or repeat a listed family
-  (2026-11-10). Color (2026-11-10): white, yellow, orange, red, pink, magenta,
-  purple, blue, cyan, green or black. Border: double (default), single or
-  none; the inner ring is whichever of black and white contrasts more with
-  the letters, and the outer ring is the other, so the line reads on any
-  background. Alignment: centered (default) or left within the box.
+- **Text.** Size adjusts smoothly (16-256 px, a notched slider on the
+  settings page, or Ctrl+wheel over the text). Font: the desktop font or
+  any installed family that can write English, each name drawn in its own
+  face, found by typing part of its name; bold or not. More fonts
+  (owner, 2026-11-10: "many more font options"): `scripts/install-fonts.sh`
+  adds about 160 of Ubuntu's font packages for the user alone (below).
+  Color: white, yellow, orange, red, pink, magenta, purple, blue, cyan,
+  green or black. Border: double (default), single or none; the inner ring
+  is whichever of black and white contrasts more with the letters, and the
+  outer ring is the other, so the line reads on any background. Border
+  thickness (owner, 2026-11-10: "thicker border options at all types"):
+  0.25 to 4 times the standard width for the text size, for either border.
+  Alignment: centered (default) or left within the box.
 - **Transitions.** Instant, a short fade-in (default), or a quick or soft
   crossfade between lines.
 - **Pointer rules (2026-11-10).** On the lyric: a click goes to the song
-  (its Firefox tab is selected and its window raised); a right-click opens
-  the menu at the pointer; Ctrl+drag moves the box; Alt+drag resizes it
-  freely (never aspect-locked); Ctrl+wheel sizes the text. A click is never
+  (its Firefox tab is selected and its window raised); a right-click shows
+  the settings page; Ctrl+drag moves the box; Alt+drag resizes it freely
+  (never aspect-locked); Ctrl+wheel sizes the text. A click is never
   combined with a drag: a plain press that travels past the desktop's drag
   threshold does nothing on release. Where no lyric is drawn, clicks reach
   the windows below. Position and size persist as fractions of the monitor.
-- **The menu** (the indicator's secondary press, or a right-click on the
-  lyric) starts with the overlay and pitch-trace switches, then the song
-  (identity, lyric status, microphone, timing, lyric sets, go to the song,
-  wrong lyrics, search again), then the look (size, font, color, border,
-  alignment, transition, reset position), then the mouse controls and the
-  status page. It never runs off the screen: its items scroll within the
-  screen's height.
-- **Choosing lyrics.** The menu lists every candidate set found; the owner
-  can pick one, hide a wrong one ("Wrong lyrics: hide this set"), search
-  again, or look up lyrics for a video not recognized as music. Choices and
-  rejections are remembered per video.
+- **The settings page (owner, 2026-11-10).** Every setting is on one page
+  in Firefox, `http://localhost:8792/settings`: the song (identity, lyric
+  status, timing, lyric sets, wrong lyrics, search again, look up), the
+  lyric line's look, the pitch panel, the microphone, and the mouse
+  controls. A right press on the indicator, the lyric or the pitch panel
+  shows it. Each change applies to the line and the panel as it is made,
+  so the owner adjusts while watching. There is one settings tab: a right
+  press selects the open one and raises its window rather than opening
+  another. The page replaced the right-click menus, whose submenus opened
+  only from a small arrow and were hard to use; the owner asked for a page
+  that works like an ordinary one, in Firefox.
+- **Choosing lyrics.** The settings page lists every candidate set found;
+  the owner can pick one, hide a wrong one ("Wrong lyrics: hide this set"),
+  search again, or look up lyrics for a video not recognized as music.
+  Choices and rejections are remembered per video.
 - **The icon says the state quietly.** A note beside three text lines: a
   filled note with bold lines while the overlay is on, a hollow note with
-  thin lines while it is off. When no lyrics are found, the three lines
-  become two dots. There is never a popup or system notification.
+  thin lines while it is off. Only these two (owner, 2026-11-10: "just
+  on/off is enough"); the no-lyrics variants were dropped. Nothing pops up
+  unasked: the one notification answers a right press whose settings page
+  could not be shown, with the reason and the page's address.
 - **Lookup from metadata only.** Song, artist, album and year come from
   YouTube's own metadata; no audio is transcribed.
 - **Next song preloaded.** The upcoming video's lyrics are fetched while the
   current one plays, when the upcoming listing names an artist.
 - **Efficient and cached.** Every answer is cached server-side and reused;
   requests to LRCLIB stay inside a persistent budget (below).
-- **Optional pitch trace.** A toggle shows the owner's sung pitch from the
-  microphone beside the line, as voice-wei's Scales and Phrases pages do,
-  with an echo canceller so the music itself is not traced. The microphone
-  is GNOME's default input (2026-11-10); the menu and status page name it
-  while it is open. Another microphone is chosen in GNOME Settings, Sound,
-  Input.
+- **The pitch panel (owner, 2026-11-10).** A panel of its own traces the
+  owner's sung pitch from the microphone, as voice-wei's Pitch page does.
+  It shows while it is switched on, the overlay is on and a YouTube tab
+  plays, with or without timed lyrics. It docks against a side of the
+  lyric box (below by default, above, left or right) or stands separate
+  anywhere on the screen. Dragging its edges resizes it; dragging a
+  separate panel moves it; dropping it against a side of the lyric docks
+  it there; dragging a docked one away makes it separate. Every placement
+  and size persists.
+- **The pitch panel is configurable like voice-wei's (owner, 2026-11-10).**
+  The notes shown: a fixed range from a lowest to a highest note, set in
+  semitone or octave steps or fitted to the last 30 s of singing, or a span
+  of semitones that follows the voice. Seconds across (2-120), whether the
+  trace scrolls through silences, line thickness (0.5-12 px) and color,
+  and how opaque its background is. Every semitone line can carry its note
+  name (D3, E4: every line, the scale's notes, C only, or none), at a
+  chosen size. The current note goes in a column at either side, in a
+  corner over the trace, or nowhere, at a chosen size; its cents off the
+  note are hidden unless switched on. Analyses per second: 10-100, 50 by
+  default (the owner's phone traced more often than the first version's
+  fixed rate).
+- **Scale lines stand out (owner, 2026-11-10).** Every semitone line is
+  drawn; those of the song's scale are drawn more prominently. The scale
+  is detected from the song itself, fixed by the owner (any root; major,
+  the three minors, the modes, either pentatonic or blues), or none, and
+  the panel can name it in its corner.
+- **A steady current note (owner, 2026-11-10).** The current note's slot
+  is sized for the widest note name and its figures are tabular, so the
+  text never shifts sideways between frames; it keeps the last note
+  through gaps up to 1.5 s (consonants, breaths) instead of blinking, and
+  moves to another note only once the voice is 0.15 semitone past the
+  boundary between them.
+- **The microphone is chosen (owner, 2026-11-10).** The settings page lists
+  the system default and every PipeWire audio input; the choice persists.
+  The echo canceller, on by default, subtracts what the speakers play, so
+  the trace follows the singer and not the song.
 - **Every video heard goes to ytarchive (owner, 2026-11-10).** When
   `ytarchiveUrl` is set, every YouTube video that starts sounding, song or
   not, is added to that ytarchive, which records "Played" as how it first
   arrived (beside "Bookmarklet" and "Pasted" for the owner's other routes).
   The lyrics in use follow as an LRC file, and are replaced when another
-  set is chosen. There is no menu item and no status for it here:
+  set is chosen. Nothing on the settings page or the overlay concerns it:
   ytarchive tracks the video from there. This replaced the browser's "Add
   to ytarchive" menu items, which the owner found unneeded once every
   video is added. `ytarchiveUrl: null` (the default) turns it off.
-- **Live status page.** `http://lyrics.localhost:8792/` refreshes itself
-  every second.
 
 ## Decisions
 
@@ -149,8 +185,56 @@ indicator changes quietly.
   what ytarchive cannot take yet waits in a persisted outbox tried at the
   next change and at start, never on a timer (architecture.md, "ytarchive
   hand-off").
-- **Menu text is pure black or white**, chosen from the menu's own
-  background, overriding the theme's near-black and dimmed grays.
+- **The settings page lives in the service, at plain localhost
+  (2026-11-10).** The service serves it and holds the settings in the shell
+  extension's GSettings schema, which it compiles from its own checkout,
+  so the page offers exactly the keys it checks; the shell applies each
+  change as it lands. Its address is `http://localhost:8792/settings`, not
+  under `lyrics.localhost`: Firefox's HTTPS-First mode exempts `localhost`
+  but not its subdomains, and a tab at `lyrics.localhost` first waited
+  seconds on an HTTPS attempt. Text is pure white on black, values
+  outrank labels, rows are one line, and every slider shows its notches,
+  labeled ends and current value.
+- **One settings tab, through the add-on (1.2.0, 2026-11-10).** A right
+  press asks the add-on to select the open settings tab, or open it, and
+  the shell raises that window as it does the song's. To see which tab is
+  the settings page the add-on needs access to `http://localhost/*`, which
+  Firefox grants only when an add-on is first installed: an update that
+  adds it (1.1.0 to 1.2.0) leaves it off, and a user can turn it off later.
+  While it is off, the add-on shows a page of its own instead, at once
+  after such an update and at each right press: one button asks Firefox
+  for the access, and the page then becomes the settings tab. The
+  alternative, Firefox's `tabs` permission, would be granted with the
+  update but lets the add-on read the address and title of every tab.
+  When no add-on is listening, the right press shows a notification with
+  the reason and the page's address; the shell never starts a browser
+  itself.
+- **The pitch panel is part of the shell, not a window (2026-11-10).** Like
+  the lyric, it floats above other windows without being one, so it never
+  takes focus, a taskbar entry or a window-manager rule, and it docks by
+  sharing the lyric box's coordinates. Drags on its edges and body are its
+  own; a right press shows the settings page.
+- **The song's key comes from its sound (2026-11-10).** While the pitch
+  panel stands out a detected scale and the microphone runs for a sounding
+  song, the service listens to what the computer plays (the default
+  output's monitor, not the microphone): each 0.74 s window's spectrum is
+  folded into energy per pitch class, summed over the song, and matched
+  against the Krumhansl-Kessler major and minor key profiles. A key is
+  named after about 8 s, and only when its match leads that of the best
+  key with other notes by at least 0.02 (a correlation difference); its
+  relative major or minor is no rival, since it has the same notes and
+  draws the same scale lines. Per video only the summed energies are kept,
+  so a replay starts from them; audio never leaves memory.
+- **Fonts: every family that can write English (2026-11-10).** The list is
+  whatever fontconfig says covers English, minus Ghostscript's two symbol
+  fonts (D050000L, Standard Symbols PS), which fontconfig takes for Latin
+  but which draw pictures. `scripts/install-fonts.sh` downloads about 160
+  font packages from Ubuntu's archive and unpacks their TrueType and
+  OpenType files into `~/.local/share/fonts/`: no root, no system change,
+  rerun safely, and the page lists the new families at once (GNOME Shell
+  draws them after the next login). Iosevka (99 MB) and TT2020 (76 MB) are
+  left out for their size; Type 1 and web fonts are skipped because GNOME's
+  text stack does not draw them.
 - **The overlay hides when playback is gone.** A tab that closes says so at
   once. A browser that quits, crashes or sleeps cannot, so each report
   promises the next within 5 s while the video runs; a tab that misses three
@@ -158,8 +242,9 @@ indicator changes quietly.
   of running on to the end of the song (2026-11-09).
 - **The indicator lingers two minutes** after sound stops, so a pause or the
   gap between songs does not make it vanish and reappear.
-- **The microphone opens only when needed**: overlay on, pitch trace on,
-  and YouTube sounding. A brief pause keeps it open rather than toggling.
+- **The microphone opens only when needed**: overlay on, pitch panel on,
+  and YouTube sounding. A pause of up to 10 s keeps it open rather than
+  toggling; switching the overlay or the panel off closes it at once.
   Audio never leaves memory.
 - **Local service (2026-11-10).** A systemd user unit on port 8792 with
   login-free local-server guards (Host, Origin). The add-on addresses it as

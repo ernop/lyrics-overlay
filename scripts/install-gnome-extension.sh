@@ -3,9 +3,9 @@
 #   scripts/install-gnome-extension.sh [--data-home DIR] [--no-enable]
 #   scripts/install-gnome-extension.sh --apply-pending [--data-home DIR]
 # GNOME Shell loads extension code once per login. An installed copy is not
-# overwritten under a running shell: the shell re-reads the schema and
-# stylesheet each time it enables the old code again (after every screen
-# unlock), and the old code fails on a schema it does not match. The update
+# overwritten under a running shell: the shell re-reads the schema each
+# time it enables the old code again (after every screen unlock), and the
+# old code fails on a schema it does not match. The update
 # is left pending instead, and lyrics-overlay-extension-update.service puts
 # it in place at the next login, before GNOME Shell starts
 # (--apply-pending). GNOME's own extension-updates/ works the same way but
@@ -57,13 +57,11 @@ mkdir -p "$shell_dir/extensions"
 staging="$(mktemp -d "$shell_dir/.$uuid.XXXXXX")"
 trap 'rm -rf "$staging"' EXIT
 mkdir -p "$staging/icons" "$staging/schemas" "$staging/shared"
-for file in metadata.json extension.js indicator.js lyric-menu.js overlay.js pitch-view.js service-client.js \
-        size-slider.js text-layout.js stylesheet.css; do
-    install -m 0644 "$source_dir/$file" "$staging/$file"
-done
+install -m 0644 "$source_dir/metadata.json" "$source_dir"/*.js "$staging/"
 install -m 0644 "$source_dir"/icons/*.svg "$staging/icons/"
 install -m 0644 "$source_dir"/schemas/*.gschema.xml "$staging/schemas/"
-for file in dbus-interface.js lyrics-status.js overlay-geometry.js pitch-mpm.js text-ink.js; do
+# The shared modules the shell code imports; they import nothing local themselves.
+for file in $(grep -ohE "from '\./shared/[a-z0-9-]+\.js'" "$source_dir"/*.js | sed -E "s#from '\./shared/##; s#'##" | sort -u); do
     install -m 0644 "$repo/shared/$file" "$staging/shared/$file"
 done
 glib-compile-schemas --strict "$staging/schemas"

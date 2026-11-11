@@ -1,10 +1,11 @@
 // Stages the README's desktop picture in a hermetic headless GNOME Shell: a
-// song's video in a maximized window, with the current lyric line and the
-// pitch trace of the tune being sung at the bottom of the screen. The shell,
-// service and extension are the real ones; the recording, the window and
-// the singing are made up, and the words are public domain ("Amazing
-// Grace", John Newton, 1779). Run by scripts/update-readme-pictures.sh;
-// the picture is build/e2e-artifacts/readme-desktop.png.
+// song's video in a window, with the current lyric line and, docked below
+// it, the pitch panel tracing the tune being sung. The shell, service and
+// extension are the real ones; the recording, the window and the singing
+// are made up, and the words are public domain ("Amazing Grace", John
+// Newton, 1779). The song's key is set rather than heard, since the
+// harness has no sound. Run by scripts/update-readme-pictures.sh; the
+// picture is build/e2e-artifacts/readme-desktop.png.
 //
 //   node tests/e2e/readme-desktop.mjs
 import path from 'node:path';
@@ -96,8 +97,9 @@ const h = await startHarness({answers: ANSWERS});
 try {
     await h.evalJs('Main.overview.hide(); true');
     await h.waitFor(async () => !(await h.evalJs('Main.overview.visible')), 'the overview to close');
-    await h.gsettings.set('overlay-enabled', 'true');
-    await h.gsettings.set('pitch-enabled', 'true');
+    for (const [key, value] of [['overlay-enabled', 'true'], ['pitch-enabled', 'true'], ['pitch-scale', "'fixed'"],
+        ['pitch-scale-root', '7'], ['pitch-scale-type', "'major'"]])
+        await h.gsettings.set(key, value);
     for (const [key, value] of [['picture-options', 'none'], ['color-shading-type', 'vertical'],
         ['primary-color', '#1b2440'], ['secondary-color', '#4a2346']])
         await h.gsettings.setDesktop('org.gnome.desktop.background', key, value);
@@ -106,9 +108,9 @@ try {
         media: {videoId: VIDEO, currentTime: 9, duration: 222, paused: false, ended: false, stalled: false,
             playbackRate: 1, muted: false, volume: 1, adShowing: false}});
     await h.waitFor(async () => (await h.evalJs(`(() => {
-        const overlay = ${EXTENSION}.stateObj._overlay;
-        return overlay._root.visible && overlay._pitch.visible && overlay._layers[overlay._current].text;
-    })()`)) === FIRST_LINE, 'the first line with the pitch strip');
+        const {_overlay: overlay, _pitchPanel: panel} = ${EXTENSION}.stateObj;
+        return overlay._root.visible && panel._frame.visible && overlay._layers[overlay._current].text;
+    })()`)) === FIRST_LINE, 'the first line with the pitch panel');
     await h.evalJs(`(() => {
         const top = ${EXTENSION}.stateObj._overlay._root.y;
         const window = global.display.list_all_windows().find(window => window.get_title() === ${JSON.stringify(TITLE)});
@@ -116,11 +118,11 @@ try {
         return true;
     })()`);
 
-    // Sustaining "sound": the strip's last six seconds hold the line's tune.
+    // Sustaining "sound": the panel's last six seconds hold the line's tune.
     const batches = frameBatches(sungSamples(), 6700, 1_000_000);
     await h.evalJs(`(() => {
         for (const frames of ${JSON.stringify(batches)})
-            ${EXTENSION}.stateObj._overlay.pushPitch(frames);
+            ${EXTENSION}.stateObj._pitchPanel.pushFrames(frames);
         return true;
     })()`);
     // A fixed clock keeps the picture the same from run to run.

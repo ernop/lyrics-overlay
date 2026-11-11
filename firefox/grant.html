@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Lyrics overlay: allow the settings page</title>
+<link rel="icon" href="icon.svg">
+<style>
+    :root {
+        color-scheme: dark;
+    }
+
+    body {
+        margin: 0;
+        padding: 2rem 4%;
+        background: #000;
+        color: #fff;
+        font: 19px/1.45 system-ui, sans-serif;
+    }
+
+    h1 {
+        margin: 0 0 1rem;
+        font-size: 2.1rem;
+        font-weight: 800;
+    }
+
+    p {
+        margin: 0 0 1.25rem;
+    }
+
+    code {
+        font-weight: 700;
+    }
+
+    button {
+        padding: 0.7rem 1.4rem;
+        border: 2px solid #fff;
+        border-radius: 8px;
+        background: #2563eb;
+        color: #fff;
+        font: inherit;
+        font-weight: 800;
+        cursor: pointer;
+    }
+
+    #refused {
+        margin-top: 1.25rem;
+        font-weight: 700;
+        color: #fca5a5;
+    }
+</style>
+</head>
+<body>
+<h1>Allow the settings page</h1>
+<p>Lyrics Overlay shows its settings in one tab, at <code>http://localhost:8792/settings</code>
+on this computer. To find that tab and bring it forward it needs access to localhost, which it
+does not have: Firefox grants it only when the add-on is first installed, not with an update,
+and it can be turned off in the add-on's permissions.</p>
+<button id="allow" type="button">Allow, then show the settings</button>
+<p id="refused" hidden>Firefox did not allow it. Press the button to be asked again.</p>
+<script src="settings-access.js"></script>
+<script src="grant.js"></script>
+</body>
+</html>

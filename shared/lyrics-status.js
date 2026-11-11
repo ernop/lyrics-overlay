@@ -1,5 +1,5 @@
 // The words for each lookup state in the service's state (`lyrics`),
-// shown by both the status page and the indicator menu.
+// shown by the settings page.
 
 export const LYRICS_STATUS_TEXT = Object.freeze({
     'idle': 'Waiting for song details',

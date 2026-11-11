@@ -13,7 +13,7 @@ import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {promisify} from 'node:util';
 
-import {isolatedEnv, startBus} from '../isolated-session.mjs';
+import {dconfServiceDir, isolatedEnv, startBus} from '../isolated-session.mjs';
 
 const run = promisify(execFile);
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -57,11 +57,10 @@ export async function startHarness({answers}) {
     const realDconfBefore = fs.statSync(REAL_DCONF).mtimeMs;
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'lyrics-overlay-shell-'));
     const env = isolatedEnv(tmp);
-    fs.mkdirSync(path.join(tmp, 'services'), {mode: 0o700});
+    const services = dconfServiceDir(tmp);
     const artifacts = path.join(root, 'build', 'e2e-artifacts');
     fs.rmSync(artifacts, {recursive: true, force: true});
     fs.mkdirSync(artifacts, {recursive: true});
-    fs.copyFileSync('/usr/share/dbus-1/services/ca.desrt.dconf.service', path.join(tmp, 'services', 'ca.desrt.dconf.service'));
 
     const processes = [];
     const heartbeats = new Set();
@@ -72,7 +71,7 @@ export async function startHarness({answers}) {
             child.kill('SIGTERM');
     };
     try {
-        const sessionBus = await startBus(tmp, 'session', env, path.join(tmp, 'services'));
+        const sessionBus = await startBus(tmp, 'session', env, services);
         processes.push(sessionBus.daemon);
         const systemBus = await startBus(tmp, 'system', env, null);
         processes.push(systemBus.daemon);

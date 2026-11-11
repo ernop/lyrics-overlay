@@ -1,4 +1,4 @@
-// Renders the panel indicator's four icons, large and at their size on a 2x
+// Renders the panel indicator's two icons, large and at their size on a 2x
 // screen, on a dark and a light panel: docs/indicator-icons.png, shown in
 // the README so the indicator can be recognized.
 // Run from the repo root: gjs -m scripts/render-indicator-icons.js
@@ -16,9 +16,7 @@ const DRAWN_COLOR = '#2e3436';
 
 const STATES = [
     {file: 'lyrics-on-symbolic.svg', label: 'Overlay on'},
-    {file: 'lyrics-on-none-symbolic.svg', label: 'On, no timed lyrics'},
     {file: 'lyrics-off-symbolic.svg', label: 'Overlay off'},
-    {file: 'lyrics-off-none-symbolic.svg', label: 'Off, no timed lyrics'},
 ];
 const PANELS = [
     {title: 'On a dark panel', background: [0, 0, 0], ink: '#ffffff'},

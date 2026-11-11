@@ -10,9 +10,11 @@ import {ArchiveSync} from './archive-sync.js';
 import {BrowserCommands} from './browser-commands.js';
 import {LyricsCore} from './core.js';
 import {exportService} from './dbus.js';
-import {startHttp} from './http.js';
+import {loadStaticFiles, startHttp} from './http.js';
 import {createLrclibSearch} from './lrclib.js';
 import {PitchCapture} from './pitch-capture.js';
+import {SettingsStore} from './settings-store.js';
+import {SongKey} from './song-key.js';
 import {JsonStore} from './store.js';
 import {createYtarchiveClient} from './ytarchive.js';
 
@@ -47,6 +49,12 @@ const settings = readSettings(settingsPath());
 const loop = new GLib.MainLoop(null, false);
 const store = new JsonStore(settings.stateDir);
 log(`pruned ${store.pruneSearches(Date.now())} expired searches`);
+const runtimeDir = GLib.build_filenamev([GLib.get_user_runtime_dir(), 'lyrics-overlay']);
+GLib.mkdir_with_parents(runtimeDir, 0o700);
+const look = new SettingsStore({
+    schemaSourceDir: GLib.build_filenamev([projectDir, 'gnome-extension', 'lyrics-overlay@ernop', 'schemas']),
+    compiledDir: GLib.build_filenamev([runtimeDir, 'schemas']),
+});
 
 const timers = {
     set: (callback, delayMs) => GLib.timeout_add(GLib.PRIORITY_DEFAULT, Math.round(delayMs), () => {
@@ -58,6 +66,13 @@ const timers = {
 
 let bus = null;
 let archive = null;
+let songKey = null;
+// The song's key is heard while the microphone runs for a sounding song
+// and the panel stands out a detected scale.
+const syncSongKey = state => {
+    const listening = state.pitch.capturing && state.active && state.sounding && look.get('pitch-scale') === 'detect';
+    songKey?.listen(listening ? state.videoId : null);
+};
 const core = new LyricsCore({
     store,
     search: createLrclibSearch(settings.lrclibBaseUrl),
@@ -67,6 +82,7 @@ const core = new LyricsCore({
         state: state => {
             bus?.emitState(state);
             archive?.observe(state);
+            syncSongKey(state);
         },
         line: line => bus?.emitLine(line),
     },
@@ -83,10 +99,16 @@ if (settings.ytarchiveUrl !== null) {
 }
 
 const pitch = new PitchCapture({
-    configPath: GLib.build_filenamev([serviceDir, 'echo-cancel.conf']),
+    settings: look,
+    runtimeDir,
     onFrames: frames => bus?.emitPitch(frames),
     onStatus: status => core.setPitchStatus(status),
     log,
+});
+songKey = new SongKey({store, onKey: key => core.setSongKey(key), log});
+look.onChanged(name => {
+    if (name === 'pitch-scale')
+        syncSongKey(core.state());
 });
 
 const browser = new BrowserCommands({timers, log});
@@ -107,9 +129,8 @@ bus = exportService({
     },
     log,
 });
-// The extension's icon is the product's one mark, so the favicon is that file.
-const [, favicon] = GLib.file_get_contents(GLib.build_filenamev([projectDir, 'firefox', 'icon.svg']));
-const http = startHttp({port: settings.port, hostname: settings.hostname, favicon, core, browser, log});
+const http = startHttp({port: settings.port, hostname: settings.hostname, files: loadStaticFiles(projectDir),
+    core, browser, settings: look, pitch, log});
 
 for (const signal of [2, 15]) {
     GLibUnix.signal_add(GLib.PRIORITY_DEFAULT, signal, () => {
@@ -120,6 +141,7 @@ for (const signal of [2, 15]) {
 
 loop.run();
 http.disconnect();
+songKey.shutdown();
 pitch.shutdown();
 bus.close();
 // After a logout the bus is gone, and with it anything left to send.

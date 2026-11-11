@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 
 import {
     RATE_LIMIT_DEFAULT_PAUSE_MS, RATE_LIMIT_LONGEST_PAUSE_MS, emptyBudgetState, loadedBudgetState, pauseBudget,
@@ -7,8 +8,8 @@ import {
 } from '../shared/budget.js';
 import {GlitchFilter, PitchDetector, freqToMidi, noteName, voiceMidi} from '../shared/pitch-mpm.js';
 import {
-    balancedWrapWidth, boxFromGeometry, clampBox, fitFontSize, fontSizeAt, geometryFromBox,
-    movedBox, positionOfFontSize, resizedBox,
+    DOCK_GAP, MIN_BOX_HEIGHT, MIN_BOX_WIDTH, balancedWrapWidth, boxFromGeometry, clampBox, dockedPanelBox, edgeResizedBox,
+    fitFontSize, geometryFromBox, movedBox, resizedBox, snappedDock,
 } from '../shared/overlay-geometry.js';
 
 test('budget refuses past any window and names when it reopens', () => {
@@ -92,14 +93,56 @@ test('glitch filter holds a large jump until it is confirmed', () => {
     assert.equal(filter.push({time: 200, midi: 72}).length, 1);
 });
 
-test('font size slider is logarithmic between 16 and 256', () => {
-    assert.equal(fontSizeAt(0), 16);
-    assert.equal(fontSizeAt(1), 256);
-    assert.equal(Math.round(fontSizeAt(0.5)), 64);
-    assert.ok(Math.abs(positionOfFontSize(64) - 0.5) < 1e-9);
+const area = {x: 0, y: 0, width: 2560, height: 1080};
+
+test('a docked pitch panel sits against its side of the lyric, as long as that side', () => {
+    const lyric = {x: 1000, y: 500, width: 800, height: 120};
+    assert.deepEqual(dockedPanelBox(lyric, 'below', 150, area), {x: 1000, y: 620 + DOCK_GAP, width: 800, height: 150});
+    assert.deepEqual(dockedPanelBox(lyric, 'above', 150, area), {x: 1000, y: 500 - DOCK_GAP - 150, width: 800, height: 150});
+    assert.deepEqual(dockedPanelBox(lyric, 'left', 300, area), {x: 1000 - DOCK_GAP - 300, y: 500, width: 300, height: 120});
+    assert.deepEqual(dockedPanelBox(lyric, 'right', 300, area), {x: 1800 + DOCK_GAP, y: 500, width: 300, height: 120});
+    // Short of room it thins to what is left, and at the minimum it overlaps the lyric rather than leave the screen.
+    const low = {x: 1000, y: 900, width: 800, height: 120};
+    assert.equal(dockedPanelBox(low, 'below', 300, area).height, 1080 - (1020 + DOCK_GAP));
+    const bottom = {x: 1000, y: 1000, width: 800, height: 80};
+    assert.deepEqual(dockedPanelBox(bottom, 'below', 300, area), {x: 1000, y: 1080 - MIN_BOX_HEIGHT, width: 800, height: MIN_BOX_HEIGHT});
+    assert.equal(dockedPanelBox({x: 2400, y: 0, width: 160, height: 100}, 'right', 400, area).width, MIN_BOX_WIDTH);
+    assert.throws(() => dockedPanelBox(lyric, 'under', 100, area), /unknown dock/u);
 });
 
-const area = {x: 0, y: 0, width: 2560, height: 1080};
+test('a dragged panel snaps to the lyric side it is dropped against', () => {
+    const lyric = {x: 1000, y: 500, width: 800, height: 120};
+    const near = 24;
+    assert.equal(snappedDock({x: 1100, y: 630, width: 500, height: 150}, lyric, near), 'below');
+    assert.equal(snappedDock({x: 1100, y: 340, width: 500, height: 150}, lyric, near), 'above');
+    assert.equal(snappedDock({x: 1810, y: 480, width: 300, height: 150}, lyric, near), 'right');
+    assert.equal(snappedDock({x: 690, y: 520, width: 300, height: 150}, lyric, near), 'left');
+    assert.equal(snappedDock({x: 1100, y: 700, width: 500, height: 150}, lyric, near), null, 'too far below');
+    assert.equal(snappedDock({x: 100, y: 630, width: 500, height: 150}, lyric, near), null, 'below, but beside the lyric');
+});
+
+test('edge drags resize from that edge, keeping the opposite one and the minimum size', () => {
+    const start = {x: 400, y: 300, width: 600, height: 200};
+    assert.deepEqual(edgeResizedBox(start, {right: true}, 50, 999, area), {x: 400, y: 300, width: 650, height: 200});
+    assert.deepEqual(edgeResizedBox(start, {left: true, top: true}, -100, -50, area), {x: 300, y: 250, width: 700, height: 250});
+    assert.deepEqual(edgeResizedBox(start, {left: true}, 1000, 0, area), {x: 1000 - MIN_BOX_WIDTH, y: 300, width: MIN_BOX_WIDTH, height: 200});
+    assert.deepEqual(edgeResizedBox(start, {bottom: true}, 0, 5000, area), {x: 400, y: 300, width: 600, height: 1080 - 300});
+    assert.deepEqual(edgeResizedBox(start, {top: true}, 0, -1000, area), {x: 400, y: 0, width: 600, height: 500});
+});
+
+test('the default lyric box leaves a panel docked below it its whole default height', () => {
+    const schema = fs.readFileSync(new URL(
+        '../gnome-extension/lyrics-overlay@ernop/schemas/org.gnome.shell.extensions.lyrics-overlay.gschema.xml', import.meta.url), 'utf8');
+    const defaultOf = name => schema.match(new RegExp(`<key name="${name}"[^>]*>[\\s\\S]*?<default>([^<]*)</default>`, 'u'))[1];
+    assert.equal(defaultOf('pitch-dock'), "'below'");
+    const box = JSON.parse(defaultOf('box').replaceAll("'", '"'));
+    const share = Number(defaultOf('pitch-docked-height'));
+    for (const screen of [{x: 0, y: 32, width: 1920, height: 1048}, {x: 0, y: 32, width: 1600, height: 868},
+        {x: 0, y: 0, width: 3840, height: 2112}]) {
+        const panel = dockedPanelBox(boxFromGeometry(box, screen), 'below', share * screen.height, screen);
+        assert.equal(panel.height, share * screen.height, JSON.stringify(screen));
+    }
+});
 
 test('geometry round-trips through monitor fractions', () => {
     const box = boxFromGeometry({cx: 0.5, cy: 0.86, width: 0.6, height: 0.14}, area);

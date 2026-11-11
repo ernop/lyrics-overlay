@@ -1,7 +1,7 @@
 // The lyric overlay: one line in a box above normal windows, hidden over
 // fullscreen windows and in the overview. Only the painted text takes the
-// pointer: a click goes to the song, a right press opens the menu,
-// Ctrl+drag moves the box, Alt+drag resizes it about its center, and
+// pointer: a click goes to the song, a right press opens the settings
+// page, Ctrl+drag moves the box, Alt+drag resizes it about its center, and
 // Ctrl+scroll sizes the text. A click is never part of a drag: a plain
 // press that travels past the drag threshold does nothing.
 
@@ -14,11 +14,9 @@ import PangoCairo from 'gi://PangoCairo';
 import St from 'gi://St';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 
-import {PitchView} from './pitch-view.js';
 import {boxFromGeometry, clampFontSize, geometryFromBox, movedBox, resizedBox} from './shared/overlay-geometry.js';
 import {fitLyric, paintLyric} from './text-layout.js';
 
-const PITCH_SHARE = 0.45;
 const GRIP_MARGIN = 6;
 const SCROLL_STEP_RATIO = 1.06;
 const SCROLL_COMMIT_MS = 500;
@@ -98,7 +96,7 @@ const TextGrip = GObject.registerClass(
 class TextGrip extends St.Widget {
     /**
      * @param {{begin: Function, motion: Function, end: Function, scroll: Function,
-     *          click: () => void, menu: (point: {x: number, y: number}) => void}} handlers
+     *          click: () => void, menu: () => void}} handlers
      */
     _init(handlers) {
         super._init({reactive: true, visible: false});
@@ -120,7 +118,7 @@ class TextGrip extends St.Widget {
             return Clutter.EVENT_STOP;
         const [x, y] = event.get_coords();
         if (event.get_button() === Clutter.BUTTON_SECONDARY) {
-            this._handlers.menu({x, y});
+            this._handlers.menu();
             return Clutter.EVENT_STOP;
         }
         if (event.get_button() !== Clutter.BUTTON_PRIMARY)
@@ -220,17 +218,17 @@ class TextGrip extends St.Widget {
 
 export class LyricsOverlay {
     /**
-     * @param {{settings: Gio.Settings, onClick: () => void,
-     *          onContextMenu: (point: {x: number, y: number}) => void}} options
+     * @param {{settings: Gio.Settings, onClick: () => void, onContextMenu: () => void,
+     *          onBoxChanged: (box: {x: number, y: number, width: number, height: number}, monitorIndex: number) => void}} options
      */
-    constructor({settings, onClick, onContextMenu}) {
+    constructor({settings, onClick, onContextMenu, onBoxChanged}) {
         this._settings = settings;
+        this._onBoxChanged = onBoxChanged;
         this._measure = PangoCairo.FontMap.get_default().create_context();
         this._fontSizePreview = null;
         this._scrollCommitId = 0;
         this._line = {text: '', key: 'none'};
         this._shown = false;
-        this._pitchShown = false;
         this._drag = null;
         this._box = null;
         this._monitorIndex = Main.layoutManager.primaryIndex;
@@ -246,7 +244,6 @@ export class LyricsOverlay {
         this._current = 0;
         for (const layer of this._layers)
             this._textArea.add_child(layer);
-        this._pitch = new PitchView();
         this._outline = new BoxOutline();
         this._grip = new TextGrip({
             begin: (mode, press) => this._dragBegin(mode, press),
@@ -254,9 +251,9 @@ export class LyricsOverlay {
             end: commit => this._dragEnd(commit),
             scroll: steps => this._scrollSize(steps),
             click: () => onClick(),
-            menu: point => onContextMenu(point),
+            menu: () => onContextMenu(),
         });
-        for (const child of [this._textArea, this._pitch, this._outline, this._grip])
+        for (const child of [this._textArea, this._outline, this._grip])
             this._content.add_child(child);
         Main.layoutManager.addChrome(this._root, {trackFullscreen: true});
 
@@ -290,22 +287,13 @@ export class LyricsOverlay {
         this._syncVisible();
     }
 
-    setPitchShown(shown) {
-        if (shown === this._pitchShown)
-            return;
-        this._pitchShown = shown;
-        if (!shown)
-            this._pitch.clear();
-        this._layoutRegions();
+    /** Stage box of the lyric, whether or not it shows. */
+    get box() {
+        return {...this._box};
     }
 
-    pushPitch(frames) {
-        if (this._pitchShown)
-            this._pitch.pushFrames(frames);
-    }
-
-    setPitchStatus(text) {
-        this._pitch.setStatus(text);
+    get monitorIndex() {
+        return this._monitorIndex;
     }
 
     /** @param {{text: string, key: string}} line */
@@ -363,25 +351,12 @@ export class LyricsOverlay {
         const height = Math.round(box.height);
         this._root.set_position(Math.round(box.x), Math.round(box.y));
         if (width !== this._root.width || height !== this._root.height) {
-            this._root.set_size(width, height);
-            this._content.set_size(width, height);
-            this._outline.set_size(width, height);
-            this._layoutRegions();
+            for (const actor of [this._root, this._content, this._outline, this._textArea, ...this._layers])
+                actor.set_size(width, height);
+            this._textSize = {width, height};
+            this._refitText();
         }
-    }
-
-    _layoutRegions() {
-        const width = Math.round(this._box.width);
-        const height = Math.round(this._box.height);
-        const textHeight = this._pitchShown ? Math.round(height * (1 - PITCH_SHARE)) : height;
-        this._textSize = {width, height: textHeight};
-        this._textArea.set_size(width, textHeight);
-        for (const layer of this._layers)
-            layer.set_size(width, textHeight);
-        this._pitch.set_position(0, textHeight);
-        this._pitch.set_size(width, height - textHeight);
-        this._pitch.visible = this._pitchShown;
-        this._refitText();
+        this._onBoxChanged(box, monitorIndex);
     }
 
     _textParams() {
@@ -393,6 +368,7 @@ export class LyricsOverlay {
             bold: this._settings.get_boolean('font-bold'),
             color: this._settings.get_string('text-color'),
             border: this._settings.get_string('text-border'),
+            borderScale: this._settings.get_double('text-border-scale'),
             align: this._settings.get_string('text-align'),
             width: this._textSize.width,
             height: this._textSize.height,
@@ -467,6 +443,7 @@ export class LyricsOverlay {
         case 'font-bold':
         case 'text-color':
         case 'text-border':
+        case 'text-border-scale':
         case 'text-align':
             this._refitText();
             break;

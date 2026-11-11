@@ -78,6 +78,12 @@ export function exportService({core, pitch, browser, onNameLost, log}) {
             }
             browser.send({op: 'focusTab', tabId}).then(result => reply(invocation, result));
         },
+        // Answered when the browser shows its one settings tab (with the
+        // title its window then shows), or when it cannot. The extension
+        // opens only its own fixed address for the page, so none is sent.
+        OpenSettingsAsync(_parameters, invocation) {
+            browser.send({op: 'openSettings'}).then(result => reply(invocation, result));
+        },
     };
 
     const exported = Gio.DBusExportedObject.wrapJSObject(INTERFACE_XML, impl);

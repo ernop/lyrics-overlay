@@ -64,6 +64,17 @@ export class ServiceClient {
         return JSON.parse(json);
     }
 
+    /**
+     * Asks the browser, through the service, to show its one settings tab.
+     * @returns {Promise<{ok: true, windowTitle: string}|{ok: false, error: string}>}
+     */
+    async openSettings() {
+        if (!this._proxy)
+            return {ok: false, error: 'the lyrics service is not running'};
+        const [json] = await this._proxy.OpenSettingsAsync();
+        return JSON.parse(json);
+    }
+
     _connect() {
         this._dropProxy();
         const cancellable = new Gio.Cancellable();

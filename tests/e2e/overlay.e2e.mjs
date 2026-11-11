@@ -56,12 +56,6 @@ function around(rect, margin = 24) {
         height: Math.min(MONITOR.height, rect.y + rect.height + margin) - y};
 }
 
-const panelMenuRect = `(() => {
-    const actor = ${EXTENSION}.stateObj._indicator.menu.actor;
-    const [x, y] = actor.get_transformed_position();
-    return {x, y, width: actor.width, height: actor.height};
-})()`;
-
 function media(currentTime, overrides = {}) {
     return {videoId: VIDEO, currentTime, duration: 180, paused: false, ended: false, stalled: false,
         playbackRate: 1, muted: false, volume: 1, adShowing: false, ...overrides};
@@ -104,13 +98,37 @@ function inputScript(steps) {
             if (!global.stage.get_grab_actor())
                 await frames(3);
         };
+        // The input thread runs ahead of the stage, and a frame re-picks at
+        // where the pointer is by then: motion sent before the stage has
+        // taken a press can carry the press to whatever lies under the new
+        // spot (a drag outward from just inside an edge lands on the window
+        // beyond it). Under a grab the stage is not on the press's path.
+        const pressTaken = () => new Promise((resolve, reject) => {
+            const timeout = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 3000, () => {
+                global.stage.disconnect(id);
+                reject(new Error('the stage never took the press'));
+                return GLib.SOURCE_REMOVE;
+            });
+            const id = global.stage.connect('captured-event', (_stage, event) => {
+                if (event.type() === Clutter.EventType.BUTTON_PRESS) {
+                    global.stage.disconnect(id);
+                    GLib.source_remove(timeout);
+                    resolve();
+                }
+                return Clutter.EVENT_PROPAGATE;
+            });
+        });
         if (!globalThis.__lyricsPointerReady) {
             await moveTo(400, 0);
             globalThis.__lyricsPointerReady = true;
         }
         for (const step of ${JSON.stringify(steps)}) {
             if (step.move) await moveTo(step.move[0], step.move[1]);
-            if (step.button) pointer.notify_button(now(), step.button, step.down ? Clutter.ButtonState.PRESSED : Clutter.ButtonState.RELEASED);
+            if (step.button) {
+                const taken = step.down && !global.stage.get_grab_actor() ? pressTaken() : null;
+                pointer.notify_button(now(), step.button, step.down ? Clutter.ButtonState.PRESSED : Clutter.ButtonState.RELEASED);
+                await taken;
+            }
             if (step.key) keyboard.notify_keyval(now(), Clutter[step.key], step.down ? Clutter.KeyState.PRESSED : Clutter.KeyState.RELEASED);
             if (step.scroll) pointer.notify_discrete_scroll(now(), Clutter.ScrollDirection[step.scroll], Clutter.ScrollSource.WHEEL);
             await wait(step.wait ?? 16);
@@ -145,13 +163,39 @@ const overlayFacts = `(() => {
         align: layer.fitted?.spec.align ?? null,
         fill: layer.fitted?.fill.join(',') ?? null,
         ring: layer.fitted ? [layer.fitted.ring.inner > 0, layer.fitted.ring.outer > 0] : null,
+        ringInner: layer.fitted?.ring.inner ?? null,
         ink: layer.fitted?.inkBox ?? null,
         layerWidth: layer.width,
         box: {x: overlay._root.x, y: overlay._root.y, width: overlay._root.width, height: overlay._root.height},
         grip: {visible: overlay._grip.visible, x: gx, y: gy, width: overlay._grip.width, height: overlay._grip.height},
-        pitchVisible: overlay._pitch.visible,
     };
 })()`;
+
+const panelFacts = `(() => {
+    const panel = ${EXTENSION}.stateObj._pitchPanel;
+    return {visible: panel._root.visible && panel._frame.visible, box: panel.box,
+        status: panel._view._status, lineWidth: panel._view._look.lineWidth};
+})()`;
+
+const notifications = `(async () => {
+    const {getSystemSource} = await import('resource:///org/gnome/shell/ui/messageTray.js');
+    return getSystemSource().notifications.map(notification => ({title: notification.title, body: notification.body}));
+})()`;
+
+/** Six seconds of a rising sung line, in the service's 100 ms batches. */
+function risingFrames(base) {
+    const batches = [];
+    for (let at = 100; at <= 6000; at += 100) {
+        const samples = [];
+        for (let t = at - 80; t <= at; t += 20)
+            samples.push({t: base + t, midi: 57 + Math.floor(t / 750) + 0.15 * Math.sin(t / 40)});
+        batches.push({at: base + at, voiced: true, samples});
+    }
+    return batches;
+}
+
+/** Boxes are kept in fractional pixels and drawn at whole ones. */
+const near = (a, b) => Math.abs(a - b) <= 1;
 
 const indicatorFacts = `(() => {
     const indicator = Main.panel.statusArea['lyrics-overlay@ernop'];
@@ -161,30 +205,7 @@ const indicatorFacts = `(() => {
         box: ['left', 'center', 'right'].find(name => Main.panel['_' + name + 'Box'].contains(indicator.container)) ?? null,
         lastInBox: indicator.container.get_parent()?.get_last_child() === indicator.container,
         x, y, width: indicator.width, height: indicator.height,
-        icon: indicator._icon.gicon.get_file().get_basename(), menuOpen: indicator.menu.isOpen};
-})()`;
-
-const lyricMenuFacts = `(() => {
-    const lyricMenu = ${EXTENSION}.stateObj._lyricMenu;
-    const menu = lyricMenu._contents._menu;
-    const rect = actor => {
-        const [x, y] = actor.get_transformed_position();
-        return {x, y, width: actor.width, height: actor.height};
-    };
-    // Sections are not items; they hold items of their own.
-    const flatten = items => items.flatMap(item => !item._getMenuItems ? [item] : item.actor.visible ? flatten(item._getMenuItems()) : []);
-    const labels = flatten(menu._getMenuItems()).filter(item => item.visible && item.label?.text).map(item => item.label);
-    return {
-        open: lyricMenu.isOpen,
-        // The open animation fades the menu in while it slides and grows into place.
-        settled: menu.actor.opacity === 255 && !menu.actor.get_transition('opacity'),
-        // The frame; the item box sits inside its border.
-        box: rect(menu.actor),
-        pitch: rect(lyricMenu._contents._pitchItem),
-        items: labels.map(label => label.text),
-        help: lyricMenu._contents._helpItem.menu._getMenuItems().map(item => item.label.text),
-        ink: labels.map(label => label.get_theme_node().get_foreground_color()).map(color => [color.red, color.green, color.blue].join(',')),
-    };
+        icon: indicator._icon.gicon.get_file().get_basename()};
 })()`;
 
 const focusedTitle = 'global.display.focus_window?.get_title() ?? null';
@@ -225,12 +246,11 @@ async function overlayScenario(h) {
     assert.equal(indicator.icon, 'lyrics-off-symbolic.svg');
     assert.equal((await h.evalJs(overlayFacts)).visible, false, 'the overlay is opt-in');
 
-    // A left press toggles the overlay on; the menu stays closed.
+    // A left press toggles the overlay on.
     await h.evalJs(inputScript([{move: center(indicator)}, {button: 1, down: true}, {button: 1, down: false, wait: 100}]));
     await h.waitFor(async () => (await h.gsettings.get('overlay-enabled')) === 'true', 'the toggle to persist');
     const shown = await h.evalJs(overlayFacts);
     assert.equal(shown.visible, true);
-    assert.equal((await h.evalJs(indicatorFacts)).menuOpen, false);
     assert.equal((await h.evalJs(indicatorFacts)).icon, 'lyrics-on-symbolic.svg');
 
     // No introduction naming the song: the box is blank until the first lyric.
@@ -242,7 +262,8 @@ async function overlayScenario(h) {
     await h.screenshot('readme-line', around(line.box));
     assert.equal(line.grip.visible, true);
     assert.equal(line.opacity, 255);
-    // The default box: centered, 86% down the work area.
+    // The default box: centered, high enough that the pitch panel docked
+    // below it gets its whole default height.
     assert.ok(Math.abs(line.box.x + line.box.width / 2 - MONITOR.width / 2) <= 1, JSON.stringify(line.box));
 
     // A plain drag on the lyric does nothing.
@@ -281,6 +302,16 @@ async function overlayScenario(h) {
     const centered = await h.evalJs(overlayFacts);
     assert.deepEqual([centered.align, centered.fill, centered.ring], ['center', '1,1,1', [true, true]]);
     assert.ok(Math.abs(centered.ink.x + centered.ink.width / 2 - centered.layerWidth / 2) < 12, JSON.stringify(centered));
+    // The border thickness scales the rings (the double border's inner one
+    // is 5.5% of the size at 1x).
+    assert.ok(Math.abs(centered.ringInner - Math.max(1.5, centered.fontSize * 0.055)) < 0.01, JSON.stringify(centered));
+    await h.gsettings.set('text-border-scale', '2.5');
+    await h.waitFor(async () => {
+        const facts = await h.evalJs(overlayFacts);
+        return Math.abs(facts.ringInner - 2.5 * Math.max(1.5, facts.fontSize * 0.055)) < 0.01;
+    }, 'the thicker border');
+    await h.screenshot('overlay-thick-border');
+    await h.gsettings.reset('text-border-scale');
     await h.gsettings.set('text-align', "'left'");
     await h.gsettings.set('text-color', "'yellow'");
     await h.gsettings.set('text-border', "'single'");
@@ -306,141 +337,115 @@ async function overlayScenario(h) {
     await h.evalJs('Main.overview.hide(); true');
     await h.waitFor(async () => (await h.evalJs(overlayFacts)).visible, 'the overlay to return');
 
-    // A right press opens the menu; its neutral text is pure black or white.
-    await h.evalJs(inputScript([{move: center(indicator)}, {button: 3, down: true}, {button: 3, down: false, wait: 150}]));
-    assert.equal((await h.evalJs(indicatorFacts)).menuOpen, true);
-    assert.equal(await h.gsettings.get('overlay-enabled'), 'true', 'a right press does not toggle');
-    const ink = await h.evalJs(`(() => {
-        const menu = ${EXTENSION}.stateObj._indicator._lyricsMenu;
-        const colors = [menu._identityItem.label, menu._statusItem.label, menu._sizeLabel, menu._offsetLabel]
-            .map(label => label.get_theme_node().get_foreground_color())
-            .map(color => [color.red, color.green, color.blue].join(','));
-        return {colors, identity: menu._identityItem.label.text, status: menu._statusItem.label.text};
-    })()`);
-    assert.equal(new Set(ink.colors).size, 1, ink.colors.join(' '));
-    assert.ok(['0,0,0', '255,255,255'].includes(ink.colors[0]), ink.colors[0]);
-    assert.equal(ink.identity, 'Stub Band - Stub Song - 2003 - Stub Album');
-    assert.match(ink.status, /^Timed lyrics: Stub Band - Stub Song - Stub Album - 3:00$/u);
-    await h.screenshot('menu');
-
-    // Too slow, pressed in the menu, moves the song's offset and keeps the menu open.
-    const tooSlow = await h.evalJs(`(() => {
-        const button = ${EXTENSION}.stateObj._indicator._lyricsMenu._timingItem.get_children().find(child => child.child?.text === 'Too slow');
-        const [x, y] = button.get_transformed_position();
-        return {x, y, width: button.width, height: button.height};
-    })()`);
-    await h.evalJs(inputScript([{move: center(tooSlow)}, {button: 1, down: true}, {button: 1, down: false, wait: 150}]));
-    await h.waitFor(async () => (await h.evalJs(`${EXTENSION}.stateObj._state.offsetSeconds`)) === 0.5, 'the offset');
-    assert.equal((await h.evalJs(indicatorFacts)).menuOpen, true);
-    assert.equal(await h.evalJs(`${EXTENSION}.stateObj._indicator._lyricsMenu._offsetLabel.text`), '+0.5 s');
-
-    // Choosing the other lyric set switches to it and is remembered.
-    await h.evalJs(`${EXTENSION}.stateObj._client.command({op: 'choose', id: 78}); true`);
-    await h.waitFor(async () => (await h.evalJs(`${EXTENSION}.stateObj._state.chosen?.id`)) === 78, 'the chosen set');
-    assert.match(await h.evalJs(`${EXTENSION}.stateObj._indicator._lyricsMenu._statusItem.label.text`), /your choice/u);
-
-    // The font submenu: Bold, the desktop font, then the installed families
-    // in runs by kind with a line between runs, each name in its own font.
-    // However long, the list opens whole and the menu body scrolls it; the
-    // menu stays on the screen.
-    await h.evalJs(`${EXTENSION}.stateObj._indicator._lyricsMenu._fontItem.setSubmenuShown(true); true`);
-    await sleep(600);
-    const fontMenu = await h.evalJs(`(() => {
-        const contents = ${EXTENSION}.stateObj._indicator._lyricsMenu;
-        const submenu = contents._fontItem.menu;
-        const families = new Map([...contents._familyItems].map(([family, item]) => [item, family]));
-        const shape = submenu._getMenuItems().map(item => item === contents._boldItem ? 'b'
-            : item.has_style_class_name('popup-separator-menu-item') ? 's' : families.get(item) === '' ? 'd' : families.has(item) ? 'f' : '?').join('');
-        const [, menuY] = contents._menu.box.get_transformed_position();
-        // Scrolled to the Font row, for the screenshot.
-        const body = contents._fontItem.get_parent().get_parent();
-        body.vadjustment.value = contents._fontItem.get_allocation_box().y1;
-        // The list's box is a viewport, as tall as what shows of it; its preferred height is the whole list.
-        const [, list] = submenu.box.get_preferred_height(submenu.box.width);
-        return {shape, shown: submenu.actor.height, list, menuBottom: menuY + contents._menu.box.height,
-            ownFont: [...families].filter(([, family]) => family).every(([item, family]) => item.label.get_theme_node().get_font().get_family() === family)};
-    })()`);
-    assert.match(fontMenu.shape, /^bd(sf+)+$/u, fontMenu.shape);
-    assert.ok(fontMenu.ownFont, 'each family name is drawn in its family');
-    assert.ok(fontMenu.shown >= fontMenu.list, `the font submenu shows ${fontMenu.shown} px of its ${fontMenu.list} px list`);
-    assert.ok(fontMenu.menuBottom <= MONITOR.height, `the menu ends at ${fontMenu.menuBottom}`);
-    await h.evalJs(inputScript([{move: [MONITOR.width - 2, MONITOR.height - 2], wait: 200}]));
-    await h.screenshot('font-menu');
-    await h.screenshot('readme-fonts', around(await h.evalJs(panelMenuRect), 8));
-    await h.evalJs(`${EXTENSION}.stateObj._indicator._lyricsMenu._fontItem.setSubmenuShown(false); true`);
-    await h.evalJs(`${EXTENSION}.stateObj._indicator.menu.close(); true`);
-
-    // The light style (this desktop's) gets pure black ink.
-    await h.gsettings.setDesktop('org.gnome.desktop.interface', 'color-scheme', 'prefer-light');
-    await h.waitFor(async () => (await h.evalJs('Main.getStyleVariant()')) === 'light', 'the light style');
-    await h.evalJs(`${EXTENSION}.stateObj._indicator.menu.open(); true`);
-    await sleep(300);
-    const lightInk = await h.evalJs(`(() => {
-        const menu = ${EXTENSION}.stateObj._indicator._lyricsMenu;
-        return [menu._identityItem.label, menu._statusItem.label, menu._sizeLabel, menu._offsetLabel]
-            .map(label => label.get_theme_node().get_foreground_color())
-            .map(color => [color.red, color.green, color.blue].join(','));
-    })()`);
-    assert.deepEqual(new Set(lightInk), new Set(['0,0,0']), lightInk.join(' '));
-    await h.screenshot('menu-light');
-    await h.screenshot('readme-menu', around(await h.evalJs(panelMenuRect), 8));
-    await h.evalJs(`${EXTENSION}.stateObj._indicator.menu.close(); true`);
-
-    // A right press on the lyric opens the same menu at the pointer, whole on
-    // the screen and in pure black ink on this light style. The chosen set's
-    // only line is gone 8 s into the song, so the presses on the lyric use the
-    // first set again, whose second line holds for half a minute.
-    await h.evalJs(`${EXTENSION}.stateObj._client.command({op: 'choose', id: 77}); true`);
-    const lyric = await h.waitFor(async () => {
+    // A right press on the indicator, the lyric or the pitch panel asks the
+    // browser for its one settings tab, then raises the window showing it.
+    const songWindow = 'Stub Song - YouTube — Mozilla Firefox';
+    const settingsWindow = 'Lyrics overlay settings — Mozilla Firefox';
+    for (const title of [songWindow, settingsWindow, 'Another window'])
+        await h.openWindow(title);
+    const focusAnotherWindow = async () => {
+        await h.evalJs(`(() => {
+            Main.activateWindow(global.display.list_all_windows().find(window => window.get_title() === 'Another window'));
+            return true;
+        })()`);
+        await h.waitFor(async () => (await h.evalJs(focusedTitle)) === 'Another window', 'the other window to take focus');
+    };
+    const lyricShowing = () => h.waitFor(async () => {
         const facts = await h.evalJs(overlayFacts);
-        return facts.grip.visible && facts.text === 'Second line arrives here' && facts;
-    }, 'the second line to show');
-    const pressedAt = center(lyric.grip);
-    await h.evalJs(inputScript([{move: pressedAt}, {button: 3, down: true}, {button: 3, down: false}]));
-    const lyricMenu = await h.waitFor(async () => {
-        const facts = await h.evalJs(lyricMenuFacts);
-        return facts.open && facts.settled && facts;
-    }, 'the lyric menu to open');
-    assert.equal((await h.evalJs(indicatorFacts)).menuOpen, false, 'the panel menu stays closed');
-    assert.equal(await h.gsettings.get('overlay-enabled'), 'true', 'a right press on the lyric does not toggle');
-    assert.ok(lyricMenu.box.y >= 0 && lyricMenu.box.y + lyricMenu.box.height <= MONITOR.height, JSON.stringify(lyricMenu.box));
-    assert.ok(lyricMenu.box.x <= pressedAt[0] && pressedAt[0] <= lyricMenu.box.x + lyricMenu.box.width,
-        `the menu ${JSON.stringify(lyricMenu.box)} is not at the press ${pressedAt}`);
-    assert.deepEqual(new Set(lyricMenu.ink), new Set(['0,0,0']), lyricMenu.ink.join(' '));
-    assert.deepEqual(lyricMenu.items.slice(0, 2), ['Lyrics overlay', 'Pitch trace from the microphone']);
-    for (const label of ['Go to the song in Firefox', 'Mouse controls on the lyric'])
-        assert.ok(lyricMenu.items.includes(label), `missing "${label}" in ${lyricMenu.items.join(' | ')}`);
-    assert.deepEqual(lyricMenu.help, ['Click the lyric to go to the song', 'Right-click the lyric for this menu',
-        'Ctrl+drag the lyric to move it', 'Alt+drag the lyric to resize its box', 'Ctrl+scroll on the lyric to size the text']);
-    await h.screenshot('lyric-menu');
+        return facts.grip.visible && facts.text !== '' && facts;
+    }, 'a lyric to show');
+    const rightPressOpensSettings = async (point, what) => {
+        await focusAnotherWindow();
+        const answered = h.answerNextCommand(() => ({ok: true, windowTitle: settingsWindow}));
+        await h.evalJs(inputScript([{move: point}, {button: 3, down: true}, {button: 3, down: false, wait: 100}]));
+        assert.equal((await answered).op, 'openSettings', what);
+        await h.waitFor(async () => (await h.evalJs(focusedTitle)) === settingsWindow, `the settings window to be raised (${what})`);
+    };
+    await rightPressOpensSettings(center(indicator), 'indicator');
+    assert.equal(await h.gsettings.get('overlay-enabled'), 'true', 'a right press does not toggle');
+    await rightPressOpensSettings(center((await lyricShowing()).grip), 'lyric');
 
-    // Its pitch switch turns the trace on and leaves the menu open. The
-    // trace asks for the microphone; with no PipeWire here the service
-    // reports the failure instead of retrying.
-    await h.evalJs(inputScript([{move: center(lyricMenu.pitch)}, {button: 1, down: true}, {button: 1, down: false, wait: 150}]));
-    await h.waitFor(async () => (await h.gsettings.get('pitch-enabled')) === 'true', 'the pitch switch to persist');
-    assert.equal((await h.evalJs(lyricMenuFacts)).open, true);
-    await h.evalJs(`${EXTENSION}.stateObj._lyricMenu.close(); true`);
-    await h.waitFor(async () => (await h.evalJs(overlayFacts)).pitchVisible, 'the pitch strip');
+    // When no browser answers, a notification says why and where the page is.
+    await h.evalJs(inputScript([{move: center(indicator)}, {button: 3, down: true}, {button: 3, down: false, wait: 100}]));
+    const notice = await h.waitFor(async () => (await h.evalJs(notifications))
+        .find(notification => notification.title === 'Lyrics overlay settings did not open'), 'the notification');
+    assert.equal(notice.body, 'The browser extension is not listening. The page is http://localhost:8792/settings');
+
+    // The pitch panel is off until switched on; then it docks below the
+    // lyric, as wide as it. It asks for the microphone; with no PipeWire
+    // here the service reports the failure instead of retrying.
+    assert.equal((await h.evalJs(panelFacts)).visible, false);
+    await h.gsettings.set('pitch-enabled', 'true');
+    const below = await h.waitFor(async () => {
+        const facts = await h.evalJs(panelFacts);
+        return facts.visible && facts;
+    }, 'the pitch panel');
+    const lyricBox = (await h.evalJs(overlayFacts)).box;
+    assert.ok(near(below.box.x, lyricBox.x) && near(below.box.width, lyricBox.width) &&
+        near(below.box.y, lyricBox.y + lyricBox.height + 4) && below.box.height >= 48, JSON.stringify([below.box, lyricBox]));
     await h.waitFor(async () => Boolean(await h.evalJs(`${EXTENSION}.stateObj._state.pitch.error`)), 'the microphone error', 15000);
-    assert.match(await h.evalJs(`${EXTENSION}.stateObj._overlay._pitch._status`), /^Microphone stopped: \S/u);
-    await h.screenshot('overlay-pitch');
+    assert.match((await h.evalJs(panelFacts)).status, /^Microphone stopped: \S/u);
+    await h.evalJs(`(() => {
+        for (const frames of ${JSON.stringify(risingFrames(1_000_000))})
+            ${EXTENSION}.stateObj._pitchPanel.pushFrames(frames);
+        return true;
+    })()`);
+    await sleep(200);
+    await h.screenshot('pitch-docked-below');
+
+    // Placement and look changes from the settings page apply at once.
+    await h.gsettings.set('pitch-dock', "'above'");
+    const above = await h.waitFor(async () => {
+        const facts = await h.evalJs(panelFacts);
+        return near(facts.box.y + facts.box.height + 4, lyricBox.y) && facts;
+    }, 'the panel to dock above the lyric');
+    await h.gsettings.set('pitch-line-width', '0.5');
+    await h.waitFor(async () => (await h.evalJs(panelFacts)).lineWidth === 0.5, 'the thin line');
+
+    // Dragging a docked panel's outer edge sets how thick it is.
+    const thickness = Number(await h.gsettings.get('pitch-docked-height'));
+    await h.evalJs(drag({from: [above.box.x + above.box.width / 2, above.box.y + 3], by: [0, -40]}));
+    await h.waitFor(async () => Number(await h.gsettings.get('pitch-docked-height')) > thickness, 'the thicker panel to persist');
+    const thicker = await h.evalJs(panelFacts);
+    assert.ok(near(thicker.box.height, above.box.height + 40) && near(thicker.box.y + thicker.box.height + 4, lyricBox.y),
+        JSON.stringify([above.box, thicker.box]));
+
+    // Dragging it away makes it separate, where it was dropped.
+    await h.evalJs(drag({from: center(thicker.box), by: [0, -200]}));
+    await h.waitFor(async () => (await h.gsettings.get('pitch-dock')) === "'separate'", 'the panel to come apart');
+    const separate = await h.evalJs(panelFacts);
+    assert.ok(near(separate.box.y, thicker.box.y - 200) && near(separate.box.x, thicker.box.x), JSON.stringify(separate.box));
+
+    // A separate panel resizes from its edges.
+    await h.evalJs(drag({from: [separate.box.x + separate.box.width - 3, separate.box.y + separate.box.height / 2], by: [-100, 0]}));
+    const narrower = await h.waitFor(async () => {
+        const facts = await h.evalJs(panelFacts);
+        return near(facts.box.width, separate.box.width - 100) && facts;
+    }, 'the narrower panel');
+    assert.ok(near(narrower.box.x, separate.box.x), JSON.stringify(narrower.box));
+    await h.screenshot('pitch-separate');
+
+    // Dropped just above the lyric, it docks there again.
+    const dropBy = lyricBox.y - 4 - 10 - (narrower.box.y + narrower.box.height);
+    await h.evalJs(drag({from: center(narrower.box), by: [0, dropBy]}));
+    await h.waitFor(async () => (await h.gsettings.get('pitch-dock')) === "'above'", 'the panel to dock again');
+    const docked = await h.evalJs(panelFacts);
+    assert.ok(near(docked.box.width, lyricBox.width) && near(docked.box.y + docked.box.height + 4, lyricBox.y), JSON.stringify(docked.box));
+
+    await rightPressOpensSettings(center(docked.box), 'pitch panel');
+
+    // The overview hides the panel too.
+    await h.evalJs('Main.overview.show(); true');
+    await h.waitFor(async () => !(await h.evalJs(panelFacts)).visible, 'the panel to hide in the overview');
+    await h.evalJs('Main.overview.hide(); true');
+    await h.waitFor(async () => (await h.evalJs(panelFacts)).visible, 'the panel to return');
     await h.gsettings.set('pitch-enabled', 'false');
+    await h.waitFor(async () => !(await h.evalJs(panelFacts)).visible, 'the panel to hide when switched off');
 
     // A click on the lyric has the browser extension select the song's tab,
     // then raises the window showing it.
-    const songWindow = 'Stub Song - YouTube — Mozilla Firefox';
-    await h.openWindow(songWindow);
-    await h.openWindow('Another window');
-    await h.evalJs(`(() => {
-        Main.activateWindow(global.display.list_all_windows().find(window => window.get_title() === 'Another window'));
-        return true;
-    })()`);
-    await h.waitFor(async () => (await h.evalJs(focusedTitle)) === 'Another window', 'the other window to take focus');
-    const beforeClick = await h.waitFor(async () => {
-        const facts = await h.evalJs(overlayFacts);
-        return facts.grip.visible && facts.text === 'Second line arrives here' && facts;
-    }, 'the second line to show');
+    await focusAnotherWindow();
+    const beforeClick = await lyricShowing();
     const commandAnswered = h.answerNextCommand(() => ({ok: true, windowTitle: songWindow}));
     await h.evalJs(inputScript([{move: center(beforeClick.grip)}, {button: 1, down: true}, {button: 1, down: false, wait: 100}]));
     const command = await commandAnswered;
@@ -448,12 +453,15 @@ async function overlayScenario(h) {
     await h.waitFor(async () => (await h.evalJs(focusedTitle)) === songWindow, 'the song window to be raised');
     await h.screenshot('lyric-click-raised-song-window');
 
-    // Disable and enable leave exactly one overlay and indicator.
+    // Disable and enable leave exactly one overlay, pitch panel and indicator.
+    const chromeCounts = `['lyricsOverlay', 'lyricsPitchPanel'].map(name =>
+        Main.layoutManager.uiGroup.get_children().filter(child => child.name === name).length)`;
     await h.evalJs(`Main.extensionManager.disableExtension('lyrics-overlay@ernop')`);
-    assert.equal(await h.evalJs(`Main.layoutManager.uiGroup.get_children().filter(child => child.name === 'lyricsOverlay').length`), 0);
+    assert.deepEqual(await h.evalJs(chromeCounts), [0, 0]);
+    assert.equal(await h.evalJs(`Main.panel.statusArea['lyrics-overlay@ernop'] ?? null`), null);
     await h.evalJs(`Main.extensionManager.enableExtension('lyrics-overlay@ernop')`);
     await h.waitFor(async () => (await h.evalJs(`${EXTENSION}.stateObj?._state?.lyrics`)) === 'timed', 'state after re-enable');
-    assert.equal(await h.evalJs(`Main.layoutManager.uiGroup.get_children().filter(child => child.name === 'lyricsOverlay').length`), 1);
+    assert.deepEqual(await h.evalJs(chromeCounts), [1, 1]);
 
     // The indicator leaves with the service and returns with it.
     playing.stop();

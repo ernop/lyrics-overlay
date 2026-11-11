@@ -43,6 +43,11 @@
       <default>'double'</default>
       <summary>Rings around the letters: black or white, whichever contrasts more with the letter color, then the other</summary>
     </key>
+    <key name="text-border-scale" type="d">
+      <range min="0.25" max="4"/>
+      <default>1</default>
+      <summary>Ring thickness as a multiple of the standard width for the text size</summary>
+    </key>
     <key name="text-align" type="s">
       <choices>
         <choice value="center"/>
@@ -62,10 +67,170 @@
     </key>
     <key name="pitch-enabled" type="b">
       <default>false</default>
-      <summary>Show a trace of the sung pitch from the microphone under the lyric</summary>
+      <summary>Show the pitch panel, a trace of the sung pitch from the microphone, while a song plays</summary>
+    </key>
+    <key name="pitch-dock" type="s">
+      <choices>
+        <choice value="below"/>
+        <choice value="above"/>
+        <choice value="left"/>
+        <choice value="right"/>
+        <choice value="separate"/>
+      </choices>
+      <default>'below'</default>
+      <summary>Where the pitch panel sits: against a side of the lyric box, or separate (pitch-box)</summary>
+    </key>
+    <key name="pitch-docked-height" type="d">
+      <range min="0.03" max="0.6"/>
+      <default>0.16</default>
+      <summary>Height of the pitch panel docked above or below the lyric, as a fraction of the work area height</summary>
+    </key>
+    <key name="pitch-docked-width" type="d">
+      <range min="0.05" max="0.6"/>
+      <default>0.2</default>
+      <summary>Width of the pitch panel docked left or right of the lyric, as a fraction of the work area width</summary>
+    </key>
+    <key name="pitch-box" type="a{sd}">
+      <default>{'cx': 0.5, 'cy': 0.5, 'width': 0.4, 'height': 0.2}</default>
+      <summary>Separate pitch panel center and size as fractions of its monitor's work area</summary>
+    </key>
+    <key name="pitch-box-monitor" type="i">
+      <default>-1</default>
+      <summary>Monitor index of the separate pitch panel; -1 follows the primary monitor</summary>
+    </key>
+    <key name="pitch-range" type="s">
+      <choices>
+        <choice value="fixed"/>
+        <choice value="follow"/>
+      </choices>
+      <default>'fixed'</default>
+      <summary>Notes shown: fixed from pitch-range-bottom to pitch-range-top, or pitch-follow-span semitones following the voice</summary>
+    </key>
+    <key name="pitch-range-bottom" type="i">
+      <range min="24" max="96"/>
+      <default>48</default>
+      <summary>Lowest note of the fixed range as a MIDI note number (48 is C3, 60 is middle C)</summary>
+    </key>
+    <key name="pitch-range-top" type="i">
+      <range min="24" max="96"/>
+      <default>72</default>
+      <summary>Highest note of the fixed range as a MIDI note number (72 is C5); at least 6 above the bottom</summary>
+    </key>
+    <key name="pitch-follow-span" type="i">
+      <range min="6" max="36"/>
+      <default>14</default>
+      <summary>Semitones shown when the range follows the voice</summary>
+    </key>
+    <key name="pitch-window-seconds" type="d">
+      <range min="2" max="120"/>
+      <default>6</default>
+      <summary>Seconds of singing across the panel</summary>
+    </key>
+    <key name="pitch-time-in-silence" type="b">
+      <default>true</default>
+      <summary>The trace keeps scrolling through silences; off, it stops 0.4 s into a pause</summary>
+    </key>
+    <key name="pitch-line-width" type="d">
+      <range min="0.5" max="12"/>
+      <default>2</default>
+      <summary>Pitch trace thickness in pixels</summary>
+    </key>
+    <key name="pitch-line-color" type="s">
+      <default>'#facc15'</default>
+      <summary>Pitch trace color as #rrggbb</summary>
+    </key>
+    <key name="pitch-background-opacity" type="d">
+      <range min="0" max="1"/>
+      <default>0.62</default>
+      <summary>Opacity of the panel's black background</summary>
+    </key>
+    <key name="pitch-labels" type="s">
+      <choices>
+        <choice value="all"/>
+        <choice value="scale"/>
+        <choice value="c"/>
+        <choice value="none"/>
+      </choices>
+      <default>'all'</default>
+      <summary>Which note lines carry their name; names that would collide give way to scale notes</summary>
+    </key>
+    <key name="pitch-label-size" type="d">
+      <range min="8" max="32"/>
+      <default>12</default>
+      <summary>Note name size in pixels</summary>
+    </key>
+    <key name="pitch-scale" type="s">
+      <choices>
+        <choice value="detect"/>
+        <choice value="fixed"/>
+        <choice value="none"/>
+      </choices>
+      <default>'detect'</default>
+      <summary>Scale whose note lines stand out: detected from the song's audio, fixed (pitch-scale-root, pitch-scale-type), or none</summary>
+    </key>
+    <key name="pitch-scale-root" type="i">
+      <range min="0" max="11"/>
+      <default>0</default>
+      <summary>Root of the fixed scale as a pitch class (0 is C, 7 is G)</summary>
+    </key>
+    <key name="pitch-scale-type" type="s">
+      <choices>
+        <choice value="major"/>
+        <choice value="minor"/>
+        <choice value="harmonic-minor"/>
+        <choice value="melodic-minor"/>
+        <choice value="dorian"/>
+        <choice value="phrygian"/>
+        <choice value="lydian"/>
+        <choice value="mixolydian"/>
+        <choice value="major-pentatonic"/>
+        <choice value="minor-pentatonic"/>
+        <choice value="blues"/>
+      </choices>
+      <default>'major'</default>
+      <summary>Type of the fixed scale</summary>
+    </key>
+    <key name="pitch-show-key" type="b">
+      <default>true</default>
+      <summary>Name the scale in the panel's corner</summary>
+    </key>
+    <key name="pitch-readout" type="s">
+      <choices>
+        <choice value="right"/>
+        <choice value="left"/>
+        <choice value="top-right"/>
+        <choice value="top-left"/>
+        <choice value="bottom-right"/>
+        <choice value="bottom-left"/>
+        <choice value="off"/>
+      </choices>
+      <default>'right'</default>
+      <summary>Where the current note shows: a column at a side, a corner over the trace, or nowhere</summary>
+    </key>
+    <key name="pitch-readout-size" type="d">
+      <range min="0.15" max="1"/>
+      <default>0.5</default>
+      <summary>Current note height as a fraction of the panel height</summary>
+    </key>
+    <key name="pitch-readout-cents" type="b">
+      <default>false</default>
+      <summary>Show how many cents the voice is off the current note</summary>
+    </key>
+    <key name="pitch-rate" type="i">
+      <range min="10" max="100"/>
+      <default>50</default>
+      <summary>Pitch analyses per second</summary>
+    </key>
+    <key name="pitch-microphone" type="s">
+      <default>''</default>
+      <summary>PipeWire node name of the microphone; empty means the system's default input</summary>
+    </key>
+    <key name="pitch-echo-cancel" type="b">
+      <default>true</default>
+      <summary>Subtract what the speakers play from the microphone, so the trace follows the singer instead of the song</summary>
     </key>
     <key name="box" type="a{sd}">
-      <default>{'cx': 0.5, 'cy': 0.86, 'width': 0.6, 'height': 0.14}</default>
+      <default>{'cx': 0.5, 'cy': 0.75, 'width': 0.6, 'height': 0.14}</default>
       <summary>Overlay box center and size as fractions of its monitor's work area</summary>
     </key>
     <key name="box-monitor" type="i">

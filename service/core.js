@@ -91,6 +91,8 @@ export class LyricsCore {
         this._lastState = '';
         this._lastLine = {text: '', key: 'none'};
         this._pitch = {capturing: false, error: '', microphone: ''};
+        /** @type {{videoId: string, root: number, type: 'major'|'minor'}|null} */
+        this._songKey = null;
     }
 
     // ----- browser reports
@@ -196,6 +198,12 @@ export class LyricsCore {
     /** @param {{capturing: boolean, error: string, microphone: string}} pitch */
     setPitchStatus(pitch) {
         this._pitch = {capturing: pitch.capturing, error: pitch.error, microphone: pitch.microphone};
+        this._refresh();
+    }
+
+    /** The key heard in a video's sound (song-key.js), or null when nothing is listening. */
+    setSongKey(key) {
+        this._songKey = key && {videoId: key.videoId, root: key.root, type: key.type};
         this._refresh();
     }
 
@@ -491,7 +499,7 @@ export class LyricsCore {
         const session = this._activeSession();
         if (!session) {
             return JSON.stringify({active: false, sounding: false, videoId: null, identityText: '', musical: false,
-                lyrics: 'idle', chosen: null, userChose: false, offsetSeconds: 0, candidates: [], pitch: this._pitch});
+                lyrics: 'idle', chosen: null, userChose: false, offsetSeconds: 0, candidates: [], pitch: this._pitch, key: null});
         }
         const record = this._video(session.videoId);
         const effective = this._effective(record);
@@ -515,6 +523,7 @@ export class LyricsCore {
                 current: effective?.id === candidate.id,
             })),
             pitch: this._pitch,
+            key: this._songKey?.videoId === session.videoId ? {root: this._songKey.root, type: this._songKey.type} : null,
         });
     }
 

@@ -4,6 +4,7 @@
 //   budget.json             request budget windows, so restarts cannot reset them
 //   archive/<videoId>.json  what ytarchive has taken for a video (archive-sync.js)
 //   archive-outbox.json     videos with something ytarchive has not taken yet
+//   keys/<videoId>.json     chroma heard so far for the song's key (song-key.js)
 
 import GLib from 'gi://GLib';
 import Gio from 'gi://Gio';
@@ -20,7 +21,7 @@ export function expandHome(path) {
 export class JsonStore {
     constructor(stateDir) {
         this._root = expandHome(stateDir);
-        for (const dir of [this._root, this._path('videos'), this._path('searches'), this._path('archive')]) {
+        for (const dir of [this._root, this._path('videos'), this._path('searches'), this._path('archive'), this._path('keys')]) {
             if (GLib.mkdir_with_parents(dir, 0o700) !== 0)
                 throw new Error(`cannot create ${dir}`);
         }
@@ -77,6 +78,14 @@ export class JsonStore {
 
     saveArchiveRecord(record) {
         this._write(this._path('archive', `${record.videoId}.json`), record);
+    }
+
+    loadSongKey(videoId) {
+        return this._read(this._path('keys', `${videoId}.json`));
+    }
+
+    saveSongKey(record) {
+        this._write(this._path('keys', `${record.videoId}.json`), record);
     }
 
     loadArchiveOutbox() {

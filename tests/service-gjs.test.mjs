@@ -10,10 +10,11 @@ import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {promisify} from 'node:util';
 
-import {isolatedEnv, startBus} from './isolated-session.mjs';
+import {dconfServiceDir, isolatedEnv, startBus} from './isolated-session.mjs';
 
 const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const run = promisify(execFile);
+const REAL_DCONF = path.join(os.homedir(), '.config', 'dconf', 'user');
 
 const LRC = '[00:01.00] One\n[00:03.00] Two\n[00:30.00] Three';
 const TOPIC = 'Provided to YouTube by Label\n\nStub Song · Stub Band\n\nStub Album\n\n℗ 2003 Label';
@@ -87,9 +88,10 @@ const report = (port, payload, headers = {}) => request(port, {
 /** The real service on a private bus; stopped and removed when the test ends. */
 async function startService(t) {
     const stub = await startStubLrclib();
+    const realDconfBefore = fs.statSync(REAL_DCONF).mtimeMs;
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lyrics-overlay-test-'));
     const env = isolatedEnv(dir);
-    const bus = await startBus(dir, 'session', env, null);
+    const bus = await startBus(dir, 'session', env, dconfServiceDir(dir));
     env.DBUS_SESSION_BUS_ADDRESS = bus.address;
     const port = 20000 + Math.floor(Math.random() * 20000);
     const settingsPath = path.join(dir, 'settings.json');
@@ -105,6 +107,7 @@ async function startService(t) {
         bus.daemon.kill();
         stub.server.close();
         fs.rmSync(dir, {recursive: true, force: true});
+        assert.equal(fs.statSync(REAL_DCONF).mtimeMs, realDconfBefore, 'the real dconf database changed; restore it');
     });
 
     await waitFor(async () => (await request(port).catch(() => null))?.status === 200, 'the service to listen');
@@ -113,8 +116,14 @@ async function startService(t) {
             '--method', `net.fuseki.LyricsOverlay1.${method}`, ...args], {env});
         return JSON.parse(JSON.parse(`"${stdout.trim().replace(/^\('|',\)$/gu, '').replaceAll('"', '\\"')}"`));
     };
-    return {stub, dir, port, gdbus};
+    // What the shell reads: the setting as stored in the session's dconf.
+    const stored = async key => (await run('gsettings', ['get', 'org.gnome.shell.extensions.lyrics-overlay', key],
+        {env: {...env, GSETTINGS_SCHEMA_DIR: path.join(env.XDG_RUNTIME_DIR, 'lyrics-overlay', 'schemas')}})).stdout.trim();
+    return {stub, dir, port, gdbus, stored};
 }
+
+const pagePost = (port, urlPath, body, headers = {}) => request(port, {method: 'POST', urlPath, body: JSON.stringify(body),
+    headers: {'Content-Type': 'application/json', Origin: `http://127.0.0.1:${port}`, ...headers}});
 
 test('the gjs service looks up lyrics, serves state and accepts shell commands', async t => {
     const {stub, dir, port, gdbus} = await startService(t);
@@ -160,14 +169,14 @@ test('the gjs service looks up lyrics, serves state and accepts shell commands',
     assert.deepEqual([saved.offsetSeconds, saved.chosenId, saved.rejectedIds], [-0.5, 77, []]);
     assert.equal(fs.statSync(path.join(dir, 'service-state', 'videos', 'abcdefghijk.json')).mode & 0o077, 0);
 
-    const page = await request(port, {urlPath: '/'});
+    const home = await request(port, {urlPath: '/'});
+    assert.equal(home.status, 303);
+    assert.equal(home.headers.location, `http://127.0.0.1:${port}/settings`, 'the settings page, on the address asked for');
+    const page = await request(port, {urlPath: '/settings'});
     assert.equal(page.status, 200);
-    assert.match(page.body, /Stub Band - Stub Song - Stub Album - 3:00/u);
-    assert.match(page.body, /fetch\('\/status-body'/u, 'the page keeps itself current');
-    const body = await request(port, {urlPath: '/status-body'});
-    assert.equal(body.status, 200);
-    assert.match(body.body, /Stub Band - Stub Song - Stub Album - 3:00/u);
-    assert.doesNotMatch(body.body, /<html|<script/u);
+    assert.match(page.body, /<title>Lyrics overlay settings<\/title>/u, 'the shell raises the window by this title');
+    for (const script of ['/settings.js', '/shared/scales.js', '/shared/text-ink.js', '/shared/lyrics-status.js'])
+        assert.match((await request(port, {urlPath: script})).headers['content-type'], /^text\/javascript/u, script);
     const icon = await request(port, {urlPath: '/favicon.svg'});
     assert.equal(icon.headers['content-type'], 'image/svg+xml');
     assert.equal(icon.body, fs.readFileSync(new URL('../firefox/icon.svg', import.meta.url), 'utf8'));
@@ -199,10 +208,66 @@ test('the gjs service looks up lyrics, serves state and accepts shell commands',
     assert.equal((await answer({id: command.id, ok: true, windowTitle: title})).status, 409, 'answered once');
     assert.deepEqual(await gdbus('FocusSong'), {ok: false, error: 'the browser extension is not listening'});
 
+    // A right-click on the lyric or the indicator asks for the one settings tab.
+    const opening = gdbus('OpenSettings');
+    const settingsCommand = JSON.parse((await commandRequest(EXTENSION_HEADERS)).body);
+    assert.deepEqual(settingsCommand, {op: 'openSettings', id: 3});
+    const settingsTitle = 'Lyrics overlay settings — Mozilla Firefox';
+    assert.equal((await answer({id: settingsCommand.id, ok: true, windowTitle: settingsTitle})).status, 204);
+    assert.deepEqual(await opening, {ok: true, windowTitle: settingsTitle});
+
     assert.equal((await request(port, {method: 'POST', urlPath: '/api/gone', body: JSON.stringify({tabId: 3}), headers: {'Content-Type': 'application/json'}})).status, 204);
     assert.deepEqual(await gdbus('FocusSong'), {ok: false, error: 'no song is playing'});
     assert.equal(JSON.parse((await request(port)).body).state.active, false);
     assert.doesNotMatch(serviceLog, /CRITICAL|WARNING|Error/u, serviceLog);
+});
+
+test('the settings page reads and writes the settings the shell reads, and only the page may write them', async t => {
+    const {port, stored} = await startService(t);
+    const {schema, values} = JSON.parse((await request(port, {urlPath: '/api/settings'})).body);
+    assert.deepEqual(schema['font-size'], {type: 'd', writable: true, default: 48, min: 16, max: 256});
+    assert.deepEqual(schema['text-border'].choices, ['none', 'single', 'double']);
+    assert.equal(schema.box.writable, false, 'the box is set by dragging');
+    assert.equal(values['font-size'], 48);
+
+    const written = await pagePost(port, '/api/settings', {changes: {'font-size': 72, 'pitch-line-color': '#ff8800', 'pitch-dock': 'left'}});
+    assert.equal(written.status, 200);
+    assert.equal(JSON.parse(written.body).values['font-size'], 72);
+    // dconf-service writes its database a moment after the service's call.
+    await waitFor(async () => await stored('font-size') === '72.0', 'the size in dconf');
+    assert.equal(await stored('pitch-dock'), "'left'");
+
+    const refusals = [
+        [{'font-size': 999}, /font-size must be from 16 to 256/u],
+        [{'text-color': 'teal'}, /text-color must be one of/u],
+        [{'pitch-line-color': 'orange'}, /#rrggbb/u],
+        [{'box': {cx: 0.5, cy: 0.5, width: 0.5, height: 0.5}}, /dragging/u],
+        [{'pitch-range-top': 50}, /at least 6 semitones/u],
+        [{'no-such-key': true}, /no setting named/u],
+    ];
+    for (const [changes, why] of refusals) {
+        const refused = await pagePost(port, '/api/settings', {changes});
+        assert.equal(refused.status, 400, JSON.stringify(changes));
+        assert.match(JSON.parse(refused.body).error, why);
+    }
+    assert.equal((await pagePost(port, '/api/settings', {changes: {'font-size': 20}}, {Origin: 'https://evil.example'})).status, 403);
+    assert.equal((await pagePost(port, '/api/settings', {changes: {'font-size': 20}}, {Origin: `http://127.0.0.1:${port + 1}`})).status, 403);
+    assert.equal((await pagePost(port, '/api/settings', {changes: {'font-size': 20}}, {'Content-Type': 'text/plain'})).status, 415);
+    assert.equal((await request(port, {method: 'POST', urlPath: '/api/settings', body: '{"changes":{"font-size":20}}',
+        headers: {'Content-Type': 'application/json'}})).status, 403, 'no Origin: not the page');
+    assert.equal(await stored('font-size'), '72.0', 'nothing refused was written');
+
+    const reset = await pagePost(port, '/api/settings/reset', {keys: ['font-size', 'pitch-dock']});
+    assert.equal(reset.status, 200);
+    await waitFor(async () => await stored('font-size') === '48.0', 'the reset size in dconf');
+
+    assert.deepEqual(JSON.parse((await pagePost(port, '/api/command', {op: 'tooSlow'})).body), {ok: false}, 'no song playing');
+    assert.equal((await pagePost(port, '/api/command', {op: 'pitch', wanted: true})).status, 400, 'the microphone is the shell’s');
+    assert.equal((await pagePost(port, '/api/pitch/fit', {})).status, 409, 'nothing sung yet');
+
+    const fonts = JSON.parse((await request(port, {urlPath: '/api/fonts'})).body).families;
+    assert.ok(fonts.length > 0 && fonts.every(family => typeof family === 'string' && family), 'installed families by name');
+    assert.deepEqual(fonts, [...fonts].sort((a, b) => a.localeCompare(b)));
 });
 
 test('an LRCLIB rate-limit refusal pauses lookups for the time it names instead of failing them', async t => {

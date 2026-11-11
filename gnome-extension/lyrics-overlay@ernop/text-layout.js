@@ -17,21 +17,24 @@ const ALIGNMENTS = Object.freeze({
     'left': Pango.Alignment.LEFT,
 });
 
-/** Border ring widths in pixels for a border setting at a font size. */
-export function ringWidths(border, fontSize) {
+/**
+ * Border ring widths in pixels for a border setting at a font size, times
+ * the thickness setting (text-border-scale).
+ */
+export function ringWidths(border, fontSize, scale) {
     switch (border) {
     case 'none':
         return {inner: 0, outer: 0};
     case 'single':
-        return {inner: Math.max(1.5, fontSize * 0.07), outer: 0};
+        return {inner: Math.max(1.5, fontSize * 0.07) * scale, outer: 0};
     case 'double':
-        return {inner: Math.max(1.5, fontSize * 0.055), outer: Math.max(1.5, fontSize * 0.045)};
+        return {inner: Math.max(1.5, fontSize * 0.055) * scale, outer: Math.max(1.5, fontSize * 0.045) * scale};
     }
     throw new Error(`lyrics-overlay: unknown text border "${border}"`);
 }
 
-function edgeFor(border, fontSize) {
-    const ring = ringWidths(border, fontSize);
+function edgeFor(params, fontSize) {
+    const ring = ringWidths(params.border, fontSize, params.borderScale);
     return Math.ceil(ring.inner + ring.outer) + EDGE_PIXELS;
 }
 
@@ -55,7 +58,7 @@ function applySpec(layout, spec) {
  * @param {Pango.Context} context measuring context
  * @param {string} text
  * @param {{fontSize: number, family: string, bold: boolean, color: string, border: string,
- *          align: string, width: number, height: number}} params region size and wanted look
+ *          borderScale: number, align: string, width: number, height: number}} params region size and wanted look
  * @returns {{spec: object, origin: {x: number, y: number}, ring: {inner: number, outer: number},
  *            fill: number[], inkBox: {x: number, y: number, width: number, height: number}}}
  */
@@ -72,7 +75,7 @@ export function fitLyric(context, text, params) {
         return layout;
     };
     const room = fontSize => {
-        const edge = edgeFor(params.border, fontSize);
+        const edge = edgeFor(params, fontSize);
         return {width: Math.max(1, params.width - 2 * edge), height: Math.max(1, params.height - 2 * edge)};
     };
     const fits = fontSize => {
@@ -84,9 +87,9 @@ export function fitLyric(context, text, params) {
     spec.wrapWidth = balancedWrapWidth(room(spec.fontSize).width, wrapWidth => measure(spec.fontSize, wrapWidth).get_line_count());
 
     const [ink, logical] = measure(spec.fontSize, spec.wrapWidth).get_pixel_extents();
-    const left = params.align === 'left' ? edgeFor(params.border, spec.fontSize) : (params.width - spec.wrapWidth) / 2;
+    const left = params.align === 'left' ? edgeFor(params, spec.fontSize) : (params.width - spec.wrapWidth) / 2;
     const origin = {x: left, y: (params.height - logical.height) / 2};
-    const ring = ringWidths(params.border, spec.fontSize);
+    const ring = ringWidths(params.border, spec.fontSize, params.borderScale);
     const reach = ring.inner + ring.outer;
     return {
         spec,
