@@ -6,9 +6,24 @@
 // activated dconf-service write the real ~/.config/dconf/user. A bus here
 // activates only what its serviceDir holds, and nothing when it is null.
 
-import {spawn} from 'node:child_process';
+import {execFile, spawn} from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
+import {promisify} from 'node:util';
+
+const run = promisify(execFile);
+
+/**
+ * What the real session stores at a dconf path: a dir's keys (path ending
+ * in /) or one key's value, read from its database file. A write that
+ * escaped an isolated session changes the keys that session writes; the
+ * real desktop meanwhile goes on writing other keys, so a test compares
+ * these, never the database file's time.
+ */
+export async function realDconf(dconfPath) {
+    const {stdout} = await run('dconf', [dconfPath.endsWith('/') ? 'dump' : 'read', dconfPath]);
+    return stdout;
+}
 
 /** Creates the session's dirs under tmp and returns its complete environment. */
 export function isolatedEnv(tmp) {

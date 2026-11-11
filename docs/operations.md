@@ -169,6 +169,14 @@ asks for every site but holds only the one origin granted by hand.
   `panel-positions`), and run `scripts/check-live-desktop.py` after the
   login. The shell e2e now asserts the indicator's box against the
   owner's live layout.
+- **Compare the keys a test writes, not the settings file's time
+  (2026-11-11).** The real desktop writes its dconf database by itself,
+  several times a minute while the owner works, so a check of
+  `~/.config/dconf/user`'s modification time failed runs that had
+  written nothing there. The service test compares the real session's
+  lyrics overlay settings before and after, and the shell harness the
+  real value of the first key it writes (`realDconf` in
+  `tests/isolated-session.mjs`).
 - **Run a negative check's edit, test and restore one after another.**
   Issued together, the restore can land before the test installs the
   code, and the broken version passes.

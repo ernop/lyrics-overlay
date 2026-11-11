@@ -13,14 +13,16 @@ import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {promisify} from 'node:util';
 
-import {dconfServiceDir, isolatedEnv, startBus} from '../isolated-session.mjs';
+import {dconfServiceDir, isolatedEnv, realDconf, startBus} from '../isolated-session.mjs';
 
 const run = promisify(execFile);
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const UUID = 'lyrics-overlay@ernop';
 const HELPER_UUID = 'unsafe-for-tests@local';
 const SCHEMA = 'org.gnome.shell.extensions.lyrics-overlay';
-const REAL_DCONF = path.join(os.homedir(), '.config', 'dconf', 'user');
+// The session's first write; the screen lock and idle keys come after the
+// real value of this one is seen unchanged.
+const FIRST_WRITTEN = '/org/gnome/shell/enabled-extensions';
 
 export const MONITOR = {width: 1600, height: 900};
 
@@ -54,7 +56,7 @@ function startStubLrclib(answers) {
  * @param {{answers: Record<string, object[]>}} options LRCLIB answers by "artist|title"
  */
 export async function startHarness({answers}) {
-    const realDconfBefore = fs.statSync(REAL_DCONF).mtimeMs;
+    const realDconfBefore = await realDconf(FIRST_WRITTEN);
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'lyrics-overlay-shell-'));
     const env = isolatedEnv(tmp);
     const services = dconfServiceDir(tmp);
@@ -82,8 +84,8 @@ export async function startHarness({answers}) {
         await gsettings('set', 'org.gnome.shell', 'enabled-extensions', `['${UUID}', '${HELPER_UUID}']`);
         if (!fs.existsSync(path.join(tmp, 'config', 'dconf', 'user')))
             throw new Error('dconf did not write the temporary database; refusing to continue');
-        if (fs.statSync(REAL_DCONF).mtimeMs !== realDconfBefore)
-            throw new Error('the real dconf database changed; stop and restore it');
+        if (await realDconf(FIRST_WRITTEN) !== realDconfBefore)
+            throw new Error('the real session’s enabled extensions changed; stop and restore them');
         await gsettings('set', 'org.gnome.shell', 'disable-user-extensions', 'false');
         await gsettings('set', 'org.gnome.shell', 'welcome-dialog-last-shown-version', "'999'");
         await gsettings('set', 'org.gnome.desktop.screensaver', 'lock-enabled', 'false');

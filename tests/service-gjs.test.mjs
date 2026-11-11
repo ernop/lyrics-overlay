@@ -10,11 +10,12 @@ import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {promisify} from 'node:util';
 
-import {dconfServiceDir, isolatedEnv, startBus} from './isolated-session.mjs';
+import {dconfServiceDir, isolatedEnv, realDconf, startBus} from './isolated-session.mjs';
 
 const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const run = promisify(execFile);
-const REAL_DCONF = path.join(os.homedir(), '.config', 'dconf', 'user');
+// The service writes only the extension's settings.
+const WRITTEN_DCONF = '/org/gnome/shell/extensions/lyrics-overlay/';
 
 const LRC = '[00:01.00] One\n[00:03.00] Two\n[00:30.00] Three';
 const TOPIC = 'Provided to YouTube by Label\n\nStub Song · Stub Band\n\nStub Album\n\n℗ 2003 Label';
@@ -88,7 +89,7 @@ const report = (port, payload, headers = {}) => request(port, {
 /** The real service on a private bus; stopped and removed when the test ends. */
 async function startService(t) {
     const stub = await startStubLrclib();
-    const realDconfBefore = fs.statSync(REAL_DCONF).mtimeMs;
+    const realDconfBefore = await realDconf(WRITTEN_DCONF);
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lyrics-overlay-test-'));
     const env = isolatedEnv(dir);
     const bus = await startBus(dir, 'session', env, dconfServiceDir(dir));
@@ -102,12 +103,12 @@ async function startService(t) {
     serviceLog = '';
     const service = spawn('gjs', ['-m', path.join(root, 'tests/service-under-gc.js'), '--settings', settingsPath], {env, stdio: ['ignore', 'inherit', 'pipe']});
     service.stderr.on('data', data => { serviceLog += data; });
-    t.after(() => {
+    t.after(async () => {
         service.kill('SIGTERM');
         bus.daemon.kill();
         stub.server.close();
         fs.rmSync(dir, {recursive: true, force: true});
-        assert.equal(fs.statSync(REAL_DCONF).mtimeMs, realDconfBefore, 'the real dconf database changed; restore it');
+        assert.equal(await realDconf(WRITTEN_DCONF), realDconfBefore, 'the real session’s lyrics overlay settings changed; restore them');
     });
 
     await waitFor(async () => (await request(port).catch(() => null))?.status === 200, 'the service to listen');
