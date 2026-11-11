@@ -42,6 +42,7 @@ if (showLog)
 const url = args[0] ?? 'https://www.youtube.com/watch?v=dQw4w9WgXcQ';
 const STATE_WAIT_MS = 60_000;
 const UPDATE_WAIT_MS = 30_000;
+const FIREFOX_SETTLE_MS = 20_000;
 const OLD_RELEASE = 'v1.1.0';
 const SETTINGS_TITLE = 'Lyrics overlay settings — Mozilla Firefox';
 const GRANT_TITLE = 'Lyrics overlay: allow the settings page — Mozilla Firefox';
@@ -104,6 +105,7 @@ const stops = [];
 let logPath = null;
 let stubs = null;
 let relay = null;
+let firefoxStartedAt = 0;
 const loads = {settings: 0};
 
 function extensionLogLines() {
@@ -156,6 +158,7 @@ try {
 
     /** Firefox playing url with the add-on in sourceDir, reloaded when watchFile changes (when given). */
     const startFirefox = (name, sourceDir, watchFile) => {
+        firefoxStartedAt = Date.now();
         logPath = path.join(tmp, `${name}-web-ext.log`);
         const log = fs.openSync(logPath, 'w');
         const prefs = {
@@ -175,7 +178,8 @@ try {
         const firefoxProcess = spawn('npx', ['web-ext', 'run', '--source-dir', sourceDir, '--firefox', firefox,
             '--firefox-profile', path.join(tmp, name, 'profile'), '--profile-create-if-missing', '--keep-profile-changes',
             '--start-url', url, ...Object.entries(prefs).flatMap(([pref, value]) => ['--pref', `${pref}=${value}`]),
-            '--arg=--headless', ...(watchFile ? ['--watch-file', watchFile] : ['--no-reload']), '--no-input'],
+            // Without --verbose web-ext drops Firefox's own output, the add-on's console with it.
+            '--arg=--headless', ...(watchFile ? ['--watch-file', watchFile] : ['--no-reload']), '--no-input', '--verbose'],
         {cwd: root, stdio: ['ignore', log, log], detached: true});
         const stop = groupStopper(firefoxProcess);
         stops.push(stop);
@@ -192,13 +196,15 @@ try {
     };
 
     // Commands wait until the page has sent its song details and the lookup
-    // is over, and come a second apart: in its first seconds a cold Firefox
-    // still loading YouTube can take longer than the service's 3 s answer
-    // budget, and a busy one longer than the 1.5 s the service waits for the
-    // add-on to ask for the next command, sooner than anyone presses.
+    // is over and Firefox has run FIREFOX_SETTLE_MS, and come a second
+    // apart: in its first seconds a fresh headless Firefox can hold a
+    // response it has already received for 3 s, past the service's answer
+    // budget (seen up to 12 s in, never after 20 s), and a busy one can take
+    // longer than the 1.5 s the service waits for the add-on to ask for the
+    // next command, sooner than anyone presses.
     const LOOKUP_OVER = new Set(['not-music', 'timed', 'plain', 'none', 'error']);
     const command = async method => {
-        await sleep(1000);
+        await sleep(Math.max(1000, firefoxStartedAt + FIREFOX_SETTLE_MS - Date.now()));
         const askedAt = Date.now();
         const answer = await gdbus(method);
         console.log(`${method} answered in ${Date.now() - askedAt} ms: ${JSON.stringify(answer)}`);
