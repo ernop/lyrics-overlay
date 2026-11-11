@@ -22,6 +22,30 @@ the doc that owns your change. Every doc in the repository is listed here.
 - Requirements and decisions go into docs/product.md in the same change;
   behavior and contracts into docs/architecture.md.
 
+## Working with the owner
+
+Lessons from the retrospective of the first build (2026-11-10).
+
+- Put each new piece on the owner's real desktop early: headless tests
+  prove the code, not that the owner sees it. The first build ran only
+  headless, and its first real line showed on the second day.
+- After a step only the owner can take (an add-on prompt, a login),
+  confirm it took effect before building on it or debugging behind it:
+  the installed add-on version (docs/operations.md, "Verify") and
+  `scripts/check-live-desktop.py`.
+- Gather the changes that wait on a login, and say once what that login
+  brings.
+- Before building a new control surface, show its shape and get the
+  owner's yes; a right-click menu was built, shipped and then rejected.
+- At the start, list every requirement the request states, and check the
+  list at each report. "Never flash" and note-labeled pitch lines were in
+  the first request and came back as complaints.
+- Before any push, private or public, read the diff for device
+  identifiers and listening data. Tell the owner of a side effect on the
+  real system as soon as it happens.
+- Report at checkpoints rather than in one long turn, so a new request
+  steers the work early.
+
 ## Test, ship, restart
 
 1. `npm test && npm run lint` (about 4 s). When the GNOME Shell extension,
