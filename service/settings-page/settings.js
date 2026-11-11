@@ -11,6 +11,17 @@ import {hexColor, TEXT_COLORS} from '/shared/text-ink.js';
 
 const POLL_MS = 1000;
 const MICROPHONE_POLL_MS = 10_000;
+// The newest release's signed add-on; GitHub serves it as an install, so
+// Firefox asks to add it (tests/update-manifest.test.mjs keeps it at the
+// manifest's update_url).
+const ADDON_DOWNLOAD = 'https://github.com/ernop/lyrics-overlay/releases/latest/download/lyrics-overlay.xpi';
+const ADDON_TEXT = {
+    unheard: () => 'Not heard from yet',
+    unnamed: () => 'Older than 1.3.0',
+    current: addon => addon.version,
+    older: addon => `${addon.version}, older than ${addon.current}`,
+    newer: addon => `${addon.version}, newer than the service`,
+};
 const SLIDER_STEPS = 1000;
 const MIN_FIXED_SPAN = 6;
 const SHARPS = pitchClassNames(null);
@@ -112,9 +123,9 @@ async function pollSettings() {
 
 async function pollState() {
     try {
-        const {state} = await call('GET', '/api/state');
+        const {state, addon} = await call('GET', '/api/state');
         for (const view of model.stateViews)
-            view(state);
+            view(state, addon);
     } catch {
         showBanner('The lyrics service is not running.');
     }
@@ -223,6 +234,9 @@ function songRows() {
     const timing = el('span', {class: 'value'});
     const microphone = el('span', {class: 'value'});
     const heardKey = el('span', {class: 'value'});
+    const addonVersion = el('span', {class: 'value'});
+    const install = el('a', {class: 'button', href: ADDON_DOWNLOAD});
+    const updateService = el('span', {class: 'note'}, 'Update the service: ', el('kbd', {}, 'git pull && scripts/install.sh'));
     const sets = el('div', {class: 'list short', role: 'listbox', 'aria-label': 'Lyric sets'});
     const command = body => post('/api/command', body);
     const wrong = pressButton('Wrong lyrics: hide this set', () => command({op: 'reject'}));
@@ -233,7 +247,11 @@ function songRows() {
         pressButton('Too slow', () => command({op: 'tooSlow'})),
         pressButton('Reset', () => command({op: 'resetOffset'})),
     ];
-    model.stateViews.push(state => {
+    model.stateViews.push((state, addon) => {
+        addonVersion.textContent = ADDON_TEXT[addon.status](addon);
+        install.textContent = `Install ${addon.current}`;
+        install.hidden = addon.status !== 'unnamed' && addon.status !== 'older';
+        updateService.hidden = addon.status !== 'newer';
         playing.textContent = state.active ? state.identityText || state.videoId : 'Nothing on YouTube';
         lyrics.textContent = LYRICS_STATUS_TEXT[state.lyrics];
         timing.textContent = `${state.offsetSeconds > 0 ? '+' : ''}${state.offsetSeconds.toFixed(1)} s`;
@@ -268,6 +286,7 @@ function songRows() {
         el('div', {class: 'wide'}, sets),
         row('Microphone', microphone),
         row('Scale', heardKey),
+        row('Firefox add-on', addonVersion, install, updateService),
     ];
 }
 

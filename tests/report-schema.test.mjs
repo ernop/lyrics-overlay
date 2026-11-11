@@ -34,6 +34,13 @@ test('a complete report passes through with its fields', () => {
     assert.deepEqual(parsed.message.next, next);
 });
 
+test('a report names the add-on’s version, or none from an add-on before 1.3.0', () => {
+    assert.equal(parseReport(report({addonVersion: '1.3.0'}), NOW).addonVersion, '1.3.0');
+    assert.equal(parseReport(report(), NOW).addonVersion, null);
+    refused(report({addonVersion: '1.3.0-beta'}), /addonVersion/u);
+    refused(report({addonVersion: null}), /addonVersion/u);
+});
+
 test('metadata and next are optional; next and the media session may be null', () => {
     assert.deepEqual(Object.keys(parseReport(report(), NOW).message), ['sampledAt', 'heartbeatMs', 'media']);
     assert.equal(parseReport(report({heartbeatMs: null}), NOW).message.heartbeatMs, null, 'a paused video promises no heartbeat');

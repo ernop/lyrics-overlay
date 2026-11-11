@@ -132,6 +132,9 @@ test('the gjs service looks up lyrics, serves state and accepts shell commands',
     // Guards: Host, Origin, content type, shape.
     assert.equal((await request(port, {headers: {Host: 'evil.example'}})).status, 403);
     assert.equal((await request(port, {headers: {Host: `lyrics.localhost:${port}`}})).status, 200, 'the browser add-on’s address');
+    const current = JSON.parse(fs.readFileSync(path.join(root, 'firefox/manifest.json'), 'utf8')).version;
+    const addonStatus = async () => JSON.parse((await request(port)).body).addon;
+    assert.deepEqual(await addonStatus(), {status: 'unheard', current});
     const media = {videoId: 'abcdefghijk', currentTime: 0.5, duration: 180, paused: false, ended: false, stalled: false, playbackRate: 1, muted: false, volume: 1, adShowing: false};
     const metadata = {host: 'www.youtube.com', videoId: 'abcdefghijk', title: 'Stub Song', author: 'Stub Band - Topic', lengthSeconds: 180,
         category: 'Music', musicVideoType: '', description: TOPIC, musicCards: [], mediaSession: null, ytmByline: ''};
@@ -141,13 +144,16 @@ test('the gjs service looks up lyrics, serves state and accepts shell commands',
         body: JSON.stringify({tabId: 4, sampledAt: Date.now(), heartbeatMs: 5000, media}), headers: {'Content-Type': 'application/json', ...siteHeader}});
     assert.equal((await withoutOrigin({'Sec-Fetch-Site': 'cross-site'})).status, 403);
     assert.equal((await withoutOrigin({})).status, 204, 'a local client sends no Origin');
+    assert.deepEqual(await addonStatus(), {status: 'unnamed', current}, 'a report naming no version, as before 1.3.0');
     assert.equal((await request(port, {method: 'POST', urlPath: '/api/gone', body: JSON.stringify({tabId: 4}), headers: {'Content-Type': 'application/json'}})).status, 204);
     assert.equal((await request(port, {method: 'POST', urlPath: '/api/report', body: '{}', headers: {'Content-Type': 'text/plain'}})).status, 415);
     assert.equal((await report(port, {tabId: 3, sampledAt: Date.now(), heartbeatMs: 5000, media: {...media, videoId: '../../etc'}})).status, 400);
     assert.equal((await report(port, {tabId: 3, sampledAt: 0, heartbeatMs: 5000, media})).status, 400);
     assert.equal((await request(port)).headers['access-control-allow-origin'], undefined);
 
-    assert.equal((await report(port, {tabId: 3, sampledAt: Date.now(), heartbeatMs: 5000, media, metadata, next: null})).status, 204);
+    assert.equal((await report(port, {tabId: 3, sampledAt: Date.now(), heartbeatMs: 5000, media, addonVersion: 'latest'})).status, 400);
+    assert.equal((await report(port, {tabId: 3, sampledAt: Date.now(), heartbeatMs: 5000, media, metadata, next: null, addonVersion: current})).status, 204);
+    assert.deepEqual(await addonStatus(), {status: 'current', version: current, current});
     const state = await waitFor(async () => {
         const answer = JSON.parse((await request(port)).body);
         return answer.state.lyrics === 'timed' ? answer : null;

@@ -11,6 +11,9 @@
 const SERVICE = 'http://lyrics.localhost:8792';
 // The settings page's address and access: settings-access.js.
 const GRANT_PAGE = browser.runtime.getURL('grant.html');
+// Named in every report, so the settings page can show an add-on that
+// Firefox has not updated.
+const ADDON_VERSION = browser.runtime.getManifest().version;
 // Tabs that have reported since this event page started; a tab whose video
 // runs reports every few seconds, which keeps this page alive while it matters.
 const reportingTabs = new Set();
@@ -167,7 +170,7 @@ browser.runtime.onMessage.addListener((message, sender) => {
         const report = message.report;
         if (tab.mutedInfo?.muted)
             report.media.muted = true;
-        post('/api/report', {tabId: tab.id, ...report});
+        post('/api/report', {tabId: tab.id, addonVersion: ADDON_VERSION, ...report});
         listenForCommands();
     } else if (message.type === 'keepAlive') {
         listenForCommands();

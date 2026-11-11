@@ -69,8 +69,9 @@ Lessons from the retrospective of the first build (2026-11-10).
    It ends at Firefox's "Add Lyrics Overlay?" prompt, which the owner
    presses; never copy the XPI into the profile instead (see
    docs/operations.md, "Release the Firefox extension"). Then publish the
-   signed file as a GitHub release, which the README's download link
-   serves.
+   signed file and `dist/updates.json` as a GitHub release with the
+   command the script prints: installed add-ons update from it, and the
+   README's download link serves it.
 6. A change to what the lyric, the pitch panel or the settings page looks
    like: refresh the README's pictures with
    `scripts/update-readme-pictures.sh`, and look at each one.

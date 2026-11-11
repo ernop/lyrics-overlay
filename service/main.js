@@ -6,6 +6,7 @@ import GLibUnix from 'gi://GLibUnix';
 import Gio from 'gi://Gio';
 import System from 'system';
 
+import {AddonVersion} from './addon-version.js';
 import {ArchiveSync} from './archive-sync.js';
 import {BrowserCommands} from './browser-commands.js';
 import {LyricsCore} from './core.js';
@@ -113,6 +114,8 @@ look.onChanged(name => {
 });
 
 const browser = new BrowserCommands({timers, log});
+const [, addonManifest] = GLib.file_get_contents(GLib.build_filenamev([projectDir, 'firefox', 'manifest.json']));
+const addon = new AddonVersion({current: JSON.parse(new TextDecoder().decode(addonManifest)).version});
 
 let exitCode = 0;
 bus = exportService({
@@ -131,7 +134,7 @@ bus = exportService({
     log,
 });
 const http = startHttp({port: settings.port, hostname: settings.hostname, files: loadStaticFiles(projectDir),
-    core, browser, settings: look, pitch, log});
+    core, browser, addon, settings: look, pitch, log});
 
 for (const signal of [2, 15]) {
     GLibUnix.signal_add(GLib.PRIORITY_DEFAULT, signal, () => {

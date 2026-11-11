@@ -129,6 +129,21 @@ button:disabled {
     border-style: dashed;
 }
 
+/* The add-on's download, shown only when Firefox runs an older one. */
+a.button {
+    font-weight: 700;
+    color: #fff;
+    background: var(--accent);
+    border: 1px solid var(--accent);
+    border-radius: 7px;
+    padding: 0.35rem 0.8rem;
+    text-decoration: none;
+}
+
+a.button:hover {
+    border-color: #fff;
+}
+
 button.big {
     font-size: 1.35rem;
     font-weight: 800;

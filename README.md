@@ -52,9 +52,12 @@ packages for your user alone (no root). The settings page lists them at once;
 GNOME Shell draws them after the next login.
 
 To update: `git pull && scripts/install.sh`. The service restarts at once; the
-shell extension changes at the next login. An add-on updated from 1.0 or 1.1
-opens a page asking for access to localhost, which it needs to find the
-settings tab; press Allow there once. Going to the song works without it.
+shell extension changes at the next login. From 1.3.0 Firefox updates the
+add-on by itself (it checks the newest GitHub release once a day), and the
+settings page shows the add-on's version, with an install button when
+Firefox runs an older one. An add-on updated from 1.0 or 1.1 opens a page
+asking for access to localhost, which it needs to find the settings tab;
+press Allow there once. Going to the song works without it.
 
 To remove:
 
@@ -101,7 +104,7 @@ opens it, and raises its window; there is only ever one.
 
 | Section | What it holds |
 |---|---|
-| Song | what is playing, its lyric status, timing (Too fast / Too slow move the lyrics 0.5 s, Reset; kept for each video), the lyric sets (Wrong lyrics: hide this set, Search again, Look up lyrics for this video), the microphone, and the song's scale as heard |
+| Song | what is playing, its lyric status, timing (Too fast / Too slow move the lyrics 0.5 s, Reset; kept for each video), the lyric sets (Wrong lyrics: hide this set, Search again, Look up lyrics for this video), the microphone, the song's scale as heard, and the Firefox add-on's version, with an install button when Firefox runs an older one |
 | Lyric line | on or off; font, the desktop font or any installed family that can write English, found by typing part of its name; bold; size, 16 to 256 px; color; border, double, single or none, 0.25 to 4 times as thick; alignment; transition; reset position and size |
 | Pitch panel | on or off; below, above, left or right of the lyric, or separate; the notes shown, a fixed range (set, or fitted to your last 30 s of singing) or a span that follows your voice; time across, 2 to 120 s; scrolling through silences; line thickness and color; background; note names on the lines; the scale whose lines stand out, detected from the song, fixed, or none; where the current note shows, its size and cents; analyses per second |
 | Microphone | which input; echo cancelling, on by default, so the trace follows you and not the song |

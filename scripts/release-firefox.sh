@@ -9,12 +9,14 @@ set -euo pipefail
 # would run without access to YouTube or the service.
 # AMO rejects version reuse: bump the version in firefox/manifest.json
 # before releasing a change. dist/lyrics-overlay.xpi holds only the current
-# signed build; each release replaces it.
+# signed build, and dist/updates.json the update manifest naming it; each
+# release replaces both, and the GitHub release carries both.
 
 project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # Gitignored; amo-credentials.example shows its two lines.
 credentials="$project_root/amo-credentials.local"
 installer="$project_root/dist/lyrics-overlay.xpi"
+update_manifest="$project_root/dist/updates.json"
 
 if [[ ! -f "$credentials" ]]; then
   echo "AMO credentials not found at $credentials (see amo-credentials.example)" >&2
@@ -41,8 +43,10 @@ WEB_EXT_API_KEY="$AMO_JWT_ISSUER" WEB_EXT_API_SECRET="$AMO_JWT_SECRET" \
 version="$(node -p 'require("./firefox/manifest.json").version')"
 mkdir -p "$(dirname "$installer")"
 cp "$artifacts"/*-"$version".xpi "$installer"
+node scripts/update-manifest.mjs "$installer" "$update_manifest"
 # Detached, because a Firefox that was not already running would otherwise
 # hold this script open until it exits.
 setsid -f firefox "$installer" >/dev/null 2>&1
 
 echo "Signed $version. Firefox shows \"Add Lyrics Overlay?\": press Add."
+echo "Publish: gh release create v$version dist/lyrics-overlay.xpi dist/updates.json --title \"Firefox add-on $version\""

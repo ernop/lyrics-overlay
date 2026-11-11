@@ -37,6 +37,10 @@ Firefox tab (YouTube)                         GNOME Shell
   that name survives updates (product.md, "Local service").
   `settings-access.js` names the settings page and the access needed to
   find its tab; `grant.html` is the add-on's own page that asks for it.
+  The manifest's `update_url` is the newest GitHub release's
+  `updates.json`, which `scripts/update-manifest.mjs` writes at each
+  release from the signed file (its version, its address in that
+  version's release, and its SHA-256); Firefox checks it daily.
 - **Service** (`service/`, gjs). Owns every decision: song identity, lyric
   lookup, choice, timing, and which line shows when. It also serves the
   settings page, follows the sung pitch and hears the song's key. `core.js`
@@ -67,8 +71,18 @@ Firefox tab (YouTube)                         GNOME Shell
 
 ## The report contract
 
-`POST /api/report` with `{tabId, sampledAt, heartbeatMs, media, metadata?,
-next?}`, checked field by field in `service/report-schema.js`:
+`POST /api/report` with `{tabId, addonVersion, sampledAt, heartbeatMs,
+media, metadata?, next?}`, checked field by field in
+`service/report-schema.js`:
+
+- `addonVersion`: the add-on's manifest version, added by its background
+  script. Add-ons before 1.3.0 send none, which the schema records as
+  `null`. `service/addon-version.js` keeps the last one heard and sets it
+  against the version in the checkout's `firefox/manifest.json`; `GET
+  /api/state` carries the result as `addon`: `{status, current}` while
+  the status is `unheard` (nothing reported since the service started)
+  or `unnamed` (the last report named no version), and
+  `{status, version, current}` when it is `current`, `older` or `newer`.
 
 - `media`: the main video's state at `sampledAt` (currentTime, duration,
   paused, ended, stalled, playbackRate, muted, volume, adShowing, videoId).

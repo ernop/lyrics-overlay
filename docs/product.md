@@ -255,6 +255,23 @@ indicator changes quietly.
   working after the 1.1 update without a new permission. The `hostname`
   setting names one more Host the service answers to, such as a local
   proxy's.
+- **Firefox updates the add-on itself, and the page shows which one runs
+  (owner, 2026-11-10; 1.3.0).** A self-distributed add-on updates only
+  from an address its manifest names; without one, Firefox's daily check
+  goes to Mozilla, sending the add-on's ID and version, and finds nothing.
+  An owner ran 1.0.0 for a day while 1.1.0 and 1.2.0 were out, and tab
+  switching, built for 1.1.0, looked broken. From 1.3.0 the manifest's
+  `update_url` is the newest GitHub release's `updates.json`, a fixed
+  address Firefox fetches without cookies; Firefox installs a newer
+  version itself, without a prompt when its permissions are unchanged.
+  Every report names the add-on's version, and the settings page's Song
+  section shows it against the version of the service's checkout, with an
+  install button when Firefox runs an older one (1.0.0 to 1.2.0 name none:
+  "Older than 1.3.0"). Native messaging, the purpose-built link between an
+  add-on and a desktop program, was weighed and deferred: it would replace
+  the HTTP link and its held request, but adds a helper program and is
+  untested in Ubuntu's snap Firefox, which reaches helpers only through a
+  desktop portal.
 - **Public, and installable by anyone (owner, 2026-11-10).** The repository
   is public. On a GNOME Shell 50 desktop, `scripts/install.sh` installs
   the service and the shell extension, and the signed add-on comes from

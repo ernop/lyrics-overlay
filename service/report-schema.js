@@ -1,6 +1,8 @@
 // Shape check for browser reports. Everything the extension sends passes
 // through here before the core sees it; anything malformed is refused.
 
+import {isAddonVersion} from './addon-version.js';
+
 const VIDEO_ID = /^[A-Za-z0-9_-]{6,20}$/u;
 const HOSTS = new Set(['www.youtube.com', 'music.youtube.com']);
 const MAX_CLOCK_SKEW_MS = 10 * 60 * 1000;
@@ -103,8 +105,18 @@ function parseNext(next) {
     };
 }
 
+/** The reporting add-on's version; null from an add-on before 1.3.0, which sends none. */
+function addonVersion(value) {
+    if (value === undefined)
+        return null;
+    if (!isAddonVersion(value))
+        throw new ReportError('addonVersion must be up to four dot-separated whole numbers');
+    return value;
+}
+
 /**
- * @returns {{tabId: number, message: {sampledAt: number, heartbeatMs: number|null, media: object, metadata?: object, next?: object|null}}}
+ * @returns {{tabId: number, addonVersion: string|null,
+ *            message: {sampledAt: number, heartbeatMs: number|null, media: object, metadata?: object, next?: object|null}}}
  */
 export function parseReport(body, nowMs) {
     if (!body || typeof body !== 'object')
@@ -119,7 +131,7 @@ export function parseReport(body, nowMs) {
         message.metadata = parseMetadata(body.metadata);
     if (body.next !== undefined)
         message.next = parseNext(body.next);
-    return {tabId: body.tabId, message};
+    return {tabId: body.tabId, addonVersion: addonVersion(body.addonVersion), message};
 }
 
 export function parseGone(body) {

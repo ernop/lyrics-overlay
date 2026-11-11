@@ -44,10 +44,14 @@ overlay, and the testing lessons behind the rules. What it is for:
 ## Verify
 
 - `curl -s http://127.0.0.1:8792/api/state` answers 200 with
-  `{state, line}`; `http://localhost:8792/settings` is the settings page,
-  which also shows the song, its lyric status, timing and lyric sets, the
-  microphone and the scale heard.
-- **Which add-on Firefox runs**: the profile's `extensions.json` entry for
+  `{state, line, addon}`; `http://localhost:8792/settings` is the settings
+  page, which also shows the song, its lyric status, timing and lyric
+  sets, the microphone, the scale heard and the add-on's version.
+- **Which add-on Firefox runs**: `addon` in `/api/state` (the settings
+  page's "Firefox add-on" row) names the version of the add-on that last
+  reported, against the checkout's; add-ons before 1.3.0 name none. Before
+  any add-on has reported, or to see what is installed rather than what
+  reports, the profile's `extensions.json` entry for
   `lyrics-overlay@local` holds the active version (read it; never edit the
   profile). A failed click logs in the service whether any add-on has
   asked for commands since the service started; add-ons before 1.1 never
@@ -95,12 +99,13 @@ overlay, and the testing lessons behind the rules. What it is for:
   private service on a private bus, with a stand-in for LRCLIB; the
   profile sends the add-on's and the settings page's addresses to that
   service through an HTTP proxy setting, via a relay that counts page
-  loads. Two runs, about a minute together. A fresh install: FocusSong
-  selects the song's tab and names its window, the first OpenSettings
-  opens the settings page and the second selects that same tab. An
-  update from the last release without localhost access (`OLD_RELEASE`):
-  OpenSettings shows the add-on's page asking for it, and the settings
-  page never loads. Commands start once Firefox has run 20 s (below,
+  loads. Two runs, about a minute together. A fresh install: the service
+  knows the add-on as the checkout's version, FocusSong selects the song's
+  tab and names its window, the first OpenSettings opens the settings page
+  and the second selects that same tab. An update from the last release
+  without localhost access (`OLD_RELEASE`), which names no version:
+  OpenSettings shows the add-on's page asking for it, the settings page
+  never loads, and the updated add-on names the checkout's version. Commands start once Firefox has run 20 s (below,
   "Testing lessons"). It fails on any error the add-on logs; web-ext
   passes Firefox's output to the log only with `--verbose`. The
   installed service and the owner's screen are untouched.
@@ -119,17 +124,24 @@ overlay, and the testing lessons behind the rules. What it is for:
 unlisted on addons.mozilla.org with the AMO API key in the gitignored
 `amo-credentials.local` (format: `amo-credentials.example`; on the
 owner's machine a link to the owner's credentials file), writes the signed
-XPI to `dist/lyrics-overlay.xpi` (replacing the previous one), and opens
-it in Firefox, which shows "Add Lyrics Overlay?"; pressing Add installs it
-into the running profile with no restart. Signing uploads the code to
-Mozilla under the owner's account, so each release needs the owner's
-approval. Bump `firefox/manifest.json`'s version first; AMO refuses a
-version it has already signed.
+XPI to `dist/lyrics-overlay.xpi` (replacing the previous one) and its
+update manifest to `dist/updates.json`, and opens the XPI in Firefox,
+which shows "Add Lyrics Overlay?"; pressing Add installs it into the
+running profile with no restart. Signing uploads the code to Mozilla
+under the owner's account, so each release needs the owner's approval.
+Bump `firefox/manifest.json`'s version first; AMO refuses a version it
+has already signed. The add-on is self-hosted, so `npm run lint` runs
+web-ext with `--self-hosted`, which allows `update_url`.
 
-Then publish the signed file for everyone else:
-`gh release create v<version> dist/lyrics-overlay.xpi --title "Firefox add-on <version>"`.
-The README links `releases/latest/download/lyrics-overlay.xpi`, so the
-asset keeps that name.
+Then publish both files, as the script prints:
+`gh release create v<version> dist/lyrics-overlay.xpi dist/updates.json --title "Firefox add-on <version>"`.
+Each installed add-on from 1.3.0 reads
+`releases/latest/download/updates.json` daily and updates itself from the
+version's own release; the README and the settings page link
+`releases/latest/download/lyrics-overlay.xpi`, so the assets keep their
+names (`tests/update-manifest.test.mjs`). Check after publishing that the
+latest `updates.json` names the new version and that its link answers
+with `application/x-xpinstall`.
 
 Never install by copying the XPI into the profile's `extensions/` folder
 (the auto-load-from-archive pattern). Firefox 159 grants a Manifest V3

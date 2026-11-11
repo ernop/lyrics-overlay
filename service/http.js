@@ -109,12 +109,13 @@ function fittedRange(sung, limits) {
  * @param {{port: number, hostname: string, files: Map<string, {type: string, body: Uint8Array}>,
  *          core: import('./core.js').LyricsCore,
  *          browser: import('./browser-commands.js').BrowserCommands,
+ *          addon: import('./addon-version.js').AddonVersion,
  *          settings: import('./settings-store.js').SettingsStore,
  *          pitch: import('./pitch-capture.js').PitchCapture,
  *          log: (message: string) => void}} options
  * @returns {Soup.Server}
  */
-export function startHttp({port, hostname, files, core, browser, settings, pitch, log}) {
+export function startHttp({port, hostname, files, core, browser, addon, settings, pitch, log}) {
     // lyrics.localhost:<port> is the browser add-on's address; `hostname` is an extra name, such as a proxy's.
     const allowedHosts = new Set([`127.0.0.1:${port}`, `localhost:${port}`, `lyrics.localhost:${port}`, hostname]);
     const server = new Soup.Server({});
@@ -153,7 +154,8 @@ export function startHttp({port, hostname, files, core, browser, settings, pitch
         const json = readJson(message);
         switch (path) {
         case '/api/report': {
-            const {tabId, message: report} = parseReport(json, Date.now());
+            const {tabId, addonVersion, message: report} = parseReport(json, Date.now());
+            addon.heard(addonVersion);
             core.report(tabId, report);
             break;
         }
@@ -225,7 +227,7 @@ export function startHttp({port, hostname, files, core, browser, settings, pitch
             }
             switch (path) {
             case '/api/state':
-                respondJson(message, 200, {state: core.state(), line: core.line()});
+                respondJson(message, 200, {state: core.state(), line: core.line(), addon: addon.describe()});
                 return;
             case '/api/settings':
                 respondJson(message, 200, {schema: settings.describe(), values: settings.values()});

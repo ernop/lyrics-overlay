@@ -202,6 +202,22 @@ try {
     // budget (seen up to 12 s in, never after 20 s), and a busy one can take
     // longer than the 1.5 s the service waits for the add-on to ask for the
     // next command, sooner than anyone presses.
+    /** The add-on version the private service last heard of (service/addon-version.js). */
+    const addonStatus = () => new Promise((resolve, reject) => {
+        http.get({host: '127.0.0.1', port, path: '/api/state', headers: {Host: `127.0.0.1:${port}`}}, response => {
+            let body = '';
+            response.on('data', chunk => { body += chunk; });
+            response.on('end', () => resolve(JSON.parse(body).addon));
+        }).on('error', reject);
+    });
+    const current = JSON.parse(fs.readFileSync(path.join(root, 'firefox', 'manifest.json'), 'utf8')).version;
+    const expectAddon = async (expected, when) => {
+        const addon = await addonStatus();
+        if (JSON.stringify(addon) !== JSON.stringify(expected))
+            throw new Error(`${when}, the service knew the add-on as ${JSON.stringify(addon)}, not ${JSON.stringify(expected)}`);
+        console.log(`${when}, the add-on: ${JSON.stringify(addon)}`);
+    };
+
     const LOOKUP_OVER = new Set(['not-music', 'timed', 'plain', 'none', 'error']);
     const command = async method => {
         await sleep(Math.max(1000, firefoxStartedAt + FIREFOX_SETTLE_MS - Date.now()));
@@ -226,6 +242,7 @@ try {
     let stopFirefox = startFirefox('fresh', path.join(root, 'firefox'), null);
     const state = await waitForSong();
     console.log(`fresh install, playing: ${state.videoId}, lyrics ${state.lyrics}`);
+    await expectAddon({status: 'current', version: current, current}, 'fresh install');
 
     const focused = await command('FocusSong');
     if (!focused.ok || !/ — Mozilla Firefox$/u.test(focused.windowTitle))
@@ -257,6 +274,7 @@ try {
     stopFirefox = startFirefox('update', addon, path.join(addon, 'manifest.json'));
     await waitForSong();
     console.log(`${OLD_RELEASE} installed`);
+    await expectAddon({status: 'unnamed', current}, OLD_RELEASE);
     const old = await command('OpenSettings');
     if (old.ok)
         throw new Error(`${OLD_RELEASE} is not running: it cannot show the settings`);
@@ -278,6 +296,7 @@ try {
         throw new Error('the updated extension did not show its page asking for access to localhost');
     if (loads.settings !== 1)
         throw new Error('the updated extension loaded the settings page without access to localhost');
+    await expectAddon({status: 'current', version: current, current}, 'after the update');
     // OLD_RELEASE throws on the command it does not know.
     checkExtensionLog(line => /unknown command: openSettings/u.test(line));
     console.log('ok: a fresh install shows one settings tab; an update asks for access to localhost first');
