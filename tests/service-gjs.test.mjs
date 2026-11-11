@@ -222,6 +222,44 @@ test('the gjs service looks up lyrics, serves state and accepts shell commands',
     assert.doesNotMatch(serviceLog, /CRITICAL|WARNING|Error/u, serviceLog);
 });
 
+test('a connection the service will close is announced, and every other one is kept', async t => {
+    const {port, gdbus} = await startService(t);
+    // Browsers send the next request on a connection they kept; one the
+    // service closes unannounced resets that request.
+    const agent = new http.Agent({keepAlive: true, maxSockets: 1});
+    t.after(() => agent.destroy());
+    let announcedClose = true;
+    const send = async ({method = 'GET', urlPath = '/api/state', headers = {}, body} = {}) => {
+        const answer = await new Promise((resolve, reject) => {
+            const req = http.request({host: '127.0.0.1', port, method, path: urlPath, agent, headers: {Host: `127.0.0.1:${port}`, ...headers}}, response => {
+                let data = '';
+                response.on('data', chunk => { data += chunk; });
+                response.on('end', () => resolve({status: response.statusCode, body: data, reused: req.reusedSocket,
+                    closes: response.headers.connection === 'close'}));
+            });
+            req.on('error', reject);
+            req.end(body);
+        });
+        assert.equal(answer.reused, !announcedClose, `${method} ${urlPath}: sent on the kept connection, or a new one after an announced close`);
+        announcedClose = answer.closes;
+        return answer;
+    };
+    const extensionPost = (urlPath, value) => send({method: 'POST', urlPath, body: JSON.stringify(value), headers: EXTENSION_HEADERS});
+
+    assert.equal((await send()).status, 200);
+    assert.equal((await send({urlPath: '/'})).status, 303);
+    assert.equal((await send({urlPath: '/settings'})).status, 200);
+    assert.equal((await send({urlPath: '/nothing-here'})).status, 404);
+    assert.equal((await extensionPost('/api/gone', {tabId: 4})).status, 204);
+    assert.equal((await extensionPost('/api/command-result', {id: 9, ok: false, error: 'late'})).status, 409);
+    const opening = gdbus('OpenSettings');
+    const command = JSON.parse((await extensionPost('/api/commands', {})).body);
+    const windowTitle = 'Lyrics overlay settings — Mozilla Firefox';
+    assert.equal((await extensionPost('/api/command-result', {id: command.id, ok: true, windowTitle})).status, 204);
+    assert.deepEqual(await opening, {ok: true, windowTitle});
+    assert.equal((await send()).status, 200);
+});
+
 test('the settings page reads and writes the settings the shell reads, and only the page may write them', async t => {
     const {port, stored} = await startService(t);
     const {schema, values} = JSON.parse((await request(port, {urlPath: '/api/settings'})).body);

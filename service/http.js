@@ -37,6 +37,15 @@ function respondJson(message, status, value) {
     respond(message, status, 'application/json', JSON.stringify(value));
 }
 
+// libsoup (3.6, and master as of 2026-11) closes the connection after
+// every 204: writing one drops the length header it must not carry, and
+// then takes the response for one that ends at EOF. Saying so keeps the
+// add-on from sending its next request on a connection that is closing,
+// which would reset that request.
+function respondEmpty(message) {
+    message.set_status(204, null);
+    message.get_response_headers().replace('Connection', 'close');
+}
 
 class RequestError extends Error {
     constructor(status, text) {
@@ -119,7 +128,7 @@ export function startHttp({port, hostname, files, core, browser, settings, pitch
             else if (outcome.ended === 'replaced')
                 respondJson(message, 409, {error: 'a newer request from a browser took this one’s place'});
             else
-                message.set_status(204, null);
+                respondEmpty(message);
             message.unpause();
         });
     };
@@ -161,7 +170,7 @@ export function startHttp({port, hostname, files, core, browser, settings, pitch
             break;
         }
         }
-        message.set_status(204, null);
+        respondEmpty(message);
     };
 
     const handlePage = (message, headers, path) => {
@@ -205,6 +214,8 @@ export function startHttp({port, hostname, files, core, browser, settings, pitch
         if (method === 'GET') {
             if (path === '/') {
                 message.set_redirect(303, '/settings');
+                // Without a length Soup would end the answer by closing the connection.
+                message.get_response_headers().set_content_length(0);
                 return;
             }
             const file = files.get(path);
