@@ -1,5 +1,5 @@
 [Unit]
-Description=Lyrics overlay service (timed lyrics for YouTube playback, http://lyrics.localhost:8792/)
+Description=Lyrics overlay service (timed lyrics for YouTube playback; settings at http://localhost:8792/settings)
 
 [Service]
 # TEMPLATE: rendered by scripts/install.sh. Do not install directly.

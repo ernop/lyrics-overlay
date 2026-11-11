@@ -38,6 +38,6 @@ sed "s|__WORKDIR__|$repo|g" "$repo/scripts/$unit.template" > "$units/$unit"
 systemctl --user daemon-reload
 systemctl --user enable --quiet "$unit"
 systemctl --user restart "$unit"
-echo "Started $unit; its page is http://lyrics.localhost:8792/"
+echo "Started $unit; its settings page is http://localhost:8792/settings"
 
 "$repo/scripts/install-gnome-extension.sh"
