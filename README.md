@@ -18,9 +18,10 @@ It has three parts:
   tab is playing; it sends nothing off the computer;
 - a service (`service/`, a gjs program run as the systemd user unit
   `lyrics-overlay.service`) that finds the lyrics, remembers your choices and
-  timing for each video, and decides which line shows when;
+  timing for each video, decides which line shows when, follows the pitch
+  you sing, and serves the settings page;
 - a GNOME Shell extension (`gnome-extension/lyrics-overlay@ernop`) that draws
-  the indicator, its menu, the line and the pitch trace.
+  the indicator, the line and the pitch panel.
 
 ## Requirements
 
@@ -46,8 +47,14 @@ shell extension. Then:
    [lyrics-overlay.xpi](https://github.com/ernop/lyrics-overlay/releases/latest/download/lyrics-overlay.xpi)
    and open it in Firefox (drag it onto a Firefox window); press Add.
 
+For more fonts, `scripts/install-fonts.sh` adds about 160 of Ubuntu's font
+packages for your user alone (no root). The settings page lists them at once;
+GNOME Shell draws them after the next login.
+
 To update: `git pull && scripts/install.sh`. The service restarts at once; the
-shell extension changes at the next login.
+shell extension changes at the next login. An add-on updated from 1.0 or 1.1
+opens a page asking for access to localhost, which it needs to find the
+settings tab; press Allow there once. Going to the song works without it.
 
 To remove:
 
@@ -65,44 +72,40 @@ and remove the add-on in Firefox's Add-ons and themes page.
 
 The indicator shows while YouTube plays sound and for two minutes after.
 
-![The indicator's four states, on a dark and a light panel](docs/indicator-icons.png)
+![The indicator on and off, on a dark and a light panel](docs/indicator-icons.png)
 
 | Where | Action | Result |
 |---|---|---|
 | Indicator | press | lyric line on or off |
-| Indicator | right-press | the menu |
+| Indicator | right-press | the settings page |
 | Lyric | click | goes to the song's Firefox tab and raises its window |
-| Lyric | right-click | the menu, at the pointer |
+| Lyric | right-click | the settings page |
 | Lyric | Ctrl+drag | moves the box |
 | Lyric | Alt+drag | resizes the box |
 | Lyric | Ctrl+scroll | changes the text size |
+| Pitch panel | drag an edge | resizes it |
+| Pitch panel | drag a separate one | moves it; dropped against a side of the lyric, it docks there |
+| Pitch panel | drag a docked one away | makes it separate |
+| Pitch panel | right-press | the settings page |
 
 Where no lyric is drawn, clicks reach the windows below.
 
-## The menu
+## The settings page
 
-![The menu](docs/menu.png)
+Everything is set on one page in Firefox, http://localhost:8792/settings, and
+each change shows on the line and the pitch panel as you make it. A right
+press on the indicator, the lyric or the pitch panel selects that tab, or
+opens it, and raises its window; there is only ever one.
 
-| Item | What it does |
+![The settings page: the song's status and the lyric line's settings](docs/settings.png)
+
+| Section | What it holds |
 |---|---|
-| Lyrics overlay | the lyric line, on or off |
-| Pitch trace from the microphone | a trace of the pitch you sing, beside the line |
-| Song and lyric status | the song as identified and the lyric set in use |
-| Timing | Too fast / Too slow move the lyrics 0.5 s; Reset; kept for each video |
-| Lyric sets | every set found; pick another |
-| Go to the song in Firefox | selects the song's tab and raises its window |
-| Wrong lyrics: hide this set | hides the set for this video and uses the next one |
-| Search again | asks LRCLIB again |
-| Look up lyrics for this video | for a video not recognized as a song |
-| Size | 16 to 256 px |
-| Font | the desktop font or an installed family; bold or not |
-| Color | white, yellow, orange, red, pink, magenta, purple, blue, cyan, green, black |
-| Border | double, single or none |
-| Alignment | centered or left |
-| Transition | instant, fade in (0.15 s), quick crossfade (0.12 s), soft crossfade (0.25 s) |
-| Reset position and size | puts the box back at the bottom center |
-| Mouse controls on the lyric | the pointer actions above |
-| Open the lyrics status page | http://lyrics.localhost:8792/ |
+| Song | what is playing, its lyric status, timing (Too fast / Too slow move the lyrics 0.5 s, Reset; kept for each video), the lyric sets (Wrong lyrics: hide this set, Search again, Look up lyrics for this video), the microphone, and the song's scale as heard |
+| Lyric line | on or off; font, the desktop font or any installed family that can write English, found by typing part of its name; bold; size, 16 to 256 px; color; border, double, single or none, 0.25 to 4 times as thick; alignment; transition; reset position and size |
+| Pitch panel | on or off; below, above, left or right of the lyric, or separate; the notes shown, a fixed range (set, or fitted to your last 30 s of singing) or a span that follows your voice; time across, 2 to 120 s; scrolling through silences; line thickness and color; background; note names on the lines; the scale whose lines stand out, detected from the song, fixed, or none; where the current note shows, its size and cents; analyses per second |
+| Microphone | which input; echo cancelling, on by default, so the trace follows you and not the song |
+| Mouse | the pointer actions above |
 
 White with a double border (the default), then yellow with a single border,
 left-aligned:
@@ -111,19 +114,14 @@ left-aligned:
 
 ![A lyric line, yellow with a single border, left-aligned](docs/line-yellow-left.png)
 
-Fonts are listed sans, serif, monospace, then script, each name in its own
-face:
-
-![The font list](docs/fonts.png)
-
-## Settings
+## Service settings
 
 `settings.json` (created from `settings.example.json`; restart the service
 after a change with `systemctl --user restart lyrics-overlay.service`):
 
 | Key | Default | Meaning |
 |---|---|---|
-| `port` | `8792` | the service's port on 127.0.0.1; the add-on and the shell extension use 8792 |
+| `port` | `8792` | the service's port on 127.0.0.1; the add-on, the shell extension and the settings page use 8792 |
 | `hostname` | `"lyrics.localhost"` | one more name the service answers to, such as a local proxy's |
 | `lrclibBaseUrl` | `"https://lrclib.net"` | the LRCLIB server |
 | `ytarchiveUrl` | `null` | a ytarchive server that receives each video played and its lyrics; `null` sends nothing |
@@ -135,8 +133,12 @@ after a change with `systemctl --user restart lyrics-overlay.service`):
 - The service asks LRCLIB for lyrics with a generic User-Agent. Every answer
   is kept for 7 days, and searches are capped at 20 a minute, 200 an hour and
   1000 a day, across restarts.
-- The microphone opens only while the line and the pitch trace are on and
-  YouTube is playing sound. Audio stays in memory.
+- The microphone opens only while the line and the pitch panel are on and
+  YouTube is playing sound.
+- While the pitch panel shows a scale detected from the song, the service
+  also listens to what the computer plays (not the microphone) to find the
+  key. For each video it keeps only the summed energy of each note name.
+- Audio stays in memory.
 
 ## Development
 

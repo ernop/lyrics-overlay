@@ -16,6 +16,12 @@ overlay, and the testing lessons behind the rules. What it is for:
 - **A proxy name** (optional): a local reverse proxy may give the service
   a name of its own, such as `http://lyrics.localhost/`; set `hostname` in
   `settings.json` to the Host it forwards, then restart the service.
+  Add-on 1.0 reached the service that way; 1.1 and later use port 8792
+  directly.
+- **More fonts** (optional): `scripts/install-fonts.sh` downloads about
+  160 of Ubuntu's font packages and unpacks their TrueType and OpenType
+  files into `~/.local/share/fonts/`, for this user alone; safe to rerun
+  (product.md, "Fonts").
 - **Restart after a service change**:
   `systemctl --user restart lyrics-overlay.service`. The unit runs the
   repository's `service/` directly, so a restart picks up committed code.
@@ -26,8 +32,8 @@ overlay, and the testing lessons behind the rules. What it is for:
   `~/.local/share/gnome-shell/.lyrics-overlay@ernop.pending` and enables
   `lyrics-overlay-extension-update.service`, which puts it in place at the
   next login, before the shell starts. Overwriting the running copy is
-  unsafe: the shell re-reads the extension's schema and stylesheet each
-  time it enables the old code again (after every screen unlock), and the
+  unsafe: the shell re-reads the extension's schema each time it enables
+  the old code again (after every screen unlock), and the
   old code throws on a schema that lacks its keys. GNOME's own
   `extension-updates/` works the same way only while its update machinery
   runs, which the owner's desktop blocks on purpose. `--apply-pending` is
@@ -38,9 +44,14 @@ overlay, and the testing lessons behind the rules. What it is for:
 ## Verify
 
 - `curl -s http://127.0.0.1:8792/api/state` answers 200 with
-  `{state, line}`; `http://lyrics.localhost:8792/` is the status page: the
-  song, lyric status, matched set, timing offset, current line, microphone
-  state, and every lyric set found.
+  `{state, line}`; `http://localhost:8792/settings` is the settings page,
+  which also shows the song, its lyric status, timing and lyric sets, the
+  microphone and the scale heard.
+- **Which add-on Firefox runs**: the profile's `extensions.json` entry for
+  `lyrics-overlay@local` holds the active version (read it; never edit the
+  profile). A failed click logs in the service whether any add-on has
+  asked for commands since the service started; add-ons before 1.1 never
+  do.
 - With `ytarchiveUrl` set, the service log
   (`journalctl --user -u lyrics-overlay.service`) says "ytarchive: added
   <id>" when a new video sounds and names the lyrics it sent.
@@ -57,12 +68,12 @@ overlay, and the testing lessons behind the rules. What it is for:
 - `npm test`: every unit suite plus the real gjs service against a stub
   LRCLIB, about 4 s. `npm run lint`: `web-ext lint` on the extension.
 - `npm run test:shell`: a headless GNOME Shell with the real extension and
-  service, driving the indicator, both menus and the overlay with virtual
-  input, about 11 s. It stands in for the browser extension when a click
-  on the lyric sends its command, and opens plain GTK windows
-  (`tests/e2e/titled-window.js`) to check the right one is raised. A
-  failure prints the shell's and the service's log lines. Screenshots land
-  in `build/e2e-artifacts/`.
+  service, driving the indicator, the overlay and the pitch panel (docking,
+  resizing, separating) with virtual input, about 11 s. It stands in for
+  the browser extension when a click on the lyric or a right press sends
+  its command, and opens plain GTK windows (`tests/e2e/titled-window.js`)
+  to check the right one is raised. A failure prints the shell's and the
+  service's log lines. Screenshots land in `build/e2e-artifacts/`.
 - Both service-level suites run in an isolated session
   (`tests/isolated-session.mjs`): a temporary HOME and XDG dirs, and
   private D-Bus daemons started inside them that activate only what the
@@ -82,15 +93,25 @@ overlay, and the testing lessons behind the rules. What it is for:
   handling changes): `node scripts/probe-firefox-commands.mjs [--show-log]
   [URL]` runs the extension in a signed-out headless Firefox against a
   private service on a private bus, with a stand-in for LRCLIB; the
-  profile sends `lyrics.localhost:8792` to that service through an HTTP
-  proxy setting. It calls FocusSong as the shell does and checks the
-  extension selects the tab and names its window. The installed service
-  and the owner's screen are untouched.
+  profile sends the add-on's and the settings page's addresses to that
+  service through an HTTP proxy setting, via a relay that counts page
+  loads. Two runs, about a minute together. A fresh install: FocusSong
+  selects the song's tab and names its window, the first OpenSettings
+  opens the settings page and the second selects that same tab. An
+  update from the last release without localhost access (`OLD_RELEASE`):
+  OpenSettings shows the add-on's page asking for it, and the settings
+  page never loads. Commands start once Firefox has run 20 s (below,
+  "Testing lessons"). It fails on any error the add-on logs; web-ext
+  passes Firefox's output to the log only with `--verbose`. The
+  installed service and the owner's screen are untouched.
 - **The README's pictures**: `gjs -m scripts/render-indicator-icons.js`
   draws `docs/indicator-icons.png` after an icon changes;
-  `scripts/update-readme-pictures.sh` runs the shell e2e and copies the
-  menu, font list and lyric line it saves, cropped, into `docs/`, without
-  the time GNOME stamps in them, so an unchanged picture stays the same file.
+  `scripts/update-readme-pictures.sh` runs the shell e2e (two lyric
+  lines), `tests/e2e/readme-desktop.mjs` (the staged desktop) and
+  `scripts/settings-page-picture.mjs` (the settings page in a headless
+  Firefox, with made-up microphones) and copies each picture into
+  `docs/` without the time stamped in it, so an unchanged picture stays
+  the same file.
 
 ## Release the Firefox extension
 
@@ -151,21 +172,36 @@ asks for every site but holds only the one origin granted by hand.
 - **Run a negative check's edit, test and restore one after another.**
   Issued together, the restore can land before the test installs the
   code, and the broken version passes.
-- **Check each look from a fresh start (2026-11-10).** The menu's pure
-  black ink was applied only on a change from the dark style, so a menu
-  first opened in the light style (the owner's) kept the theme's
-  near-black. The e2e opened the panel menu dark first and missed it; the
-  lyric menu, first opened light, caught it.
-- **A menu taller than the room beside its opening point runs off the
-  screen (2026-11-10).** GNOME's popup opens below the point, or above it
-  only when it fits there, and never shrinks. Both menus scroll within a
-  height cap; the e2e asserts the lyric menu is whole on a 900 px screen.
-- **A submenu inside a capped menu scrolls in a strip a row tall
-  (2026-11-10).** GNOME gives an opened submenu its own scroll view once
-  the menu reaches its max-height; a scroll view's minimum height is near
-  zero, so the scrolled menu body laid the font list out in what the other
-  rows left, one row at 900 px. Our submenus never scroll on their own
-  (`submenuItem` in indicator.js); the body scrolls them whole. The e2e
-  compares what shows of the font submenu with its list's preferred
-  height, not its allocation: the list's box is itself a viewport, as
-  short as the strip.
+- **Check each look from a fresh start (2026-11-10).** A style applied
+  only on a change from another style is missing when the first one shown
+  is the owner's: the removed menus kept the theme's near-black ink when
+  first opened light. Test each look as the first thing shown.
+- **Find out which add-on the browser runs before debugging the command
+  channel (2026-11-10).** The owner's clicks on the lyric failed
+  with "the browser extension is not listening" while every lab run
+  passed; Firefox still ran 1.0.0, which has no command channel, because
+  the 1.1.0 install prompt was never accepted. One read of the profile's
+  `extensions.json` would have settled it (Verify, above).
+- **web-ext hides Firefox's output unless `--verbose` (2026-11-10).** The
+  command probe's check of the add-on's log read nothing and could not
+  fail until then.
+- **A fresh headless Firefox is slow to hand on responses in its first
+  seconds (2026-11-10).** In its first 5-12 s it held a response the relay
+  had written within 7 ms for about 3 s, past the service's answer budget;
+  never after 20 s, so the command probe waits that long. Throttling was
+  not the cause. The 3 s budget is the product's (product.md, "Going to
+  the song"), so the probe waits rather than the budget growing.
+- **A keep-alive client finds unannounced closes (2026-11-10).** libsoup
+  closed the connection after every 204 without saying so (architecture.md,
+  "The report contract"); browsers mostly reconnect, but the probe's relay
+  and a reverse proxy in front of the service reused the closing
+  connection and lost the request.
+  The service test now sends every kind of answer over one kept
+  connection.
+- **Bound every wait on a browser (2026-11-10).** The settings picture
+  awaited `document.fonts.ready` over WebDriver BiDi with no limit and once
+  hung for minutes; each request now has a limit, and the page-side wait
+  its own, so the script's deadline holds.
+- **A probe ends its processes in `finally`, and never exits inside the
+  `try` (2026-11-10).** A scratch probe's `process.exit` skipped that
+  cleanup and left a bus, a service and Firefox running.

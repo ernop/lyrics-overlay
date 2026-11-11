@@ -5,9 +5,9 @@ the doc that owns your change. Every doc in the repository is listed here.
 
 | Doc | What it holds |
 |-----|---------------|
-| [README.md](README.md) | What it does, install, the controls and menu (with pictures), settings |
+| [README.md](README.md) | What it does, install, the controls and the settings page (with pictures), service settings, privacy |
 | [docs/product.md](docs/product.md) | Owner requirements and settled decisions, with reasons |
-| [docs/architecture.md](docs/architecture.md) | Parts, report contract, browser commands, the ytarchive hand-off, what the overlay shows when, YouTube page facts, service core, D-Bus, GJS lifetime rules |
+| [docs/architecture.md](docs/architecture.md) | Parts, report contract and HTTP guards, browser commands, the ytarchive hand-off, settings, pitch capture and the song's key, what the overlay shows when, YouTube page facts, service core, D-Bus, GJS lifetime rules |
 | [docs/operations.md](docs/operations.md) | Install, restart, verify, tests, release, testing lessons |
 
 ## Working method
@@ -47,8 +47,9 @@ the doc that owns your change. Every doc in the repository is listed here.
    docs/operations.md, "Release the Firefox extension"). Then publish the
    signed file as a GitHub release, which the README's download link
    serves.
-6. A change to what the menu or the lyric looks like: refresh the README's
-   pictures with `scripts/update-readme-pictures.sh`.
+6. A change to what the lyric, the pitch panel or the settings page looks
+   like: refresh the README's pictures with
+   `scripts/update-readme-pictures.sh`, and look at each one.
 
 ## Standing rules
 
