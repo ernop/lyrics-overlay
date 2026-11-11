@@ -62,6 +62,7 @@ const timers = {
         return GLib.SOURCE_REMOVE;
     }),
     clear: id => GLib.source_remove(id),
+    now: () => GLib.get_monotonic_time() / 1000,
 };
 
 let bus = null;

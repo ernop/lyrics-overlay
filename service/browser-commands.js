@@ -24,7 +24,7 @@ export const HOLD_MS = 25_000;
 
 export class BrowserCommands {
     /**
-     * @param {{timers: {set(callback: () => void, delayMs: number): unknown, clear(handle: unknown): void},
+     * @param {{timers: {set(callback: () => void, delayMs: number): unknown, clear(handle: unknown): void, now(): number},
      *          log: (message: string) => void}} deps
      */
     constructor(deps) {
@@ -39,6 +39,10 @@ export class BrowserCommands {
         this._listener = null;
         /** @type {{id: number, command: object, delivered: boolean, timer: unknown, resolve: (result: object) => void}|null} */
         this._pending = null;
+        // Explains an unheard command: an add-on that never asks (one older
+        // than the command channel) looks the same as one that stopped asking.
+        /** @type {{at: number, how: string}|null} */
+        this._lastRequestEnd = null;
     }
 
     /**
@@ -55,6 +59,7 @@ export class BrowserCommands {
             this._pending = pending;
             pending.timer = this._timers.set(() => {
                 pending.timer = null;
+                this._log(`no browser add-on heard command ${id}: ${this._describeLastRequest()}`);
                 this._finish({ok: false, error: 'the browser extension is not listening'});
             }, DELIVER_MS);
             if (this._listener)
@@ -91,11 +96,19 @@ export class BrowserCommands {
         return true;
     }
 
+    _describeLastRequest() {
+        if (!this._lastRequestEnd)
+            return 'none has asked for commands since the service started';
+        const {at, how} = this._lastRequestEnd;
+        return `the last request ended ${((this._timers.now() - at) / 1000).toFixed(1)} s ago (${how})`;
+    }
+
     _deliver() {
         const pending = this._pending;
         const listener = this._listener;
         this._listener = null;
         this._clearTimer(listener);
+        this._lastRequestEnd = {at: this._timers.now(), how: 'it carried a command'};
         pending.delivered = true;
         this._clearTimer(pending);
         pending.timer = this._timers.set(() => {
@@ -112,6 +125,7 @@ export class BrowserCommands {
             return;
         this._listener = null;
         this._clearTimer(listener);
+        this._lastRequestEnd = {at: this._timers.now(), how: why === 'hold' ? 'its hold ran out' : 'a newer request took its place'};
         listener.deliver({ended: why});
     }
 

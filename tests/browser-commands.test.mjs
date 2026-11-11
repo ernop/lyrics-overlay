@@ -20,6 +20,7 @@ function harness() {
                 assert.ok(index >= 0, `cleared timer ${handle}, which is not pending`);
                 pending.splice(index, 1);
             },
+            now: () => now,
         },
         log: message => logs.push(message),
     });
@@ -78,6 +79,15 @@ test('a command waits briefly for the extension to ask, then fails as unheard', 
     h.advance(DELIVER_MS);
     assert.deepEqual(await settled(unheard), {ok: false, error: 'the browser extension is not listening'});
     assert.equal(h.timersPending(), 0);
+    assert.deepEqual(h.logs, ['no browser add-on heard command 2: the last request ended 1.5 s ago (it carried a command)']);
+});
+
+test('an unheard command is logged as such when no add-on has ever asked', async () => {
+    const h = harness();
+    const unheard = h.commands.send({op: 'focusTab', tabId: 7});
+    h.advance(DELIVER_MS);
+    assert.deepEqual(await settled(unheard), {ok: false, error: 'the browser extension is not listening'});
+    assert.deepEqual(h.logs, ['no browser add-on heard command 1: none has asked for commands since the service started']);
 });
 
 test('a delivered command the extension never answers fails, and its late answer is refused', async () => {
@@ -113,4 +123,5 @@ test('a request ends empty when a newer one replaces it or its hold ends, saying
     const unheard = h.commands.send({op: 'focusTab', tabId: 7});
     h.advance(DELIVER_MS);
     assert.deepEqual(await settled(unheard), {ok: false, error: 'the browser extension is not listening'});
+    assert.deepEqual(h.logs, ['no browser add-on heard command 1: the last request ended 1.5 s ago (its hold ran out)']);
 });
