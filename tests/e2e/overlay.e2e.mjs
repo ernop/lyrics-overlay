@@ -171,7 +171,7 @@ const overlayFacts = `(() => {
         savedBox: overlay.box,
         grip: {visible: overlay._grip.visible, x: gx, y: gy, width: overlay._grip.width, height: overlay._grip.height},
         outlineVisible: overlay._outline.visible,
-        hovered: overlay._hovered,
+        cursorType: overlay._grip.get_cursor_type(),
         statusVisible: overlay._statusPill.visible,
         statusText: overlay._statusText,
     };
@@ -315,54 +315,42 @@ async function overlayScenario(h, releaseFile) {
     // below it gets its whole default height.
     assert.ok(Math.abs(line.box.x + line.box.width / 2 - MONITOR.width / 2) <= 1, JSON.stringify(line.box));
 
-    // Away from the lyric, the outline stays hidden (idle click-through).
+    // Away from and over the lyric, the outline stays hidden, the grip stays
+    // tight to the painted ink (no hover activation frame), and plain hover
+    // leaves the cursor untouched.
     assert.equal(line.outlineVisible, false);
+    await h.evalJs(inputScript([{move: center(line.grip), wait: 80}]));
+    const hovered = await h.evalJs(overlayFacts);
+    assert.equal(hovered.outlineVisible, false, 'mouseover must never show an outline or activation background');
+    assert.ok(hovered.grip.width <= line.grip.width + 2, 'mouseover must not expand grip to full box');
+    assert.equal(hovered.cursorType, 0, 'mouseover must leave cursor INHERIT');
 
-    // Moving the pointer onto the lyric reveals the normal frame + 8 handles,
-    // and dragging inside moves the box directly (no Alt/Ctrl gymnastic needed).
-    await h.evalJs(inputScript([{move: center(line.grip), wait: 60}]));
-    const hovered = await h.waitFor(async () => {
-        const facts = await h.evalJs(overlayFacts);
-        return facts.outlineVisible && facts.grip.width >= facts.box.width - 2 && facts;
-    }, 'hovering the lyric to reveal the frame and full-box resize handles');
-    assert.equal(hovered.outlineVisible, true);
+    // A plain drag (without Ctrl) never moves the box.
+    await h.evalJs(drag({from: center(line.grip), by: [120, -80]}));
+    assert.deepEqual((await h.evalJs(overlayFacts)).box, line.box, 'plain drag must never move the lyric');
 
-    // Plain interior drag moves the box by the pointer's travel and persists it.
-    await h.evalJs(drag({from: center(hovered.box), by: [120, -80]}));
+    // A Ctrl press without movement changes nothing and never reveals the outline.
+    await h.evalJs(drag({from: center(line.grip), by: [0, 0], modifier: 'KEY_Control_L'}));
+    const afterCtrlTap = await h.evalJs(overlayFacts);
+    assert.deepEqual(afterCtrlTap.box, line.box);
+    assert.equal(afterCtrlTap.outlineVisible, false);
+
+    // Ctrl+drag moves the box by the pointer's travel and persists it; the
+    // outline shows only while dragging and hides on release.
+    await h.evalJs(drag({from: center(line.grip), by: [120, -80], modifier: 'KEY_Control_L'}));
     const moved = await h.evalJs(overlayFacts);
     assert.deepEqual([moved.box.x - line.box.x, moved.box.y - line.box.y, moved.box.width, moved.box.height],
         [120, -80, line.box.width, line.box.height]);
+    assert.equal(moved.outlineVisible, false, 'outline hides as soon as Ctrl+drag ends');
     const storedMove = await h.gsettings.get('box');
     assert.match(storedMove, /'cx': 0\.5[67]/u, storedMove);
 
-    // A Ctrl press without movement changes nothing.
-    await h.evalJs(drag({from: center(moved.box), by: [0, 0], modifier: 'KEY_Control_L'}));
-    assert.deepEqual((await h.evalJs(overlayFacts)).box, moved.box);
-
-    // Normal desktop resize: dragging the right edge anchors the left edge;
-    // dragging the bottom-right corner resizes both axes while anchoring top-left.
-    const rightEdge = [moved.box.x + moved.box.width - 4, moved.box.y + moved.box.height / 2];
-    await h.evalJs(drag({from: rightEdge, by: [-80, 0]}));
-    const narrowerBox = await h.evalJs(overlayFacts);
-    assert.ok(near(narrowerBox.box.x, moved.box.x), JSON.stringify([moved.box, narrowerBox.box]));
-    assert.ok(near(narrowerBox.box.width, moved.box.width - 80), JSON.stringify([moved.box, narrowerBox.box]));
-
-    const brCorner = [narrowerBox.box.x + narrowerBox.box.width - 4, narrowerBox.box.y + narrowerBox.box.height - 4];
-    await h.evalJs(drag({from: brCorner, by: [80, 40]}));
-    const resized = await h.evalJs(overlayFacts);
-    assert.ok(near(resized.box.x, moved.box.x), JSON.stringify([narrowerBox.box, resized.box]));
-    assert.ok(near(resized.box.y, moved.box.y), JSON.stringify([narrowerBox.box, resized.box]));
-    assert.ok(near(resized.box.width, moved.box.width), JSON.stringify([moved.box, resized.box]));
-    assert.ok(near(resized.box.height, moved.box.height + 40), JSON.stringify([moved.box, resized.box]));
-
     // Ctrl+scroll on the lyric grows the text, then stores the size.
-    await h.evalJs(inputScript([{move: center(resized.box)}, {key: 'KEY_Control_L', down: true},
+    await h.evalJs(inputScript([{move: center(moved.grip)}, {key: 'KEY_Control_L', down: true},
         {scroll: 'UP'}, {scroll: 'UP'}, {key: 'KEY_Control_L', down: false}]));
     // Two notches are two steps; the emulated copy of each notch is ignored.
     await h.waitFor(async () => Math.abs(Number(await h.gsettings.get('font-size')) - 48 * 1.06 ** 2) < 0.01, 'the scrolled size to persist');
-    // Moving the pointer away hides the frame and shrinks the grip back to the ink.
     await h.evalJs(inputScript([{move: [20, 20], wait: 80}]));
-    await h.waitFor(async () => !(await h.evalJs(overlayFacts)).outlineVisible, 'moving pointer away to hide the frame');
     await h.screenshot('overlay-moved-resized');
 
     // Centered by default; left alignment starts the line at the box's left
@@ -446,7 +434,7 @@ async function overlayScenario(h, releaseFile) {
         const facts = await h.evalJs(panelFacts);
         return facts.visible && facts;
     }, 'the pitch panel');
-    const lyricBox = (await h.evalJs(overlayFacts)).box;
+    const lyricBox = (await h.evalJs(overlayFacts)).savedBox;
     assert.ok(near(below.box.x, lyricBox.x) && near(below.box.width, lyricBox.width) &&
         near(below.box.y, lyricBox.y + lyricBox.height + 4) && below.box.height >= 48, JSON.stringify([below.box, lyricBox]));
     await h.waitFor(async () => Boolean(await h.evalJs(`${EXTENSION}.stateObj._state.pitch.error`)), 'the microphone error', 15000);
@@ -468,22 +456,26 @@ async function overlayScenario(h, releaseFile) {
     await h.gsettings.set('pitch-line-width', '0.5');
     await h.waitFor(async () => (await h.evalJs(panelFacts)).lineWidth === 0.5, 'the thin line');
 
-    // Dragging a docked panel's outer edge sets how thick it is.
+    // Plain drag without Ctrl does not move or resize the pitch panel.
+    await h.evalJs(drag({from: center(above.box), by: [0, -160]}));
+    assert.deepEqual((await h.evalJs(panelFacts)).box, above.box, 'plain drag must never move the pitch panel');
+
+    // Ctrl+dragging a docked panel's outer edge sets how thick it is.
     const thickness = Number(await h.gsettings.get('pitch-docked-height'));
-    await h.evalJs(drag({from: [above.box.x + above.box.width / 2, above.box.y + 3], by: [0, -40]}));
+    await h.evalJs(drag({from: [above.box.x + above.box.width / 2, above.box.y + 3], by: [0, -40], modifier: 'KEY_Control_L'}));
     await h.waitFor(async () => Number(await h.gsettings.get('pitch-docked-height')) > thickness, 'the thicker panel to persist');
     const thicker = await h.evalJs(panelFacts);
     assert.ok(near(thicker.box.height, above.box.height + 40) && near(thicker.box.y + thicker.box.height + 4, lyricBox.y),
         JSON.stringify([above.box, thicker.box]));
 
-    // Dragging it away makes it separate, where it was dropped.
-    await h.evalJs(drag({from: center(thicker.box), by: [0, -200]}));
+    // Ctrl+dragging it away makes it separate, where it was dropped.
+    await h.evalJs(drag({from: center(thicker.box), by: [0, -200], modifier: 'KEY_Control_L'}));
     await h.waitFor(async () => (await h.gsettings.get('pitch-dock')) === "'separate'", 'the panel to come apart');
     const separate = await h.evalJs(panelFacts);
     assert.ok(near(separate.box.y, thicker.box.y - 200) && near(separate.box.x, thicker.box.x), JSON.stringify(separate.box));
 
-    // A separate panel resizes from its edges.
-    await h.evalJs(drag({from: [separate.box.x + separate.box.width - 3, separate.box.y + separate.box.height / 2], by: [-100, 0]}));
+    // A separate panel resizes from its edges with Ctrl+drag.
+    await h.evalJs(drag({from: [separate.box.x + separate.box.width - 3, separate.box.y + separate.box.height / 2], by: [-100, 0], modifier: 'KEY_Control_L'}));
     const narrower = await h.waitFor(async () => {
         const facts = await h.evalJs(panelFacts);
         return near(facts.box.width, separate.box.width - 100) && facts;
@@ -491,9 +483,9 @@ async function overlayScenario(h, releaseFile) {
     assert.ok(near(narrower.box.x, separate.box.x), JSON.stringify(narrower.box));
     await h.screenshot('pitch-separate');
 
-    // Dropped just above the lyric, it docks there again.
+    // Dropped just above the lyric with Ctrl+drag, it docks there again.
     const dropBy = lyricBox.y - 4 - 10 - (narrower.box.y + narrower.box.height);
-    await h.evalJs(drag({from: center(narrower.box), by: [0, dropBy]}));
+    await h.evalJs(drag({from: center(narrower.box), by: [0, dropBy], modifier: 'KEY_Control_L'}));
     await h.waitFor(async () => (await h.gsettings.get('pitch-dock')) === "'above'", 'the panel to dock again');
     const docked = await h.evalJs(panelFacts);
     assert.ok(near(docked.box.width, lyricBox.width) && near(docked.box.y + docked.box.height + 4, lyricBox.y), JSON.stringify(docked.box));
@@ -534,25 +526,30 @@ async function overlayScenario(h, releaseFile) {
     await h.gsettings.set('text-custom-color', "''");
     await h.waitFor(async () => (await h.evalJs(overlayFacts)).align === 'center', 'style reset');
 
-    // A click on the lyric (even right near the top edge resize zone, without
-    // dragging) has the browser extension select the song's tab, then raises
-    // the window showing it.
+    // A plain primary press on the lyric acts immediately on press (without
+    // waiting for release) to select the song's tab and raise its window.
     await focusAnotherWindow();
     const beforeClick = await lyricShowing();
     const commandAnswered = h.answerNextCommand(() => ({ok: true, windowTitle: songWindow}));
-    await h.evalJs(inputScript([{move: center(beforeClick.grip)}, {button: 1, down: true}, {button: 1, down: false, wait: 100}]));
+    await h.evalJs(inputScript([{move: center(beforeClick.grip)}, {button: 1, down: true, wait: 100}]));
     const command = await commandAnswered;
     assert.deepEqual([command.op, command.tabId], ['focusTab', 4]);
-    await h.waitFor(async () => (await h.evalJs(focusedTitle)) === songWindow, 'the song window to be raised');
+    await h.evalJs(inputScript([{button: 1, down: false, wait: 60}]));
+    await h.waitFor(async () => (await h.evalJs(focusedTitle)) === songWindow, 'the song window to be raised on press');
     await h.screenshot('lyric-click-raised-song-window');
 
-    // Quick click inside the top edge resize zone without moving still raises the song.
+    // A Ctrl+press without movement does NOT trigger focusTab.
     await focusAnotherWindow();
-    const nearTopEdge = [beforeClick.box.x + beforeClick.box.width / 2, beforeClick.box.y + 4];
-    const edgeClickCmd = h.answerNextCommand(() => ({ok: true, windowTitle: songWindow}));
-    await h.evalJs(inputScript([{move: center(beforeClick.grip)}, {move: nearTopEdge}, {button: 1, down: true}, {button: 1, down: false, wait: 100}]));
-    assert.deepEqual([(await edgeClickCmd).op, (await edgeClickCmd).tabId], ['focusTab', 4]);
-    await h.waitFor(async () => (await h.evalJs(focusedTitle)) === songWindow, 'edge quick-click to raise the song window');
+    let unexpectedCmd = false;
+    const guardCmd = h.answerNextCommand(() => { unexpectedCmd = true; return {ok: true, windowTitle: songWindow}; });
+    await h.evalJs(inputScript([{move: center(beforeClick.grip)}, {key: 'KEY_Control_L', down: true},
+        {button: 1, down: true}, {button: 1, down: false, wait: 100}, {key: 'KEY_Control_L', down: false}]));
+    await sleep(150);
+    assert.equal(unexpectedCmd, false, 'Ctrl+press without movement must do nothing');
+    // Consume the armed stub listener cleanly with a real click.
+    await h.evalJs(inputScript([{move: center(beforeClick.grip)}, {button: 1, down: true}, {button: 1, down: false, wait: 100}]));
+    await guardCmd;
+    await h.waitFor(async () => (await h.evalJs(focusedTitle)) === songWindow, 'plain click to raise the song window');
 
     // Disable and enable leave exactly one overlay, pitch panel and indicator,
     // even if GNOME Shell unwinds disable() or enable() twice in a row.

@@ -416,7 +416,7 @@ function buildStage() {
             clearSampleBtn),
         el('div', {class: 'stage-meta'},
             telemetryLine,
-            el('span', {class: 'hint-line'}, 'Hover lyric on desktop to drag or resize'),
+            el('span', {class: 'hint-line'}, 'Ctrl+drag lyric on desktop to move; resize here'),
         ),
     );
 

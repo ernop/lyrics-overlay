@@ -558,3 +558,114 @@ test('auto-generation cancels when switching songs, skips instrumentals and long
     assert.equal(h.lastState().generation.status, 'skipped');
     assert.match(h.lastState().generation.message, /10 minutes/u);
 });
+
+test('a background non-music stream never flashes lyrics or cancels generation on heartbeats', async () => {
+    const webcamMeta = metadata('vcam1', {
+        title: 'Harbor Street Live Webcam',
+        author: 'City Cam Channel',
+        category: 'Travel & Events',
+        description: '',
+    });
+    const longIntro = '[01:00.00] First line after intro\n[01:05.00] Second line';
+    const h = harness({
+        answers: {'Band|Song One': [record(1, {syncedLyrics: longIntro})]},
+    });
+
+    // Webcam opens first and keeps sending 5 s heartbeats.
+    h.report(9, {sampledAt: h.now, media: media('vcam1', {currentTime: 100}), metadata: webcamMeta});
+    await h.flush();
+    assert.equal(h.lastState().lyrics, 'not-music');
+
+    await h.advance(2000);
+    h.report(7, {sampledAt: h.now, media: media('v1', {currentTime: 0}), metadata: metadata('v1')});
+    await h.flush();
+    assert.equal(h.lastState().lyrics, 'timed');
+    assert.equal(h.core.activeTabId(), 7);
+
+    const statesStart = h.states.length;
+    const linesStart = h.lines.length;
+    // Interleave heartbeats from both tabs for 25 seconds during the 60 s countdown.
+    for (let step = 0; step < 5; step++) {
+        await h.advance(2500);
+        h.report(9, {sampledAt: h.now, media: media('vcam1', {currentTime: 102 + step * 5}), metadata: webcamMeta});
+        await h.advance(2500);
+        h.report(7, {sampledAt: h.now, media: media('v1', {currentTime: (step + 1) * 5}), metadata: metadata('v1')});
+    }
+    const emittedStates = h.states.slice(statesStart);
+    const emittedLines = h.lines.slice(linesStart);
+    assert.equal(h.core.activeTabId(), 7);
+    assert.ok(emittedStates.every(s => s.videoId === 'v1' && s.lyrics === 'timed'), JSON.stringify(emittedStates));
+    assert.ok(emittedLines.every(l => l.text.endsWith('First line after intro')), JSON.stringify(emittedLines));
+    assert.equal(h.lastLine().text, '35 First line after intro');
+
+    // Same stability while automatic lyric timing runs: webcam heartbeats never cancel it.
+    let cancelled = false;
+    const g = harness({
+        answers: {'Band|Song Two': []},
+        generate: () => ({
+            promise: new Promise(() => {}),
+            cancel: () => { cancelled = true; },
+        }),
+    });
+    g.report(9, {sampledAt: g.now, media: media('vcam1'), metadata: webcamMeta});
+    await g.advance(1000);
+    g.report(7, {sampledAt: g.now, media: media('v2'), metadata: SONG_TWO});
+    await g.flush();
+    assert.equal(g.lastState().lyrics, 'generating');
+    for (let step = 0; step < 3; step++) {
+        await g.advance(2500);
+        g.report(9, {sampledAt: g.now, media: media('vcam1', {currentTime: step * 5 + 3}), metadata: webcamMeta});
+        await g.advance(2500);
+        g.report(7, {sampledAt: g.now, media: media('v2', {currentTime: (step + 1) * 5}), metadata: SONG_TWO});
+    }
+    assert.equal(cancelled, false);
+    assert.equal(g.lastState().lyrics, 'generating');
+    assert.equal(g.core.activeTabId(), 7);
+});
+
+test('two simultaneously playing songs stay on the newer song across heartbeats', async () => {
+    const h = harness({
+        answers: {
+            'Band|Song One': [record(1)],
+            'Band|Song Two': [record(2, {trackName: 'Song Two'})],
+        },
+    });
+    h.report(7, {sampledAt: h.now, media: media('v1'), metadata: metadata('v1')});
+    await h.flush();
+    await h.advance(2000);
+    h.report(8, {sampledAt: h.now, media: media('v2'), metadata: SONG_TWO});
+    await h.flush();
+    assert.equal(h.core.activeTabId(), 8);
+
+    // Tab 7 sends a newer heartbeat while Tab 8 is also playing: Tab 8 stays active.
+    await h.advance(3000);
+    h.report(7, {sampledAt: h.now, media: media('v1', {currentTime: 5}), metadata: metadata('v1')});
+    assert.equal(h.core.activeTabId(), 8);
+    await h.advance(2000);
+    h.report(8, {sampledAt: h.now, media: media('v2', {currentTime: 5}), metadata: SONG_TWO});
+    assert.equal(h.core.activeTabId(), 8);
+});
+
+test('pausing a song keeps it active over an older background stream, while a new video takes over', async () => {
+    const webcamMeta = metadata('vcam1', {title: 'Harbor Street Live Webcam', author: 'City Cam Channel', category: 'Travel & Events', description: ''});
+    const talkMeta = metadata('vtalk1', {title: 'Science Lecture', author: 'University Channel', category: 'Education', description: ''});
+    const h = harness({answers: {'Band|Song One': [record(1)]}});
+
+    h.report(9, {sampledAt: h.now, media: media('vcam1'), metadata: webcamMeta});
+    await h.advance(3000);
+    h.report(7, {sampledAt: h.now, media: media('v1', {currentTime: 10}), metadata: metadata('v1')});
+    await h.flush();
+    await h.advance(5000);
+    h.report(7, {sampledAt: h.now, media: media('v1', {currentTime: 15, paused: true}), metadata: metadata('v1')});
+    assert.equal(h.core.activeTabId(), 7);
+
+    // Older background stream heartbeat does not steal from the just-paused song.
+    await h.advance(2000);
+    h.report(9, {sampledAt: h.now, media: media('vcam1', {currentTime: 10}), metadata: webcamMeta});
+    assert.equal(h.core.activeTabId(), 7);
+
+    // A non-music video started after the pause takes over cleanly.
+    await h.advance(2000);
+    h.report(10, {sampledAt: h.now, media: media('vtalk1'), metadata: talkMeta});
+    assert.equal(h.core.activeTabId(), 10);
+});

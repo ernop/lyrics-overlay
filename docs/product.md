@@ -92,20 +92,26 @@ indicator changes quietly.
   draggable, ultra-instant").** A move repaints nothing; a resize or a
   Ctrl+scroll step repaints only the line that shows, from cached wrap
   widths and pre-rendered A8 border/shadow masks, in a few milliseconds.
-- **Hover-reveal desktop move & resize (owner, 2026-11-19).** Moving and
-  resizing the lyric works like an ordinary desktop window without taking
-  focus or requiring a separate adjust mode or `Alt+drag`:
-  - Away from the lyric, only the painted text (or backdrop) takes pointer
-    input, so empty space stays click-through.
-  - Hovering the lyric reveals a clean frame with 8 edge/corner resize
-    handles and standard OS resize cursors (`N/S/E/W/NW/NE/SW/SE`).
-  - Dragging any edge or corner resizes while anchoring the opposite edge.
-  - Dragging anywhere inside the frame past the desktop drag threshold
-    moves the box with magnetic center/edge snapping (hold `Shift` to
-    disable snap); pressing `Escape` cancels an active drag.
-  - A quick primary click inside still focuses the YouTube song tab and
-    raises its window; a right-click opens the settings page; `Ctrl+scroll`
-    resizes text. Position and size persist as fractions of the monitor.
+- **No hover background; Ctrl+drag only to move (owner, 2026-11-20).**
+  Hover-reveal frames and dual-purpose click+drag controls are rejected
+  across all of the owner's projects:
+  - Hovering the lyric does nothing visually (no scrim, no box border, no
+    handles, no cursor change); outside the painted text (or timing status
+    pill), empty space stays click-through.
+  - A plain primary press on the lyric (or timing pill) acts immediately on
+    press to focus the YouTube song tab and raise its window; it never
+    starts a drag.
+  - Moving the lyric requires `Ctrl+drag` (magnetic center/edge snap; hold
+    `Shift` to bypass snap; `Escape` cancels; `Ctrl+press` without movement
+    does nothing). The placement frame, snap guides and dimensions readout
+    show only during an active `Ctrl+drag` and vanish on release.
+  - `Ctrl+scroll` resizes text; box width and height resize lives on the
+    settings page's Screen map.
+  - A secondary press opens or raises the settings page. Position and size
+    persist as fractions of the monitor.
+  - The pitch panel follows the same rule: plain press does nothing and
+    plain hover keeps the default cursor; `Ctrl+drag` moves, docks/detaches
+    or resizes its edges (`Escape` cancels).
 - **Media keys go through Firefox (owner, 2026-11-19).** The keyboard's
   play/pause, next and previous keys reach YouTube through Firefox's own
   desktop media player (MPRIS), which GNOME's media-keys service
@@ -178,14 +184,15 @@ indicator changes quietly.
   current one plays, when the upcoming listing names an artist.
 - **Efficient and cached.** Every answer is cached server-side and reused;
   requests to LRCLIB stay inside a persistent budget (below).
-- **The pitch panel (owner, 2026-11-10).** A panel of its own traces the
-  owner's sung pitch from the microphone, as voice-wei's Pitch page does.
-  It shows while it is switched on, the overlay is on and a YouTube tab
-  plays, with or without timed lyrics. It docks against a side of the
-  lyric box (below by default, above, left or right) or stands separate
-  anywhere on the screen. Dragging its edges resizes it; dragging a
-  separate panel moves it; dropping it against a side of the lyric docks
-  it there; dragging a docked one away makes it separate. Every placement
+- **The pitch panel (owner, 2026-11-10; Ctrl+drag 2026-11-20).** A panel of
+  its own traces the owner's sung pitch from the microphone, as voice-wei's
+  Pitch page does. It shows while it is switched on, the overlay is on and
+  a YouTube tab plays, with or without timed lyrics. It docks against a
+  side of the lyric box (below by default, above, left or right) or stands
+  separate anywhere on the screen. `Ctrl+drag` on its edges resizes it;
+  `Ctrl+drag` on a separate panel moves it; dropping it against a side of
+  the lyric docks it there; `Ctrl+drag` away from a docked side makes it
+  separate. Plain clicks and drags never move or resize it. Every placement
   and size persists.
 - **The pitch panel is configurable like voice-wei's (owner, 2026-11-10).**
   The notes shown: a fixed range from a lowest to a highest note, set in
@@ -332,11 +339,18 @@ indicator changes quietly.
   draws them after the next login). Iosevka (99 MB) and TT2020 (76 MB) are
   left out for their size; Type 1 and web fonts are skipped because GNOME's
   text stack does not draw them.
-- **The overlay hides when playback is gone.** A tab that closes says so at
-  once. A browser that quits, crashes or sleeps cannot, so each report
-  promises the next within 5 s while the video runs; a tab that misses three
-  promised reports is dropped, and the line disappears within 15 s instead
-  of running on to the end of the song (2026-11-09).
+- **The overlay hides when playback is gone, and background tabs never
+  flash it out (2026-11-20).** A tab that closes says so at once. A browser
+  that quits, crashes or sleeps cannot, so each report promises the next
+  within 5 s while the video runs; a tab that misses three promised reports
+  is dropped, and the line disappears within 15 s instead of running on to
+  the end of the song (2026-11-09). When multiple unmuted YouTube tabs play
+  at once (for instance, an open webcam livestream alongside a song), active
+  tab selection never ranks tabs by heartbeat arrival time: sounding musical
+  tabs always outrank non-music tabs, ties break by when playback started
+  (`soundingSince`) rather than the latest heartbeat, and an older
+  background non-music stream never steals from a just-paused song during
+  its two-minute grace window.
 - **The indicator lingers two minutes** after sound stops, so a pause or the
   gap between songs does not make it vanish and reappear.
 - **The microphone opens only when needed**: overlay on, pitch panel on,

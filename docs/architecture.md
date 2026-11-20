@@ -57,10 +57,14 @@ Firefox tab (YouTube)                         GNOME Shell
   `ServiceClient` callbacks check `this._client === client`, preventing
   GNOME Shell 50 extension-unwind collisions from leaving a disconnected
   client behind. `overlay.js` also renders a quiet `StatusPill` while
-  `state.lyrics === 'generating'`, and treats edge presses as
-  `'pending-resize'` until pointer movement exceeds
-  `St.Settings.get().drag_threshold` so quick clicks near the box edge
-  still focus the song. `text-layout.js` lays out the line at the constant chosen
+  `state.lyrics === 'generating'`. Following the owner's click-vs-drag rule,
+  plain mouseover does nothing (no frame, no cursor change, grip stays tight
+  to the painted ink or pill), a plain primary press fires `FocusSong`
+  immediately on press without ever starting a drag, and moving requires
+  `Ctrl+drag` (`BoxOutline` and snap guides show only while actively
+  dragging; `Ctrl+press` without movement does nothing). `pitch-panel.js`
+  likewise requires `Ctrl+drag` to move, dock, detach or resize.
+  `text-layout.js` lays out the line at the constant chosen
   `font-size` (wrapping evenly into balanced lines and reporting
   `requiredHeight` so `overlay.js` expands the render surface vertically
   along its anchor via `expandedRenderBox` without moving the saved box or
@@ -76,16 +80,14 @@ Firefox tab (YouTube)                         GNOME Shell
   The dark backing cloud is built from a downscaled silhouette via a
   3-pass separable 5-tap A8 box blur (Gaussian approximation, ~1–3 ms per
   line at any font size) and cached alongside the line's A8 border masks;
-  idle pointer hit-testing (`inkBox`) stays tight to the solid outer trim
+  pointer hit-testing (`inkBox`) stays tight to the solid outer trim
   so soft cloud tails remain click-through. Cairo leaves a hole in a
   stroke wider than a small closed contour (the dot of an i, a period, a
   bold o's counter), so each solid ring is stepped down in width by less
   than a dot's diameter, only the widest antialiased
   (`tests/text-layout-ring.test.mjs`). `text-layout.js` caches font
   metrics, balanced wrap widths and each wrapped line's A8 border/cloud
-  masks, and `overlay.js` keeps idle pointer input on the painted ink while
-  expanding the grip on hover to reveal 8 standard edge/corner resize
-  handles and drag-to-move. A move only repositions the box. Display
+  masks; a move only repositions the box. Display
   settings live in its GSettings schema
   (`org.gnome.shell.extensions.lyrics-overlay`), which the settings page
   writes through the service.
@@ -291,9 +293,15 @@ GSettings too, and the page shows them at its next poll (each second).
 
 ## Service core
 
-- **Sessions** are per tab; the active one is the sounding tab heard from
-  most recently. A tab quiet for the grace period (120 s) or that broke its
-  heartbeat promise is forgotten.
+- **Sessions** are per tab. Each session tracks `soundingSince` (when
+  playback started or switched videos while sounding, never updated by
+  heartbeats) separately from `lastSoundingAt` (for the 120 s grace window).
+  `_activeSession()` ranks sounding musical tabs above non-music tabs and
+  breaks ties by `soundingSince` (with paused musical tabs in grace compared
+  by `lastSoundingAt` against sounding non-music tabs' `soundingSince`), so
+  simultaneously playing tabs or background livestreams never ping-pong or
+  cancel lyric generation. A tab quiet for the grace period (120 s) or that
+  broke its heartbeat promise is forgotten.
 - **Video records** (`videos/<id>.json`): identity, lookup status,
   candidates (at most 10), the chosen and rejected sets, and the timing
   offset. Written atomically, only when they change.

@@ -1,10 +1,11 @@
 // The pitch panel: its own box on the desktop, docked against a side of the
 // lyric box or separate (pitch-dock), above normal windows and hidden over
-// fullscreen windows and in the overview. Dragging an edge resizes it (a
-// docked panel only from its edge away from the lyric); dragging it
-// elsewhere moves it, and dropping it against a side of the lyric docks it
-// there, while dragging a docked one away makes it separate. A right
-// press opens the settings page.
+// fullscreen windows and in the overview. Nothing drags by default: Ctrl+drag
+// on an edge resizes it (a docked panel only from its edge away from the
+// lyric), and Ctrl+drag elsewhere moves it (dropping against a side of the
+// lyric docks it; dragging a docked one away makes it separate; Escape
+// cancels; Ctrl+press without movement does nothing). A right press opens the
+// settings page.
 
 import Clutter from 'gi://Clutter';
 import GLib from 'gi://GLib';
@@ -83,6 +84,8 @@ class PanelFrame extends St.Widget {
         }
         if (event.get_button() !== Clutter.BUTTON_PRIMARY)
             return Clutter.EVENT_STOP;
+        if (!(event.get_state() & Clutter.ModifierType.CONTROL_MASK))
+            return Clutter.EVENT_STOP;
         const zone = this._handlers.zoneAt({x, y});
         this._grab = global.stage.grab(this);
         this.set_cursor_type(zone === 'move' ? Clutter.CursorType.GRABBING : cursorFor(zone));
@@ -93,7 +96,8 @@ class PanelFrame extends St.Widget {
     vfunc_motion_event(event) {
         const [x, y] = event.get_coords();
         if (!this._grab) {
-            this.set_cursor_type(cursorFor(this._handlers.zoneAt({x, y})));
+            const ctrl = Boolean(event.get_state() & Clutter.ModifierType.CONTROL_MASK);
+            this.set_cursor_type(ctrl ? cursorFor(this._handlers.zoneAt({x, y})) : Clutter.CursorType.INHERIT);
             return Clutter.EVENT_PROPAGATE;
         }
         this._handlers.motion({x, y});
@@ -105,8 +109,17 @@ class PanelFrame extends St.Widget {
             return Clutter.EVENT_STOP;
         this._finish(true);
         const [x, y] = event.get_coords();
-        this.set_cursor_type(cursorFor(this._handlers.zoneAt({x, y})));
+        const ctrl = Boolean(event.get_state() & Clutter.ModifierType.CONTROL_MASK);
+        this.set_cursor_type(ctrl ? cursorFor(this._handlers.zoneAt({x, y})) : Clutter.CursorType.INHERIT);
         return Clutter.EVENT_STOP;
+    }
+
+    vfunc_key_press_event(event) {
+        if (this._grab && event.get_key_symbol() === Clutter.KEY_Escape) {
+            this._finish(false);
+            return Clutter.EVENT_STOP;
+        }
+        return Clutter.EVENT_PROPAGATE;
     }
 
     vfunc_leave_event(event) {

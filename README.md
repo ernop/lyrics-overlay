@@ -119,15 +119,13 @@ The indicator shows while YouTube plays sound and for two minutes after.
 |---|---|---|
 | Indicator | press | lyric line on or off |
 | Indicator | right-press | opens or raises the settings page |
-| Lyric | hover | reveals the box frame and 8 edge/corner resize handles |
-| Lyric | drag edge or corner | resizes from that edge, anchoring the opposite edge |
-| Lyric | drag interior | moves the box with magnetic center/edge snap (hold `Shift` to bypass snap; `Esc` cancels) |
-| Lyric or timing pill | quick click | selects the song's Firefox tab and raises its window |
-| Lyric or timing pill | right-click | opens or raises the settings page |
+| Lyric or timing pill | press | selects the song's Firefox tab and raises its window (acts immediately on press; never drags) |
+| Lyric or timing pill | `Ctrl+drag` | moves the box with magnetic center/edge snap (hold `Shift` to bypass snap; `Esc` cancels; `Ctrl+press` without movement does nothing) |
+| Lyric or timing pill | right-press | opens or raises the settings page |
 | Lyric | `Ctrl+scroll` | changes the text size |
-| Pitch panel | drag an edge | resizes it |
-| Pitch panel | drag a separate one | moves it; dropped against a side of the lyric, it docks there |
-| Pitch panel | drag a docked one away | makes it separate |
+| Pitch panel | `Ctrl+drag` edge | resizes it |
+| Pitch panel | `Ctrl+drag` separate | moves it; dropped against a side of the lyric, it docks there |
+| Pitch panel | `Ctrl+drag` docked away | makes it separate |
 | Pitch panel | right-press | opens or raises the settings page |
 
 Where no lyric or timing status pill is drawn, clicks reach the windows below.

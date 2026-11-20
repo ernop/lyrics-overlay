@@ -141,9 +141,20 @@ export class LyricsCore {
         }
         let session = this._sessions.get(tabId);
         if (!session || session.videoId !== media.videoId) {
-            session = {tabId, videoId: media.videoId, identity: null, next: null, media: null, heartbeatMs: null, receivedAt: now, lastSoundingAt: 0};
+            session = {
+                tabId,
+                videoId: media.videoId,
+                identity: null,
+                next: null,
+                media: null,
+                heartbeatMs: null,
+                receivedAt: now,
+                soundingSince: 0,
+                lastSoundingAt: 0,
+            };
             this._sessions.set(tabId, session);
         }
+        const wasSounding = this._sounding(session);
         // Every report carries metadata so a restarted service recovers at
         // once; the record is written only when the identity changes.
         if (message.metadata && message.metadata.videoId === media.videoId) {
@@ -160,8 +171,12 @@ export class LyricsCore {
         session.heartbeatMs = message.heartbeatMs;
         session.receivedAt = now;
         // Paused, muted and background tabs report too; only the song being
-        // heard (and the one after it) is worth a lookup.
+        // heard (and the one after it) is worth a lookup. soundingSince tracks
+        // when playback actually started (never overwritten by heartbeats) so
+        // simultaneously playing tabs never ping-pong on every heartbeat.
         if (this._sounding(session)) {
+            if (!wasSounding)
+                session.soundingSince = now;
             session.lastSoundingAt = now;
             this._requestLookups(session);
         }
@@ -290,16 +305,50 @@ export class LyricsCore {
         }
     }
 
+    _isMusical(session) {
+        return Boolean(session.identity?.musical || this._video(session.videoId).userRequested);
+    }
+
+    /**
+     * Ranks kept sessions without using heartbeat timestamps:
+     * - Tier 2: sounding musical tabs, ordered by when playback started
+     *   (soundingSince), so a background non-music tab (webcam, livestream)
+     *   never steals from a playing song and two playing songs never ping-pong.
+     * - Tier 1: paused musical tabs in grace (lastSoundingAt) vs sounding
+     *   non-music tabs (soundingSince), so an older background stream never
+     *   hijacks a just-paused song while a newly started video takes over.
+     * - Tier 0: paused non-music tabs (lastSoundingAt).
+     */
+    _sessionRank(session) {
+        const sounding = this._sounding(session);
+        const musical = this._isMusical(session);
+        if (sounding && musical)
+            return {tier: 2, time: session.soundingSince, sounding: 1, tabId: session.tabId};
+        if (sounding || musical)
+            return {tier: 1, time: sounding ? session.soundingSince : session.lastSoundingAt, sounding: sounding ? 1 : 0, tabId: session.tabId};
+        return {tier: 0, time: session.lastSoundingAt, sounding: 0, tabId: session.tabId};
+    }
+
     /** Every kept session is sounding or within its grace period (see _pruneSessions). */
     _activeSession() {
         let best = null;
+        let bestRank = null;
         for (const session of this._sessions.values()) {
-            const sounding = this._sounding(session);
-            if (!best || (sounding && !best.sounding) ||
-                (sounding === best.sounding && session.lastSoundingAt > best.session.lastSoundingAt))
-                best = {session, sounding};
+            const rank = this._sessionRank(session);
+            if (!bestRank ||
+                rank.tier > bestRank.tier ||
+                (rank.tier === bestRank.tier && (
+                    rank.time > bestRank.time ||
+                    (rank.time === bestRank.time && (
+                        rank.sounding > bestRank.sounding ||
+                        (rank.sounding === bestRank.sounding && rank.tabId > bestRank.tabId)
+                    ))
+                ))) {
+                best = session;
+                bestRank = rank;
+            }
         }
-        return best ? best.session : null;
+        return best;
     }
 
     _mediaTime(session, now) {

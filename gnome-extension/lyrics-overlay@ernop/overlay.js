@@ -3,16 +3,17 @@
 // and expand the surface vertically along its anchor without ever shrinking
 // the text mid-song.
 //
-// Pointer interaction behaves like a normal floating window without taking
-// focus or taskbar space:
-// - Away from the lyric, only the painted text (or backdrop) takes input so
-//   empty space stays click-through.
-// - Hovering the lyric reveals a clean frame with standard edge and corner
-//   resize handles (anchoring the opposite edge, matching PitchPanel).
-// - Dragging inside the frame (past the desktop drag threshold) moves the
-//   box with gentle center/edge snapping (hold Shift to disable snap).
-// - A quick click inside goes to the YouTube song tab; a right press opens
-//   the settings page; Ctrl+scroll resizes text; Escape cancels a drag.
+// Pointer interaction follows the owner's click-vs-drag rule:
+// - Hovering does nothing visually and never changes the cursor; outside the
+//   painted text (or status pill), empty space stays click-through.
+// - A plain primary press acts immediately on press to select the song's
+//   YouTube tab and raise its window; it never starts a drag.
+// - A secondary press acts immediately on press to open the settings page.
+// - Ctrl+drag moves the box with magnetic center/edge snapping (hold Shift
+//   to bypass snap; Escape cancels; Ctrl+press without movement does nothing).
+//   The placement outline and snap guides appear only during an active drag.
+// - Ctrl+scroll changes the text size; box width/height resize lives on the
+//   settings page's Screen map.
 
 import Clutter from 'gi://Clutter';
 import GLib from 'gi://GLib';
@@ -24,13 +25,12 @@ import St from 'gi://St';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 
 import {
-    boxFromGeometry, boxZoneAt, clampFontSize, edgeResizedBox, expandedRenderBox,
+    boxFromGeometry, clampFontSize, expandedRenderBox,
     geometryFromBox, movedBox, snapBox, verticalAnchorFor,
 } from './shared/overlay-geometry.js';
 import {fitLyric, paintLyric} from './text-layout.js';
 
 const GRIP_MARGIN = 6;
-const RESIZE_EDGE_ZONE = 12;
 const SNAP_THRESHOLD = 12;
 const SCROLL_STEP_RATIO = 1.06;
 const SCROLL_COMMIT_MS = 500;
@@ -49,33 +49,6 @@ const LOOK_KEYS = new Set([
     'text-backdrop', 'text-backdrop-color', 'text-backdrop-opacity',
     'text-align', 'pitch-dock', 'pitch-enabled',
 ]);
-
-const RESIZE_CURSORS = {
-    'top': Clutter.CursorType.N_RESIZE,
-    'bottom': Clutter.CursorType.S_RESIZE,
-    'left': Clutter.CursorType.W_RESIZE,
-    'right': Clutter.CursorType.E_RESIZE,
-    'top-left': Clutter.CursorType.NW_RESIZE,
-    'top-right': Clutter.CursorType.NE_RESIZE,
-    'bottom-left': Clutter.CursorType.SW_RESIZE,
-    'bottom-right': Clutter.CursorType.SE_RESIZE,
-};
-
-function cursorForZone(zone, grabbing = false) {
-    if (zone === null)
-        return Clutter.CursorType.INHERIT;
-    if (zone === 'move')
-        return grabbing ? Clutter.CursorType.GRABBING : Clutter.CursorType.MOVE;
-    const vertical = ['top', 'bottom'].find(edge => zone.edges[edge]);
-    const horizontal = ['left', 'right'].find(edge => zone.edges[edge]);
-    return RESIZE_CURSORS[[vertical, horizontal].filter(Boolean).join('-')] ?? Clutter.CursorType.ALL_RESIZE;
-}
-
-function zoneId(zone) {
-    if (!zone || zone === 'move')
-        return zone ?? '';
-    return ['top', 'bottom', 'left', 'right'].filter(edge => zone.edges[edge]).join('-');
-}
 
 function readGeometry(settings) {
     const geometry = settings.get_value('box').deepUnpack();
@@ -207,18 +180,18 @@ class StatusPill extends St.DrawingArea {
     }
 });
 
+// Placement outline, magnetic snap guides, and compact HUD shown ONLY during
+// an active Ctrl+drag move (never on plain mouseover).
 const BoxOutline = GObject.registerClass(
 class BoxOutline extends St.DrawingArea {
     _init() {
         super._init({reactive: false, visible: false});
-        this._activeZone = null;
         this._hudText = '';
         this._snappedX = false;
         this._snappedY = false;
     }
 
-    setAppearance({activeZone = null, hudText = '', snappedX = false, snappedY = false}) {
-        this._activeZone = activeZone;
+    setAppearance({hudText = '', snappedX = false, snappedY = false}) {
         this._hudText = hudText;
         this._snappedX = snappedX;
         this._snappedY = snappedY;
@@ -232,10 +205,6 @@ class BoxOutline extends St.DrawingArea {
             cr.$dispose();
             return;
         }
-        // Subtle scrim so box bounds stay legible over both dark and bright video
-        roundedRect(cr, 1, 1, width - 2, height - 2, 6);
-        cr.setSourceRGBA(0, 0, 0, 0.16);
-        cr.fill();
 
         // Crisp high-contrast outer border (dark shadow + clean white hairline)
         roundedRect(cr, 2, 2, width - 4, height - 4, 5);
@@ -262,33 +231,7 @@ class BoxOutline extends St.DrawingArea {
             cr.stroke();
         }
 
-        // Sleek 8 resize handles along corners and edge midpoints
-        const activeId = zoneId(this._activeZone);
-        const corner = 10;
-        const edgeLong = Math.min(26, Math.max(12, Math.round(width * 0.06)));
-        const edgeTall = Math.min(22, Math.max(10, Math.round(height * 0.2)));
-        const edgeThick = 5;
-        const handles = [
-            {id: 'top-left', x: 1, y: 1, w: corner, h: corner},
-            {id: 'top-right', x: width - corner - 1, y: 1, w: corner, h: corner},
-            {id: 'bottom-left', x: 1, y: height - corner - 1, w: corner, h: corner},
-            {id: 'bottom-right', x: width - corner - 1, y: height - corner - 1, w: corner, h: corner},
-            {id: 'top', x: Math.round((width - edgeLong) / 2), y: 1, w: edgeLong, h: edgeThick},
-            {id: 'bottom', x: Math.round((width - edgeLong) / 2), y: height - edgeThick - 1, w: edgeLong, h: edgeThick},
-            {id: 'left', x: 1, y: Math.round((height - edgeTall) / 2), w: edgeThick, h: edgeTall},
-            {id: 'right', x: width - edgeThick - 1, y: Math.round((height - edgeTall) / 2), w: edgeThick, h: edgeTall},
-        ];
-        for (const handle of handles) {
-            const hot = activeId === handle.id;
-            roundedRect(cr, handle.x, handle.y, handle.w, handle.h, 2.5);
-            cr.setSourceRGBA(hot ? 0.23 : 1, hot ? 0.51 : 1, hot ? 0.96 : 1, 1);
-            cr.fillPreserve();
-            cr.setSourceRGBA(0, 0, 0, 0.9);
-            cr.setLineWidth(1.25);
-            cr.stroke();
-        }
-
-        // Compact dimensions readout shown only during an active drag/resize
+        // Compact dimensions readout shown during an active Ctrl+drag
         if (this._hudText && height >= 40 && width >= 150) {
             const layout = PangoCairo.create_layout(cr);
             const desc = new Pango.FontDescription();
@@ -322,18 +265,19 @@ class BoxOutline extends St.DrawingArea {
 });
 
 /**
- * Unified hover-reveal pointer surface:
- * - Idle: sized to the painted lyric ink so outside clicks reach windows below.
- * - Hovered: expands to the full overlay frame with normal edge/corner resize
- *   handles and drag-to-move; quick click inside still focuses the YouTube tab.
+ * Tight pointer target over the painted lyric ink (or timing status pill):
+ * - Plain hover does nothing (no frame, no cursor change, surrounding space
+ *   stays click-through).
+ * - Plain primary press fires click() immediately on press (never drags).
+ * - Secondary press fires menu() immediately on press.
+ * - Ctrl+primary press + movement moves the box; Ctrl+press without movement
+ *   does nothing.
+ * - Ctrl+scroll resizes text.
  */
 const OverlayGrip = GObject.registerClass(
 class OverlayGrip extends St.Widget {
     /**
-     * @param {{zoneAt: (pt: {x: number, y: number}) => ('move'|{edges: Record<string, boolean>}),
-     *          containsPoint: (pt: {x: number, y: number}) => boolean,
-     *          hoverChange: (hovered: boolean, zone: unknown) => void,
-     *          begin: (zone: unknown, press: {x: number, y: number}) => void,
+     * @param {{begin: (press: {x: number, y: number}) => void,
      *          motion: (pointer: {x: number, y: number}, opts: {noSnap: boolean}) => void,
      *          end: (commit: boolean) => void,
      *          scroll: (steps: number) => void,
@@ -344,61 +288,31 @@ class OverlayGrip extends St.Widget {
         super._init({reactive: true, visible: false, accessible_name: 'Lyric overlay'});
         this._handlers = handlers;
         this._grab = null;
-        // 'pending-move' (press inside interior before passing drag threshold),
-        // 'move' (actively moving), 'resize' (dragging an edge or corner).
+        // 'pending-move' (Ctrl+press before passing drag threshold), 'move' (actively moving).
         this._mode = null;
-        this._zone = null;
         this._press = null;
-        this._ctrlOnPress = false;
-        this._hovered = false;
-        this._hoverZoneId = '';
     }
 
     get dragging() {
-        return this._mode === 'move' || this._mode === 'resize';
-    }
-
-    get hovered() {
-        return this._hovered;
-    }
-
-    vfunc_enter_event(event) {
-        if (!this._grab) {
-            const [x, y] = event.get_coords();
-            this._hovered = true;
-            const zone = this._handlers.zoneAt({x, y});
-            this._hoverZoneId = zoneId(zone);
-            this.set_cursor_type(cursorForZone(zone, false));
-            this._handlers.hoverChange(true, zone);
-        }
-        return super.vfunc_enter_event(event);
+        return this._mode === 'move';
     }
 
     vfunc_motion_event(event) {
-        const [x, y] = event.get_coords();
-        if (!this._grab) {
-            const zone = this._handlers.zoneAt({x, y});
-            this.set_cursor_type(cursorForZone(zone, false));
-            const nextId = zoneId(zone);
-            if (!this._hovered || nextId !== this._hoverZoneId) {
-                this._hovered = true;
-                this._hoverZoneId = nextId;
-                this._handlers.hoverChange(true, zone);
-            }
+        if (!this._grab)
             return Clutter.EVENT_PROPAGATE;
-        }
+        const [x, y] = event.get_coords();
         const noSnap = Boolean(event.get_state() & Clutter.ModifierType.SHIFT_MASK);
-        if (this._mode === 'pending-move' || this._mode === 'pending-resize') {
+        if (this._mode === 'pending-move') {
             const threshold = St.Settings.get().drag_threshold;
             if (Math.abs(x - this._press.x) > threshold || Math.abs(y - this._press.y) > threshold) {
-                this._mode = this._mode === 'pending-move' ? 'move' : 'resize';
-                this.set_cursor_type(cursorForZone(this._zone, true));
-                this._handlers.begin(this._zone, this._press);
+                this._mode = 'move';
+                this.set_cursor_type(Clutter.CursorType.GRABBING);
+                this._handlers.begin(this._press);
                 this._handlers.motion({x, y}, {noSnap});
             }
             return Clutter.EVENT_STOP;
         }
-        if (this.dragging)
+        if (this._mode === 'move')
             this._handlers.motion({x, y}, {noSnap});
         return Clutter.EVENT_STOP;
     }
@@ -406,7 +320,6 @@ class OverlayGrip extends St.Widget {
     vfunc_button_press_event(event) {
         if (this._grab)
             return Clutter.EVENT_STOP;
-        const [x, y] = event.get_coords();
         if (event.get_button() === Clutter.BUTTON_SECONDARY) {
             this._handlers.menu();
             return Clutter.EVENT_STOP;
@@ -415,35 +328,22 @@ class OverlayGrip extends St.Widget {
             return Clutter.EVENT_STOP;
 
         const ctrl = Boolean(event.get_state() & Clutter.ModifierType.CONTROL_MASK);
-        // Ctrl+drag always moves even near an edge; otherwise edges/corners resize
-        // once dragged past the desktop threshold (so quick clicks near an edge
-        // still focus the playing song tab).
-        const zone = ctrl ? 'move' : this._handlers.zoneAt({x, y});
+        if (!ctrl) {
+            this._handlers.click();
+            return Clutter.EVENT_STOP;
+        }
+
+        const [x, y] = event.get_coords();
         this._press = {x, y};
-        this._zone = zone;
-        this._ctrlOnPress = ctrl;
         this._grab = global.stage.grab(this);
-        this._mode = zone === 'move' ? 'pending-move' : 'pending-resize';
+        this._mode = 'pending-move';
         return Clutter.EVENT_STOP;
     }
 
     vfunc_button_release_event(event) {
         if (!this._grab || event.get_button() !== Clutter.BUTTON_PRIMARY)
             return Clutter.EVENT_STOP;
-        const wasClick = (this._mode === 'pending-move' || this._mode === 'pending-resize') && !this._ctrlOnPress;
-        const [x, y] = event.get_coords();
         this._finish(true);
-        if (wasClick)
-            this._handlers.click();
-        if (this._handlers.containsPoint({x, y})) {
-            const zone = this._handlers.zoneAt({x, y});
-            this._hovered = true;
-            this._hoverZoneId = zoneId(zone);
-            this.set_cursor_type(cursorForZone(zone, false));
-            this._handlers.hoverChange(true, zone);
-        } else {
-            this._clearHover();
-        }
         return Clutter.EVENT_STOP;
     }
 
@@ -478,32 +378,9 @@ class OverlayGrip extends St.Widget {
         return Clutter.EVENT_STOP;
     }
 
-    vfunc_leave_event(event) {
-        if (!this._grab) {
-            const [x, y] = event.get_coords();
-            if (!this._handlers.strictlyInside({x, y}))
-                this._clearHover();
-        }
-        return super.vfunc_leave_event(event);
-    }
-
     cancelDrag() {
         if (this._grab)
             this._finish(false);
-        this._clearHover();
-    }
-
-    clearHover() {
-        this._clearHover();
-    }
-
-    _clearHover() {
-        this.set_cursor_type(Clutter.CursorType.INHERIT);
-        if (this._hovered || this._hoverZoneId !== '') {
-            this._hovered = false;
-            this._hoverZoneId = '';
-            this._handlers.hoverChange(false, null);
-        }
     }
 
     _finish(commit) {
@@ -511,9 +388,7 @@ class OverlayGrip extends St.Widget {
         this._grab.dismiss();
         this._grab = null;
         this._mode = null;
-        this._zone = null;
         this._press = null;
-        this._ctrlOnPress = false;
         this.set_cursor_type(Clutter.CursorType.INHERIT);
         if (dragged)
             this._handlers.end(commit);
@@ -535,8 +410,6 @@ export class LyricsOverlay {
         this._statusText = '';
         this._shown = false;
         this._drag = null;
-        this._hovered = false;
-        this._hoverZone = null;
         this._snapGuides = {x: [], y: []};
         this._box = null;
         this._renderBox = null;
@@ -555,30 +428,7 @@ export class LyricsOverlay {
         this._statusPill = new StatusPill();
         this._outline = new BoxOutline();
         this._grip = new OverlayGrip({
-            zoneAt: point => {
-                if (!this._layers[this._current].fitted)
-                    return 'move';
-                return boxZoneAt(point, this._renderBox ?? this._box, RESIZE_EDGE_ZONE);
-            },
-            containsPoint: point => {
-                const b = this._renderBox ?? this._box;
-                return Boolean(b) && point.x >= b.x && point.x <= b.x + b.width &&
-                    point.y >= b.y && point.y <= b.y + b.height;
-            },
-            strictlyInside: point => {
-                const b = this._renderBox ?? this._box;
-                return Boolean(b) && point.x > b.x && point.x < b.x + b.width &&
-                    point.y > b.y && point.y < b.y + b.height;
-            },
-            hoverChange: (hovered, zone) => {
-                const changed = this._hovered !== hovered;
-                this._hovered = hovered;
-                this._hoverZone = zone;
-                if (changed)
-                    this._placeGrip();
-                this._updateOutline();
-            },
-            begin: (zone, press) => this._dragBegin(zone, press),
+            begin: press => this._dragBegin(press),
             motion: (pointer, opts) => this._dragMotion(pointer, opts),
             end: commit => this._dragEnd(commit),
             scroll: steps => this._scrollSize(steps),
@@ -825,7 +675,6 @@ export class LyricsOverlay {
         if (!fitted) {
             const pill = this._statusPill.visible ? this._statusPill.pillBox : null;
             if (!pill) {
-                this._grip.clearHover();
                 this._grip.visible = false;
                 return;
             }
@@ -835,14 +684,6 @@ export class LyricsOverlay {
             const bottom = Math.min(this._root.height, Math.ceil(pill.y + pill.height + GRIP_MARGIN));
             this._grip.set_position(left, top);
             this._grip.set_size(Math.max(1, right - left), Math.max(1, bottom - top));
-            this._grip.visible = true;
-            return;
-        }
-        if (this._hovered) {
-            const w = Math.round(this._renderBox.width);
-            const h = Math.round(this._renderBox.height);
-            this._grip.set_position(0, 0);
-            this._grip.set_size(Math.max(1, w), Math.max(1, h));
             this._grip.visible = true;
             return;
         }
@@ -868,8 +709,7 @@ export class LyricsOverlay {
     }
 
     _updateOutline() {
-        const hasLine = Boolean(this._layers[this._current].fitted);
-        const active = hasLine && (this._hovered || Boolean(this._drag));
+        const active = Boolean(this._drag);
         this._outline.visible = active;
         if (!active)
             return;
@@ -877,7 +717,6 @@ export class LyricsOverlay {
         const centerX = area.x + area.width / 2;
         const centerY = area.y + area.height / 2;
         this._outline.setAppearance({
-            activeZone: this._drag?.zone ?? this._hoverZone,
             hudText: this._hudSummary(),
             snappedX: this._snapGuides.x.some(gx => Math.abs(gx - centerX) <= 1),
             snappedY: this._snapGuides.y.some(gy => Math.abs(gy - centerY) <= 1),
@@ -900,11 +739,10 @@ export class LyricsOverlay {
             this._refitText();
     }
 
-    // ----- pointer move & edge/corner resize
+    // ----- Ctrl+drag move
 
-    _dragBegin(zone, press) {
-        const start = zone === 'move' ? {...this._box} : {...(this._renderBox ?? this._box)};
-        this._drag = {zone, press, start, monitorIndex: this._monitorIndex};
+    _dragBegin(press) {
+        this._drag = {press, start: {...this._box}, monitorIndex: this._monitorIndex};
         this._snapGuides = {x: [], y: []};
         this._updateOutline();
     }
@@ -913,25 +751,19 @@ export class LyricsOverlay {
         const drag = this._drag;
         const dx = pointer.x - drag.press.x;
         const dy = pointer.y - drag.press.y;
-        if (drag.zone === 'move') {
-            const under = global.display.get_monitor_index_for_rect(
-                new Mtk.Rectangle({x: Math.round(pointer.x), y: Math.round(pointer.y), width: 1, height: 1}));
-            if (under >= 0)
-                drag.monitorIndex = under;
-            const area = this._workArea(drag.monitorIndex);
-            const raw = movedBox(drag.start, dx, dy, area);
-            if (noSnap) {
-                this._snapGuides = {x: [], y: []};
-                this._setBox(raw, drag.monitorIndex);
-            } else {
-                const snapped = snapBox(raw, area, SNAP_THRESHOLD);
-                this._snapGuides = snapped.guides;
-                this._setBox(snapped.box, drag.monitorIndex);
-            }
-        } else {
+        const under = global.display.get_monitor_index_for_rect(
+            new Mtk.Rectangle({x: Math.round(pointer.x), y: Math.round(pointer.y), width: 1, height: 1}));
+        if (under >= 0)
+            drag.monitorIndex = under;
+        const area = this._workArea(drag.monitorIndex);
+        const raw = movedBox(drag.start, dx, dy, area);
+        if (noSnap) {
             this._snapGuides = {x: [], y: []};
-            const area = this._workArea(drag.monitorIndex);
-            this._setBox(edgeResizedBox(drag.start, drag.zone.edges, dx, dy, area), drag.monitorIndex);
+            this._setBox(raw, drag.monitorIndex);
+        } else {
+            const snapped = snapBox(raw, area, SNAP_THRESHOLD);
+            this._snapGuides = snapped.guides;
+            this._setBox(snapped.box, drag.monitorIndex);
         }
     }
 
