@@ -12,7 +12,7 @@ import Cairo from 'cairo';
 import Pango from 'gi://Pango';
 import PangoCairo from 'gi://PangoCairo';
 
-import {backdropMetrics, balancedWrapWidth, borderSpec} from './shared/overlay-geometry.js';
+import {backdropMetrics, balancedWrapWidth, borderSpec, normalizedSpaceScale} from './shared/overlay-geometry.js';
 import {parseHexColor, resolveTextColor, ringColors} from './shared/text-ink.js';
 
 export {borderSpec};
@@ -25,6 +25,7 @@ const EDGE_PIXELS = 4;
 const RING_STEP_OF_FONT_SIZE = 0.055;
 const RING_CACHE_SIZE = 16;
 const WRAP_CACHE_SIZE = 64;
+const METRICS_CACHE_SIZE = 32;
 
 const ALIGNMENTS = Object.freeze({
     'center': Pango.Alignment.CENTER,
@@ -97,6 +98,30 @@ function roundedRectangle(cr, x, y, width, height, radius) {
     cr.closePath();
 }
 
+function measureFontMetrics(context, spec) {
+    const key = `${spec.fontSize}|${spec.family}|${spec.bold}|${spec.italic}`;
+    const cached = cacheGet(metricsCache, key);
+    if (cached)
+        return cached;
+    const layout = Pango.Layout.new(context);
+    layout.set_font_description(fontDescription(spec));
+    layout.set_text('a a', -1);
+    const [, withSpace] = layout.get_pixel_extents();
+    layout.set_text('aa', -1);
+    const [, withoutSpace] = layout.get_pixel_extents();
+    const spaceRatio = Math.max(0.05, (withSpace.width - withoutSpace.width) / spec.fontSize);
+
+    layout.set_text('x', -1);
+    const [xInk] = layout.get_iter().get_line_readonly().get_pixel_extents();
+    const metrics = {
+        spaceRatio,
+        xTop: xInk.y,
+        xBottom: xInk.y + xInk.height,
+    };
+    cacheSet(metricsCache, key, metrics, METRICS_CACHE_SIZE);
+    return metrics;
+}
+
 /**
  * Lays out one lyric at exact `params.fontSize` (never shrinking per line).
  * @param {Pango.Context} context measuring context
@@ -122,12 +147,18 @@ export function fitLyric(context, text, params) {
     const pad = edgePadding(params, params.fontSize);
     const maxWidth = Math.max(1, params.width - 2 * pad.x);
     const layout = Pango.Layout.new(context);
+    const fontMetrics = measureFontMetrics(context, {
+        family: params.family,
+        bold: Boolean(params.bold),
+        italic: Boolean(params.italic),
+        fontSize: params.fontSize,
+    });
     const spec = {
         text,
         family: params.family,
         bold: Boolean(params.bold),
         italic: Boolean(params.italic),
-        spaceScale: ring.spaceScale,
+        spaceScale: normalizedSpaceScale(fontMetrics.spaceRatio, ring.targetSpaceEm),
         align: params.align,
         fontSize: params.fontSize,
         wrapWidth: maxWidth,
@@ -167,13 +198,13 @@ export function fitLyric(context, text, params) {
         top = Math.max(pad.y, (surfaceHeight - logical.height) / 2);
 
     const origin = {x: left, y: top};
-    const reach = ring.inner + ring.outer + ring.extraPad;
+    const solidReach = ring.inner + ring.outer;
     const colors = ringColors(fill);
     const textInkBox = {
-        x: origin.x + ink.x - reach,
-        y: origin.y + ink.y - reach,
-        width: ink.width + 2 * reach,
-        height: ink.height + 2 * reach,
+        x: origin.x + ink.x - solidReach,
+        y: origin.y + ink.y - solidReach,
+        width: ink.width + 2 * solidReach,
+        height: ink.height + 2 * solidReach,
     };
 
     let backdrop = null;
@@ -188,11 +219,10 @@ export function fitLyric(context, text, params) {
                 radius: metrics.radius, rgb: bgRgb, opacity: bgOpacity,
             };
         } else {
-            const tightReach = ring.inner + ring.outer;
-            const bx = Math.max(0, origin.x + ink.x - tightReach - metrics.padX);
-            const by = Math.max(0, origin.y + ink.y - tightReach - metrics.padY);
-            const br = Math.min(params.width, origin.x + ink.x + ink.width + tightReach + metrics.padX);
-            const bb = Math.min(surfaceHeight, origin.y + ink.y + ink.height + tightReach + metrics.padY);
+            const bx = Math.max(0, origin.x + ink.x - solidReach - metrics.padX);
+            const by = Math.max(0, origin.y + ink.y - solidReach - metrics.padY);
+            const br = Math.min(params.width, origin.x + ink.x + ink.width + solidReach + metrics.padX);
+            const bb = Math.min(surfaceHeight, origin.y + ink.y + ink.height + solidReach + metrics.padY);
             backdrop = {
                 x: bx, y: by, width: Math.max(1, br - bx), height: Math.max(1, bb - by),
                 radius: metrics.radius, rgb: bgRgb, opacity: bgOpacity,
@@ -203,6 +233,7 @@ export function fitLyric(context, text, params) {
 
     return {
         spec,
+        fontMetrics: {xTop: fontMetrics.xTop, xBottom: fontMetrics.xBottom},
         origin,
         ring,
         border: params.border,
@@ -237,6 +268,7 @@ function strokeBand(cr, reach, floor, step) {
 /** Least recently used caches: Maps in use order, oldest first. */
 const wrapCache = new Map();
 const ringCache = new Map();
+const metricsCache = new Map();
 
 function cacheGet(cache, key) {
     const value = cache.get(key);
@@ -257,14 +289,33 @@ function cacheSet(cache, key, value, size, drop = () => {}) {
 }
 
 function dropRings(entry) {
-    entry.shadow?.finish();
+    entry.aura?.surface.finish();
     entry.outer?.finish();
     entry.inner?.finish();
 }
 
-function strokedMask(line, width, height, dx, dy, reach, floor, step) {
+function bridgeRect(ink, lineText, fontMetrics) {
+    if (!fontMetrics || lineText.trim().length < 2)
+        return null;
+    const top = Math.max(ink.y, fontMetrics.xTop);
+    const bottom = Math.min(ink.y + ink.height, fontMetrics.xBottom);
+    if (bottom - top < 2)
+        return null;
+    return {x: ink.x, y: top, width: ink.width, height: bottom - top};
+}
+
+function strokedMask(line, width, height, dx, dy, reach, floor, step, bridge = null) {
     const surface = new Cairo.ImageSurface(Cairo.Format.A8, width, height);
     const cr = new Cairo.Context(surface);
+    if (bridge) {
+        const bx = bridge.x - dx - reach;
+        const by = bridge.y - dy - reach;
+        const bw = bridge.width + 2 * reach;
+        const bh = bridge.height + 2 * reach;
+        const r = Math.min(reach + bridge.height * 0.35, bh / 2);
+        roundedRectangle(cr, bx, by, bw, bh, r);
+        cr.fill();
+    }
     cr.moveTo(-dx, -dy);
     PangoCairo.layout_line_path(cr, line);
     cr.setLineJoin(Cairo.LineJoin.ROUND);
@@ -272,6 +323,53 @@ function strokedMask(line, width, height, dx, dy, reach, floor, step) {
     strokeBand(cr, reach, floor, step);
     cr.$dispose();
     return surface;
+}
+
+function boxBlurPass(src, width, height, horizontal) {
+    const dst = new Cairo.ImageSurface(Cairo.Format.A8, width, height);
+    const cr = new Cairo.Context(dst);
+    cr.setOperator(Cairo.Operator.ADD);
+    // 51/255 = 0.2 exact in A8, so 5 taps preserve alpha without rounding drift.
+    cr.setSourceRGBA(0, 0, 0, 51 / 255);
+    for (let k = -2; k <= 2; k++)
+        cr.maskSurface(src, horizontal ? k : 0, horizontal ? 0 : k);
+    cr.$dispose();
+    return dst;
+}
+
+/**
+ * Downscales a line silhouette and runs a 3-pass separable 5-tap box blur
+ * (Gaussian approximation, sigma ~= 2.45 downscaled px) to produce a smooth
+ * dark backing cloud in ~1 ms at any font size.
+ */
+function buildAuraMask(srcMask, width, height, spread) {
+    const ds = Math.max(1, spread / 7.5);
+    const aw = Math.max(1, Math.ceil(width / ds));
+    const ah = Math.max(1, Math.ceil(height / ds));
+
+    const down = new Cairo.ImageSurface(Cairo.Format.A8, aw, ah);
+    const dcr = new Cairo.Context(down);
+    dcr.scale(1 / ds, 1 / ds);
+    dcr.setSourceRGBA(0, 0, 0, 1);
+    dcr.maskSurface(srcMask, 0, 0);
+    dcr.$dispose();
+
+    // Expand by 1 downscaled px so the cloud stays rich right outside the outer rim.
+    let cur = new Cairo.ImageSurface(Cairo.Format.A8, aw, ah);
+    const ecr = new Cairo.Context(cur);
+    ecr.setSourceRGBA(0, 0, 0, 1);
+    for (const [ox, oy] of [[0, 0], [-1, 0], [1, 0], [0, -1], [0, 1]])
+        ecr.maskSurface(down, ox, oy);
+    ecr.$dispose();
+    down.finish();
+
+    for (let i = 0; i < 3; i++) {
+        const mid = boxBlurPass(cur, aw, ah, true);
+        cur.finish();
+        cur = boxBlurPass(mid, aw, ah, false);
+        mid.finish();
+    }
+    return {surface: cur, scale: ds};
 }
 
 const GLOW_BANDS = [
@@ -284,74 +382,51 @@ const GLOW_BANDS = [
 ];
 
 /**
- * Pre-renders the border (and optional soft ambient shadow) of one laid-out
- * line into cached A8 alpha masks positioned relative to the line baseline.
+ * Pre-renders the border (and optional smooth dark backing cloud) of one
+ * laid-out line into cached A8 alpha masks positioned relative to its baseline.
  */
-function lineRings(line, lineText, spec, border, ring) {
+function lineRings(line, lineText, spec, border, ring, fontMetrics) {
     const key = `${spec.fontSize}|${spec.family}|${spec.bold}|${spec.italic}|${spec.spaceScale}|${border}|${lineText}`;
     const cached = cacheGet(ringCache, key);
     if (cached)
         return cached;
 
     const [ink] = line.get_pixel_extents();
-    const {inner, outer, shadow: wantShadow, featheredOuter, extraPad} = ring;
+    const {inner, outer, bridge: wantBridge, auraSpread, featheredOuter, extraPad} = ring;
     const pad = Math.ceil(inner + outer + extraPad) + 6;
     const dx = ink.x - pad;
     const dy = ink.y - pad;
     const width = ink.width + 2 * pad;
     const height = ink.height + 2 * pad;
     const step = Math.max(1, spec.fontSize * RING_STEP_OF_FONT_SIZE);
+    const bridge = wantBridge ? bridgeRect(ink, lineText, fontMetrics) : null;
 
-    const innerMask = strokedMask(line, width, height, dx, dy, inner, 0, step);
+    const innerMask = strokedMask(line, width, height, dx, dy, inner, 0, step, bridge);
 
     let outerMask = null;
     if (outer > 0 && featheredOuter) {
         outerMask = new Cairo.ImageSurface(Cairo.Format.A8, width, height);
         const ocr = new Cairo.Context(outerMask);
         for (const band of GLOW_BANDS) {
-            const bandSurf = strokedMask(line, width, height, dx, dy, inner + outer * band.frac, inner, step);
+            const bandSurf = strokedMask(
+                line, width, height, dx, dy, inner + outer * band.frac, inner, step, bridge,
+            );
             ocr.setSourceRGBA(0, 0, 0, band.alpha);
             ocr.maskSurface(bandSurf, 0, 0);
             bandSurf.finish();
         }
         ocr.$dispose();
     } else if (outer > 0) {
-        outerMask = strokedMask(line, width, height, dx, dy, inner + outer, inner, step);
+        outerMask = strokedMask(line, width, height, dx, dy, inner + outer, inner, step, bridge);
     }
 
-    let shadowMask = null;
-    if (wantShadow) {
-        const base = strokedMask(
-            line, width, height, dx, dy,
-            inner + outer + spec.fontSize * 0.015,
-            Math.max(0, inner + outer - 2),
-            step,
-        );
-        shadowMask = new Cairo.ImageSurface(Cairo.Format.A8, width, height);
-        const scr = new Cairo.Context(shadowMask);
-        const dyOff = Math.max(2, Math.round(spec.fontSize * 0.045));
-        const rings = [
-            {r: Math.max(3, spec.fontSize * 0.075), oy: dyOff + 2, a: 0.06},
-            {r: Math.max(2, spec.fontSize * 0.04), oy: dyOff + 1, a: 0.11},
-            {r: 0, oy: dyOff, a: 0.28},
-        ];
-        for (const pass of rings) {
-            scr.setSourceRGBA(0, 0, 0, pass.a);
-            if (pass.r === 0) {
-                scr.maskSurface(base, 0, pass.oy);
-            } else {
-                const steps = 8;
-                for (let i = 0; i < steps; i++) {
-                    const ang = (i / steps) * Math.PI * 2;
-                    scr.maskSurface(base, Math.cos(ang) * pass.r, pass.oy + Math.sin(ang) * pass.r);
-                }
-            }
-        }
-        scr.$dispose();
-        base.finish();
+    let aura = null;
+    if (auraSpread > 0) {
+        const auraSource = !featheredOuter && outerMask ? outerMask : innerMask;
+        aura = buildAuraMask(auraSource, width, height, auraSpread);
     }
 
-    const entry = {dx, dy, shadow: shadowMask, outer: outerMask, inner: innerMask};
+    const entry = {dx, dy, aura, outer: outerMask, inner: innerMask};
     cacheSet(ringCache, key, entry, RING_CACHE_SIZE, dropRings);
     return entry;
 }
@@ -392,15 +467,25 @@ export function paintLyric(cr, fitted) {
         });
     } while (iter.next_line());
 
-    for (const entry of lines)
-        entry.rings = lineRings(entry.line, entry.text, fitted.spec, fitted.border, fitted.ring);
+    for (const entry of lines) {
+        entry.rings = lineRings(
+            entry.line, entry.text, fitted.spec, fitted.border, fitted.ring, fitted.fontMetrics,
+        );
+    }
 
-    // Subtle soft ambient shadow behind Variant C double border
-    if (fitted.ring.shadow) {
-        cr.setSourceRGB(0, 0, 0);
+    // Paint layer-by-layer across all lines (cloud -> outer rim -> inner body
+    // -> fills) so stacked wrapped lines fuse smoothly into one graphic unit.
+    if (fitted.ring.auraSpread > 0 && fitted.ring.auraAlpha > 0) {
+        const dropY = Math.round(fitted.spec.fontSize * 0.03);
         for (const {x, y, rings} of lines) {
-            if (rings.shadow)
-                cr.maskSurface(rings.shadow, x + rings.dx, y + rings.dy);
+            if (!rings.aura)
+                continue;
+            cr.save();
+            cr.translate(x + rings.dx, y + rings.dy + dropY);
+            cr.scale(rings.aura.scale, rings.aura.scale);
+            cr.setSourceRGBA(0, 0, 0, fitted.ring.auraAlpha);
+            cr.maskSurface(rings.aura.surface, 0, 0);
+            cr.restore();
         }
     }
 

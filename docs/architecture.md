@@ -55,21 +55,31 @@ Firefox tab (YouTube)                         GNOME Shell
   `font-size` (wrapping evenly into balanced lines and reporting
   `requiredHeight` so `overlay.js` expands the render surface vertically
   along its anchor via `expandedRenderBox` without moving the saved box or
-  docked pitch panel) and paints it: optional backdrop plate, feathered
-  ambient drop shadow (`double`), crisp outer trim (`double`) or feathered
-  outer halo (`glow`), solid inner contrast body, then the letters. For
-  `double` and `glow`, Pango `AttrScale` tightens word-space advances to
-  `0.85x` so words fuse cleanly with organic waists. Cairo leaves a hole in
-  a stroke wider than a small closed contour (the dot of an i, a period, a
+  docked pitch panel) and paints it layer by layer across all wrapped
+  lines: optional backdrop plate, smooth dark backing cloud (`double` and
+  `glow`), crisp outer trim (`double`) or feathered outer halo (`glow`),
+  solid inner contrast body, then the letters. `text-layout.js` measures
+  each font's natural space advance and lowercase `x` ink height (cached
+  per font/size), scales spaces via `normalizedSpaceScale` so wide
+  monospace fonts tighten down to `0.22 em` (`double`/`glow`) or `0.26 em`
+  (`single`/`none`), and merges an x-height rounded word bridge into
+  multi-character line silhouettes so background never leaks between words.
+  The dark backing cloud is built from a downscaled silhouette via a
+  3-pass separable 5-tap A8 box blur (Gaussian approximation, ~1–3 ms per
+  line at any font size) and cached alongside the line's A8 border masks;
+  idle pointer hit-testing (`inkBox`) stays tight to the solid outer trim
+  so soft cloud tails remain click-through. Cairo leaves a hole in a
+  stroke wider than a small closed contour (the dot of an i, a period, a
   bold o's counter), so each solid ring is stepped down in width by less
   than a dot's diameter, only the widest antialiased
-  (`tests/text-layout-ring.test.mjs`). `text-layout.js` caches balanced
-  wrap widths and each wrapped line's A8 border/shadow masks, and
-  `overlay.js` keeps idle pointer input on the painted ink while expanding
-  the grip on hover to reveal 8 standard edge/corner resize handles and
-  drag-to-move. A move only repositions the box. Display settings live in
-  its GSettings schema (`org.gnome.shell.extensions.lyrics-overlay`), which
-  the settings page writes through the service.
+  (`tests/text-layout-ring.test.mjs`). `text-layout.js` caches font
+  metrics, balanced wrap widths and each wrapped line's A8 border/cloud
+  masks, and `overlay.js` keeps idle pointer input on the painted ink while
+  expanding the grip on hover to reveal 8 standard edge/corner resize
+  handles and drag-to-move. A move only repositions the box. Display
+  settings live in its GSettings schema
+  (`org.gnome.shell.extensions.lyrics-overlay`), which the settings page
+  writes through the service.
 - **Shared modules** (`shared/`): lyric parsing and display timing,
   identity derivation and candidate ranking, the request budget, overlay
   geometry (`overlay-geometry.js`: clamping, placement presets, edge

@@ -61,16 +61,28 @@ indicator changes quietly.
     purple, blue, cyan, green, black) or any custom `#rrggbb` color.
   - **Border** (`Double` | `Glow` | `Single` | `None`): proportional to the
     font size, with automatic WCAG black/white contrast colors and no raw
-    thickness multiplier. `Double` (default, Variant C) fuses a bold inner
-    contrast body (`0.112 em`, with `0.85x` word-space scale so adjacent
-    words join cleanly with organic rounded waists) inside a crisp thin
-    outer contrast trim (`0.036 em`) with a subtle feathered ambient drop
-    shadow. `Glow` (Variant E) wraps the same fused inner contrast body
-    (`0.112 em`, `0.85x` word spacing) in a smooth feathered outer contrast
-    halo (`0.090 em`) for clean close-up legibility on busy backgrounds.
-    `Single` draws a clean `0.085 em` contrast outline; `None` draws bare
-    letters. Each ring is solid around every small closed contour (dots of
-    i and j, periods, bold o counters) at every size (owner, 2026-11-19).
+    thickness multiplier. Word spaces are font-normalized against each
+    font's measured space advance (`normalizedSpaceScale`) so wide
+    monospace fonts tighten down to the same compact rhythm as proportional
+    fonts instead of splitting words into islands (owner, 2026-11-20:
+    "gaps between words are just too big ... want the lyric area to
+    dominate its local space including the background, more"). `Double`
+    (default) fuses a bold inner contrast body (`0.155 em`) and a
+    continuous x-height word bridge (tight `0.22 em` word-space cap) inside
+    a crisp outer contrast trim (`0.038 em`), backed by a smooth dark
+    Gaussian backing cloud (`0.48 em` spread) that gently dims the desktop
+    or video behind the lyric while letting ascenders and descenders keep
+    their organic silhouette. Multi-line wrapped lyrics paint layer by
+    layer (all clouds, all outer rims, all inner bodies, then letter fills)
+    so stacked lines fuse vertically too. `Glow` uses the same fused inner
+    body, x-height word bridge, and `0.22 em` space cap inside a feathered
+    outer contrast halo (`0.095 em`) over a softer dark backing cloud
+    (`0.42 em`). `Single` draws a clean `0.085 em` contrast outline
+    (`0.26 em` space cap); `None` draws bare letters (`0.26 em` space cap).
+    Each ring is solid around every small closed contour (dots of i and j,
+    periods, bold o counters) at every size (owner, 2026-11-19), and the
+    x-height bridge applies only to multi-character lines clamped to each
+    line's ink height.
   - **Backdrop**: `None` (default), `Behind text` pill, or `Full bar`, with
     color and opacity controls shown only when enabled and `em`-proportional
     padding and corner radius computed automatically.

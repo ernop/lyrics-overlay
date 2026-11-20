@@ -50,7 +50,7 @@
         <choice value="glow"/>
       </choices>
       <default>'double'</default>
-      <summary>Proportional contrast border around letters: fused dark body with crisp outer rim (double), feathered outer halo (glow), single outline, or none</summary>
+      <summary>Proportional contrast border around letters: fused x-height body with crisp outer rim and smooth dark backing cloud (double), feathered outer halo (glow), single outline, or none</summary>
     </key>
     <key name="text-backdrop" type="s">
       <choices>

@@ -67,6 +67,26 @@ test('font size stays constant on long lines while requiredHeight expands natura
     assert.ok(longRes.requiredHeight > shortRes.requiredHeight * 1.8, `${longRes.requiredHeight} should exceed ${shortRes.requiredHeight}`);
 });
 
+test('double and glow borders fuse monospace word gaps with zero background punch-through and cast a dark backing cloud', async t => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lyrics-fuse-'));
+    t.after(() => fs.rmSync(dir, {recursive: true, force: true}));
+    fs.symlinkSync(path.join(root, 'gnome-extension/lyrics-overlay@ernop/text-layout.js'), path.join(dir, 'text-layout.js'));
+    fs.symlinkSync(path.join(root, 'shared'), path.join(dir, 'shared'));
+
+    for (const border of ['double', 'glow']) {
+        const {stdout} = await run('gjs', [
+            '-m', path.join(root, 'tests/paint-lyric-ring.js'),
+            dir, path.join(dir, `fuse-${border}.png`), 'Good day', '84', border, 'Monospace',
+        ]);
+        const res = JSON.parse(stdout.trim().split('\n').pop());
+        assert.equal(res.lineCount, 1);
+        assert.ok(res.spaceScale < 0.65, `monospace space should normalize tight, got ${res.spaceScale}`);
+        assert.equal(res.midlineBgPixels, 0, `${border}: background leaked between words along x-height midline`);
+        const maxBlue = border === 'double' ? 180 : 230;
+        assert.ok(res.auraRgb[2] < maxBlue, `${border}: smooth dark backing cloud should dim blue background, got rgb(${res.auraRgb})`);
+    }
+});
+
 test('a fit and a paint served from the caches match a fresh module with empty caches', async t => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lyrics-cache-'));
     t.after(() => fs.rmSync(dir, {recursive: true, force: true}));

@@ -282,31 +282,65 @@ export function snapBox(box, area, threshold) {
 }
 
 /**
- * Proportional border ring geometry and optical fusion parameters at a font
- * size. Shared by GNOME Shell (Pango/Cairo) and the settings page preview.
- * - `double`: fused bold dark body (0.112 em, 0.85x word spacing) + crisp
- *   outer contrast trim (0.036 em) + subtle feathered drop shadow.
- * - `glow`: fused bold inner body (0.112 em, 0.85x word spacing) + smooth
- *   feathered outer contrast halo (0.090 em).
- * - `single`: clean proportional contrast outline (0.085 em).
- * - `none`: bare letters.
+ * Scales a font's space advance so wide/monospace spaces tighten down to
+ * `targetSpaceEm` while narrower fonts stay untouched (never widened).
+ * @param {number} naturalSpaceRatio measured space advance / fontSize
+ * @param {number|null} targetSpaceEm desired maximum space width in ems
+ */
+export function normalizedSpaceScale(naturalSpaceRatio, targetSpaceEm) {
+    if (!targetSpaceEm || !Number.isFinite(naturalSpaceRatio) || naturalSpaceRatio <= 0)
+        return 1;
+    return Math.min(1, targetSpaceEm / naturalSpaceRatio);
+}
+
+/**
+ * Proportional border ring geometry, optical word-fusion bridge, and smooth
+ * dark backing cloud parameters at a font size. Shared by GNOME Shell
+ * (Pango/Cairo) and the settings page preview.
+ * - `double`: normalized tight spaces (0.22 em cap) + fused bold inner body
+ *   (0.155 em) + x-height word bridge + crisp outer contrast trim (0.038 em)
+ *   + smooth dark backing cloud (0.48 em) that dims the surrounding background.
+ * - `glow`: normalized tight spaces (0.22 em cap) + fused inner body
+ *   (0.155 em) + x-height word bridge + smooth feathered outer contrast halo
+ *   (0.095 em) + soft dark backing cloud (0.42 em).
+ * - `single`: clean proportional contrast outline (0.085 em, 0.26 em space cap).
+ * - `none`: bare letters (0.26 em space cap).
  */
 export function borderSpec(border, fontSize) {
     switch (border) {
     case 'none':
-        return {inner: 0, outer: 0, spaceScale: 1, shadow: false, featheredOuter: false, extraPad: 0};
+        return {inner: 0, outer: 0, targetSpaceEm: 0.26, bridge: false, auraSpread: 0, auraAlpha: 0, featheredOuter: false, extraPad: 0};
     case 'single':
-        return {inner: Math.max(1.5, fontSize * 0.085), outer: 0, spaceScale: 1, shadow: false, featheredOuter: false, extraPad: 0};
+        return {inner: Math.max(1.5, fontSize * 0.085), outer: 0, targetSpaceEm: 0.26, bridge: false, auraSpread: 0, auraAlpha: 0, featheredOuter: false, extraPad: 0};
     case 'double': {
-        const inner = Math.max(2, fontSize * 0.112);
-        const outer = Math.max(1.5, fontSize * 0.036);
-        const shadowSpread = Math.ceil(Math.max(3, fontSize * 0.075) + Math.max(2, fontSize * 0.045)) + 3;
-        return {inner, outer, spaceScale: 0.85, shadow: true, featheredOuter: false, extraPad: shadowSpread};
+        const inner = Math.max(2, fontSize * 0.155);
+        const outer = Math.max(1.5, fontSize * 0.038);
+        const auraSpread = Math.max(8, fontSize * 0.48);
+        return {
+            inner,
+            outer,
+            targetSpaceEm: 0.22,
+            bridge: true,
+            auraSpread,
+            auraAlpha: 0.88,
+            featheredOuter: false,
+            extraPad: Math.ceil(auraSpread),
+        };
     }
     case 'glow': {
-        const inner = Math.max(2, fontSize * 0.112);
-        const outer = Math.max(2, fontSize * 0.090);
-        return {inner, outer, spaceScale: 0.85, shadow: false, featheredOuter: true, extraPad: Math.ceil(outer * 0.6)};
+        const inner = Math.max(2, fontSize * 0.155);
+        const outer = Math.max(2, fontSize * 0.095);
+        const auraSpread = Math.max(8, fontSize * 0.42);
+        return {
+            inner,
+            outer,
+            targetSpaceEm: 0.22,
+            bridge: true,
+            auraSpread,
+            auraAlpha: 0.65,
+            featheredOuter: true,
+            extraPad: Math.ceil(Math.max(outer * 0.6, auraSpread)),
+        };
     }
     }
     throw new Error(`lyrics-overlay: unknown text border "${border}"`);

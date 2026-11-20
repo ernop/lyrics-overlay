@@ -10,7 +10,7 @@ import {GlitchFilter, PitchDetector, freqToMidi, noteName, voiceMidi} from '../s
 import {
     DOCK_GAP, MIN_BOX_HEIGHT, MIN_BOX_WIDTH, PLACEMENT_PRESETS, backdropMetrics, balancedWrapWidth, borderSpec,
     boxFromGeometry, boxZoneAt, clampBox, clampGeometry, dockedPanelBox, edgeResizedBox, expandedRenderBox,
-    geometryFromBox, movedBox, snapBox, snappedDock, verticalAnchorFor,
+    geometryFromBox, movedBox, normalizedSpaceScale, snapBox, snappedDock, verticalAnchorFor,
 } from '../shared/overlay-geometry.js';
 
 test('budget refuses past any window and names when it reopens', () => {
@@ -226,9 +226,12 @@ test('clampGeometry keeps boxes inside [0, 1] and presets are valid', () => {
     assert.equal(borderSpec('single', 64).outer, 0);
     assert.ok(borderSpec('single', 64).inner > 4);
     const dbl = borderSpec('double', 64);
-    assert.ok(dbl.inner > dbl.outer && dbl.outer > 1.5 && dbl.shadow && dbl.spaceScale < 1);
+    assert.ok(dbl.inner > dbl.outer && dbl.outer > 1.5 && dbl.bridge && dbl.auraSpread > 10 && dbl.targetSpaceEm < 0.25);
     const glow = borderSpec('glow', 64);
-    assert.ok(glow.inner > 4 && glow.outer > 4 && glow.featheredOuter && glow.spaceScale < 1);
+    assert.ok(glow.inner > 4 && glow.outer > 4 && glow.bridge && glow.featheredOuter && glow.auraSpread > 10);
+    assert.ok(Math.abs(normalizedSpaceScale(0.50, 0.22) - 0.44) < 0.001);
+    assert.equal(normalizedSpaceScale(0.18, 0.22), 1);
+    assert.equal(normalizedSpaceScale(0, 0.22), 1);
     const bp = backdropMetrics(64);
     assert.ok(bp.padX > bp.padY && bp.radius > 0);
 });

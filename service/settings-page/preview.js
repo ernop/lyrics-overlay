@@ -10,7 +10,8 @@
 
 import {
     OUTER_EDGE, backdropMetrics, balancedWrapWidth, borderSpec, boxFromGeometry, boxZoneAt,
-    dockedPanelBox, edgeResizedBox, geometryFromBox, movedBox, snapBox, snappedDock, verticalAnchorFor,
+    dockedPanelBox, edgeResizedBox, geometryFromBox, movedBox, normalizedSpaceScale, snapBox,
+    snappedDock, verticalAnchorFor,
 } from '/shared/overlay-geometry.js';
 import {labeledLines, noteLines} from '/shared/pitch-layout.js';
 import {keyName, noteLabel, pitchClassNames, scalePitchClasses} from '/shared/scales.js';
@@ -46,15 +47,15 @@ function fontCss(values, sizePx) {
     return `${values['font-italic'] ? 'italic ' : ''}${values['font-bold'] ? 700 : 400} ${sizePx}px ${family}`;
 }
 
-function applyWordSpacing(ctx, fontSize, spaceScale) {
+function applyNormalizedWordSpacing(ctx, fontSize, targetSpaceEm) {
     if (!('wordSpacing' in ctx))
-        return;
-    if (!spaceScale || spaceScale === 1) {
-        ctx.wordSpacing = '0px';
-        return;
-    }
-    const spaceW = ctx.measureText(' ').width;
-    ctx.wordSpacing = `${((spaceScale - 1) * spaceW).toFixed(2)}px`;
+        return 1;
+    ctx.wordSpacing = '0px';
+    const natSpace = Math.max(1, ctx.measureText('a a').width - ctx.measureText('aa').width);
+    const spaceScale = normalizedSpaceScale(natSpace / fontSize, targetSpaceEm);
+    if (spaceScale < 1)
+        ctx.wordSpacing = `${((spaceScale - 1) * natSpace).toFixed(2)}px`;
+    return spaceScale;
 }
 
 function wrapLines(ctx, text, maxWidth) {
@@ -115,7 +116,13 @@ export function computeLyricLayout(ctx, text, values, monitor) {
     const lineStep = fontSize * 1.24;
 
     ctx.font = fontCss(values, fontSize);
-    applyWordSpacing(ctx, fontSize, ring.spaceScale);
+    ctx.textBaseline = 'middle';
+    const spaceScale = applyNormalizedWordSpacing(ctx, fontSize, ring.targetSpaceEm);
+    const xBox = ctx.measureText('x');
+    const xMetrics = {
+        ascent: xBox.actualBoundingBoxAscent,
+        descent: xBox.actualBoundingBoxDescent,
+    };
     const lineCountAt = w => wrapLines(ctx, text, w).length;
     const balancedW = Math.min(maxWidth, balancedWrapWidth(maxWidth, lineCountAt));
     const lines = wrapLines(ctx, text, balancedW);
@@ -131,6 +138,8 @@ export function computeLyricLayout(ctx, text, values, monitor) {
         renderH,
         fontSize,
         ring,
+        spaceScale,
+        xMetrics,
         lines,
         lineWidths,
         lineStep,
@@ -274,11 +283,37 @@ export class LyricPreviewCanvas {
         }
 
         ctx.font = fontCss(values, fontSize);
-        applyWordSpacing(ctx, fontSize, ring.spaceScale);
         ctx.textBaseline = 'middle';
+        applyNormalizedWordSpacing(ctx, fontSize, ring.targetSpaceEm);
         ctx.lineJoin = 'round';
         ctx.lineCap = 'round';
         ctx.miterLimit = 2;
+
+        const paintBridge = (color, reach) => {
+            if (!ring.bridge || reach <= 0)
+                return;
+            ctx.fillStyle = color;
+            layout.lines.forEach((line, idx) => {
+                if (line.trim().length < 2)
+                    return;
+                const x = lineX(layout.lineWidths[idx]);
+                const y = originY + (idx + 0.5) * layout.lineStep;
+                const m = ctx.measureText(line);
+                const left = x - (m.actualBoundingBoxLeft ?? 0);
+                const right = x + (m.actualBoundingBoxRight ?? layout.lineWidths[idx]);
+                const top = Math.max(y - m.actualBoundingBoxAscent, y - layout.xMetrics.ascent);
+                const bottom = Math.min(y + m.actualBoundingBoxDescent, y + layout.xMetrics.descent);
+                if (bottom - top < 2 || right <= left)
+                    return;
+                const bx = left - reach;
+                const by = top - reach;
+                const bw = (right - left) + 2 * reach;
+                const bh = (bottom - top) + 2 * reach;
+                const r = Math.min(reach + (bottom - top) * 0.35, bh / 2);
+                roundedRectPath(ctx, bx, by, bw, bh, r);
+                ctx.fill();
+            });
+        };
 
         const paintPass = (mode, color, lineWidth = 0) => {
             if (mode === 'stroke') {
@@ -297,28 +332,39 @@ export class LyricPreviewCanvas {
             });
         };
 
-        // Soft ambient shadow behind Variant C double border
-        if (ring.shadow) {
+        const paintSilhouette = (color, reach) => {
+            paintBridge(color, reach);
+            paintPass('stroke', color, 2 * reach);
+        };
+
+        // Smooth dark backing cloud behind double/glow borders
+        if (ring.auraSpread > 0 && ring.auraAlpha > 0) {
+            const auraReach = !ring.featheredOuter && ring.outer > 0 ? ring.inner + ring.outer : ring.inner;
+            const blurPx = ring.auraSpread * 0.55 * scale * dpr;
+            const dropPx = Math.round(fontSize * 0.03) * scale * dpr;
             ctx.save();
-            ctx.shadowColor = 'rgba(0, 0, 0, 0.55)';
-            ctx.shadowBlur = Math.max(5, fontSize * 0.14) * scale;
+            ctx.shadowColor = `rgba(0, 0, 0, ${ring.auraAlpha})`;
+            ctx.shadowBlur = blurPx;
             ctx.shadowOffsetX = 0;
-            ctx.shadowOffsetY = Math.max(2, fontSize * 0.045) * scale;
-            paintPass('stroke', rgba(rColors.outer, 1), 2 * (ring.inner + ring.outer));
+            ctx.shadowOffsetY = dropPx;
+            paintSilhouette('rgba(0, 0, 0, 1)', auraReach);
+            ctx.shadowBlur = blurPx * 0.45;
+            ctx.shadowColor = `rgba(0, 0, 0, ${(ring.auraAlpha * 0.55).toFixed(2)})`;
+            paintSilhouette('rgba(0, 0, 0, 1)', auraReach);
             ctx.restore();
         }
 
-        // Outer border (feathered glow for Variant E, crisp trim for Variant C)
+        // Outer border (feathered glow or crisp contrast trim)
         if (ring.outer > 0 && ring.featheredOuter) {
             for (const pass of GLOW_CANVAS_PASSES)
-                paintPass('stroke', rgba(rColors.outer, pass.alpha), 2 * (ring.inner + ring.outer * pass.frac));
+                paintSilhouette(rgba(rColors.outer, pass.alpha), ring.inner + ring.outer * pass.frac);
         } else if (ring.outer > 0) {
-            paintPass('stroke', rgba(rColors.outer, 1), 2 * (ring.inner + ring.outer));
+            paintSilhouette(rgba(rColors.outer, 1), ring.inner + ring.outer);
         }
 
         // Inner contrast body
         if (ring.inner > 0)
-            paintPass('stroke', rgba(rColors.inner, 1), 2 * ring.inner);
+            paintSilhouette(rgba(rColors.inner, 1), ring.inner);
 
         // Pure opaque letter fill
         paintPass('fill', rgba(fill, 1));
