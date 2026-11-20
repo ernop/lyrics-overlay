@@ -39,6 +39,20 @@ test('a wide double border around a period is solid inner ring, then solid outer
     assert.deepEqual(misses, []);
 });
 
+test('a wide border fills the middle of an o with the inner ring', async t => {
+    // The o's counter is a closed contour narrower than the stroke, like
+    // a dot; the owner saw a white hole in it (2026-11-19).
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lyrics-ring-'));
+    t.after(() => fs.rmSync(dir, {recursive: true, force: true}));
+    fs.symlinkSync(path.join(root, 'gnome-extension/lyrics-overlay@ernop/text-layout.js'), path.join(dir, 'text-layout.js'));
+    fs.symlinkSync(path.join(root, 'shared'), path.join(dir, 'shared'));
+    for (const size of [60, 100, 160]) {
+        const {stdout} = await run('gjs', ['-m', path.join(root, 'tests/paint-lyric-ring.js'), dir, path.join(dir, 'ring.png'), 'o', String(size)]);
+        const {center} = JSON.parse(stdout.trim().split('\n').pop());
+        assert.ok(center.every(channel => channel < 40), `black wanted in the middle of an o at ${size} px, got rgb(${center})`);
+    }
+});
+
 test('a fit and a paint served from the caches match a fresh module with empty caches', async t => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lyrics-cache-'));
     t.after(() => fs.rmSync(dir, {recursive: true, force: true}));
