@@ -55,7 +55,10 @@ To update: `git pull && scripts/install.sh`. The service restarts at once; the
 shell extension changes at the next login. From 1.3.0 Firefox updates the
 add-on by itself (it checks the newest GitHub release once a day), and the
 settings page shows the add-on's version, with an install button when
-Firefox runs an older one. An add-on updated from 1.0 or 1.1 opens a page
+Firefox runs an older one. Versions 1.0.0 to 1.2.0 have no update address,
+so Firefox never updates them: install the newest
+[lyrics-overlay.xpi](https://github.com/ernop/lyrics-overlay/releases/latest/download/lyrics-overlay.xpi)
+once by hand, as in step 2 above. An add-on updated from 1.0 or 1.1 opens a page
 asking for access to localhost, which it needs to find the settings tab;
 press Allow there once. Going to the song works without it.
 
@@ -129,6 +132,30 @@ after a change with `systemctl --user restart lyrics-overlay.service`):
 | `lrclibBaseUrl` | `"https://lrclib.net"` | the LRCLIB server |
 | `ytarchiveUrl` | `null` | a ytarchive server that receives each video played and its lyrics; `null` sends nothing |
 | `stateDir` | `"~/.local/state/lyrics-overlay"` | choices, timing and caches |
+
+## Checking that it works
+
+With a song playing:
+
+| Check | Expect |
+|---|---|
+| `systemctl --user status lyrics-overlay.service` | active (running) |
+| `curl -s http://127.0.0.1:8792/api/state` | `state.lyrics` is `timed` for a song LRCLIB has timed lyrics for; `addon.status` is `current`, not `older`, `unnamed` or `unheard` |
+| `gnome-extensions info lyrics-overlay@ernop` | State: ACTIVE |
+| `python3 scripts/check-live-desktop.py` | the indicator and the lyric line are drawn, and where |
+| `journalctl --user -u lyrics-overlay.service` | one `lookup <video>` line for each video, saying `timed`, `plain` or `none` |
+
+If no line shows:
+
+- `lyrics` is `none` or `plain`: LRCLIB has no timed lyrics for the song. The
+  settings page's Song section can search again or pick another lyric set.
+- `addon.status` is `unheard`: no add-on has reported since the service
+  started. Check that the add-on is installed and enabled in Firefox and
+  that the YouTube tab plays sound.
+- `addon.status` is `older` or `unnamed`: Firefox runs an old add-on; use the
+  settings page's install button, or install the `.xpi` as in Install.
+- The extension is not ACTIVE: log out and back in once after
+  `scripts/install.sh`; GNOME Shell loads extensions only at login.
 
 ## Network and privacy
 
