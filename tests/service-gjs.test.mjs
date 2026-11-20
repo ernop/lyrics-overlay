@@ -182,7 +182,8 @@ test('the gjs service looks up lyrics, serves state and accepts shell commands',
     const page = await request(port, {urlPath: '/settings'});
     assert.equal(page.status, 200);
     assert.match(page.body, /<title>Lyrics overlay settings<\/title>/u, 'the shell raises the window by this title');
-    for (const script of ['/settings.js', '/shared/scales.js', '/shared/text-ink.js', '/shared/lyrics-status.js'])
+    for (const script of ['/settings.js', '/preview.js', '/shared/scales.js', '/shared/text-ink.js',
+        '/shared/lyrics-status.js', '/shared/overlay-geometry.js', '/shared/pitch-layout.js', '/shared/style-presets.js'])
         assert.match((await request(port, {urlPath: script})).headers['content-type'], /^text\/javascript/u, script);
     const icon = await request(port, {urlPath: '/favicon.svg'});
     assert.equal(icon.headers['content-type'], 'image/svg+xml');
@@ -272,21 +273,35 @@ test('the settings page reads and writes the settings the shell reads, and only 
     const {schema, values} = JSON.parse((await request(port, {urlPath: '/api/settings'})).body);
     assert.deepEqual(schema['font-size'], {type: 'd', writable: true, default: 48, min: 16, max: 256});
     assert.deepEqual(schema['text-border'].choices, ['none', 'single', 'double']);
-    assert.equal(schema.box.writable, false, 'the box is set by dragging');
+    assert.deepEqual(schema['text-align'].choices, ['center', 'left', 'right']);
+    assert.equal(schema.box.writable, true, 'the settings page can position and resize the box');
+    assert.equal(schema['pitch-box'].writable, true, 'the settings page can position and resize the separate pitch panel');
     assert.equal(values['font-size'], 48);
 
-    const written = await pagePost(port, '/api/settings', {changes: {'font-size': 72, 'pitch-line-color': '#ff8800', 'pitch-dock': 'left'}});
+    const written = await pagePost(port, '/api/settings', {changes: {
+        'font-size': 72, 'pitch-line-color': '#ff8800', 'pitch-dock': 'left',
+        'box': {cx: 0.7, cy: 0.85, width: 0.4, height: 0.16},
+        'text-align': 'right', 'text-valign': 'bottom', 'text-fit-mode': 'fill',
+        'text-backdrop': 'pill', 'text-custom-color': '#12ab34', 'overlay-adjust-mode': true,
+    }});
     assert.equal(written.status, 200);
-    assert.equal(JSON.parse(written.body).values['font-size'], 72);
+    const writtenValues = JSON.parse(written.body).values;
+    assert.equal(writtenValues['font-size'], 72);
+    assert.deepEqual(writtenValues.box, {cx: 0.7, cy: 0.85, width: 0.4, height: 0.16});
+    assert.equal(writtenValues['text-backdrop'], 'pill');
     // dconf-service writes its database a moment after the service's call.
     await waitFor(async () => await stored('font-size') === '72.0', 'the size in dconf');
     assert.equal(await stored('pitch-dock'), "'left'");
+    assert.equal(await stored('text-align'), "'right'");
+    assert.equal(await stored('overlay-adjust-mode'), 'true');
 
     const refusals = [
         [{'font-size': 999}, /font-size must be from 16 to 256/u],
         [{'text-color': 'teal'}, /text-color must be one of/u],
+        [{'text-custom-color': 'yellow'}, /#rrggbb/u],
         [{'pitch-line-color': 'orange'}, /#rrggbb/u],
-        [{'box': {cx: 0.5, cy: 0.5, width: 0.5, height: 0.5}}, /dragging/u],
+        [{'box': {cx: 0.5, cy: 0.5, width: 0.01, height: 0.5}}, /box\.width must be/u],
+        [{'box': {cx: 0.5, cy: 0.5, width: 0.5}}, /must hold exactly/u],
         [{'pitch-range-top': 50}, /at least 6 semitones/u],
         [{'no-such-key': true}, /no setting named/u],
     ];
@@ -313,6 +328,9 @@ test('the settings page reads and writes the settings the shell reads, and only 
     const fonts = JSON.parse((await request(port, {urlPath: '/api/fonts'})).body).families;
     assert.ok(fonts.length > 0 && fonts.every(family => typeof family === 'string' && family), 'installed families by name');
     assert.deepEqual(fonts, [...fonts].sort((a, b) => a.localeCompare(b)));
+
+    const monitors = JSON.parse((await request(port, {urlPath: '/api/monitors'})).body).monitors;
+    assert.ok(Array.isArray(monitors) && monitors.length >= 1 && monitors[0].width > 0 && monitors[0].height > 0, 'monitor dimensions');
 });
 
 test('an LRCLIB rate-limit refusal pauses lookups for the time it names instead of failing them', async t => {

@@ -144,7 +144,8 @@ try {
     const ready = `(async () => {
         const fontsLoaded = await Promise.race([document.fonts.ready.then(() => true),
             new Promise(resolve => setTimeout(() => resolve(false), ${FONTS_CHECK_MS}))]);
-        const filled = fontsLoaded && document.querySelectorAll('#sections section').length === 5 &&
+        const filled = fontsLoaded && document.querySelectorAll('#studio .studio-pane').length === 2 &&
+            document.querySelectorAll('#tabs button[role="tab"]').length === 4 &&
             document.querySelectorAll('.fonts button').length > 1 &&
             document.querySelectorAll('[aria-label="Microphones"] button').length === 3 &&
             document.getElementById('banner').textContent === '';

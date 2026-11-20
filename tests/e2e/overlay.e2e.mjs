@@ -168,6 +168,8 @@ const overlayFacts = `(() => {
         layerWidth: layer.width,
         box: {x: overlay._root.x, y: overlay._root.y, width: overlay._root.width, height: overlay._root.height},
         grip: {visible: overlay._grip.visible, x: gx, y: gy, width: overlay._grip.width, height: overlay._grip.height},
+        outlineVisible: overlay._outline.visible,
+        adjustGripVisible: overlay._adjustGrip.visible,
     };
 })()`;
 
@@ -441,6 +443,61 @@ async function overlayScenario(h) {
     await h.waitFor(async () => (await h.evalJs(panelFacts)).visible, 'the panel to return');
     await h.gsettings.set('pitch-enabled', 'false');
     await h.waitFor(async () => !(await h.evalJs(panelFacts)).visible, 'the panel to hide when switched off');
+
+    // Interactive adjust mode: works even without active timed lyrics, shows
+    // the full-box outline with 8 handles, resizes from any edge while
+    // anchoring the opposite edge, moves by dragging anywhere, and scales
+    // text on plain scroll.
+    await h.gsettings.set('overlay-adjust-mode', 'true');
+    const adjusting = await h.waitFor(async () => {
+        const facts = await h.evalJs(overlayFacts);
+        return facts.visible && facts.outlineVisible && facts;
+    }, 'adjust mode to show the box outline');
+    const adjBefore = adjusting.box;
+    // Drag the right edge inward by 80 px: left edge stays anchored.
+    await h.evalJs(drag({from: [adjBefore.x + adjBefore.width - 6, adjBefore.y + adjBefore.height / 2], by: [-80, 0]}));
+    const adjResized = await h.waitFor(async () => {
+        const facts = await h.evalJs(overlayFacts);
+        return near(facts.box.width, adjBefore.width - 80, 12) && facts;
+    }, 'adjust mode right-edge resize');
+    assert.ok(near(adjResized.box.x, adjBefore.x, 8), JSON.stringify([adjBefore, adjResized.box]));
+    // Drag interior to move by (+40, -30).
+    await h.evalJs(drag({from: center(adjResized.box), by: [40, -30]}));
+    const adjMoved = await h.waitFor(async () => {
+        const facts = await h.evalJs(overlayFacts);
+        return near(facts.box.x, adjResized.box.x + 40, 14) && near(facts.box.y, adjResized.box.y - 30, 14) && facts;
+    }, 'adjust mode interior drag');
+    assert.ok(adjMoved.outlineVisible);
+    // Plain scroll inside adjust mode grows font-size without holding Ctrl.
+    const sizeBeforeScroll = Number(await h.gsettings.get('font-size'));
+    await h.evalJs(inputScript([{move: center(adjMoved.box)}, {scroll: 'UP', wait: 100}]));
+    await h.waitFor(async () => Number(await h.gsettings.get('font-size')) > sizeBeforeScroll, 'adjust mode scroll font-size');
+    await h.screenshot('adjust-mode');
+    await h.gsettings.set('overlay-adjust-mode', 'false');
+    await h.waitFor(async () => !(await h.evalJs(overlayFacts)).outlineVisible, 'adjust mode to close');
+
+    // New text layout features: right alignment, bottom valign, pill backdrop,
+    // custom color, drop shadow, and fill mode all paint cleanly.
+    await h.gsettings.set('font-size', '32');
+    await h.gsettings.set('text-align', "'right'");
+    await h.gsettings.set('text-valign', "'bottom'");
+    await h.gsettings.set('text-backdrop', "'pill'");
+    await h.gsettings.set('text-custom-color', "'#ffeb00'");
+    await h.gsettings.set('text-shadow', '0.6');
+    const styled = await h.waitFor(async () => {
+        const facts = await h.evalJs(overlayFacts);
+        return facts.grip.visible && facts.align === 'right' &&
+            facts.grip.x + facts.grip.width >= facts.box.x + facts.box.width - 36 && facts;
+    }, 'right-aligned bottom pill style to paint');
+    assert.ok(styled.grip.y > styled.box.y + styled.box.height / 3, JSON.stringify([styled.box, styled.grip]));
+    await h.gsettings.set('text-fit-mode', "'fill'");
+    await h.waitFor(async () => (await h.evalJs(overlayFacts)).fontSize > 48, 'fill mode to grow text past font-size');
+    await h.gsettings.set('text-align', "'center'");
+    await h.gsettings.set('text-valign', "'center'");
+    await h.gsettings.set('text-fit-mode', "'shrink'");
+    await h.gsettings.set('text-backdrop', "'none'");
+    await h.gsettings.set('text-custom-color', "''");
+    await h.gsettings.set('text-shadow', '0');
 
     // A click on the lyric has the browser extension select the song's tab,
     // then raises the window showing it.

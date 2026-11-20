@@ -1,7 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import {TEXT_COLORS, hexColor, ringColors} from '../shared/text-ink.js';
+import {
+    TEXT_COLORS, hexColor, nearestNamedColor, parseHexColor, resolveTextColor, ringColors,
+} from '../shared/text-ink.js';
 
 const WHITE = [1, 1, 1];
 const BLACK = [0, 0, 0];
@@ -29,4 +31,16 @@ test('each color gets the inner ring that contrasts more with it', () => {
 test('swatch colors are hex', () => {
     assert.equal(hexColor(TEXT_COLORS.white), '#ffffff');
     assert.equal(hexColor(TEXT_COLORS.yellow), '#ffeb00');
+});
+
+test('custom hex colors parse, resolve, find nearest preset, and compute contrast rings', () => {
+    assert.deepEqual(parseHexColor('#00ff80'), [0, 1, 128 / 255]);
+    assert.equal(parseHexColor('not-a-color'), null);
+    assert.deepEqual(resolveTextColor('yellow', ''), TEXT_COLORS.yellow);
+    assert.deepEqual(resolveTextColor('yellow', '#ff0000'), [1, 0, 0]);
+    assert.throws(() => resolveTextColor('yellow', 'bad'), /invalid custom color/u);
+    assert.equal(nearestNamedColor([0.98, 0.9, 0.05]), 'yellow');
+    assert.equal(nearestNamedColor([0.05, 0.05, 0.05]), 'black');
+    assert.deepEqual(ringColors(TEXT_COLORS.white, '#000000'), {inner: BLACK, outer: WHITE});
+    assert.deepEqual(ringColors(TEXT_COLORS.black, '#ffffff'), {inner: WHITE, outer: BLACK});
 });

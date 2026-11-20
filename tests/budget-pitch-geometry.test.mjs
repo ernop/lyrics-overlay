@@ -8,9 +8,11 @@ import {
 } from '../shared/budget.js';
 import {GlitchFilter, PitchDetector, freqToMidi, noteName, voiceMidi} from '../shared/pitch-mpm.js';
 import {
-    DOCK_GAP, MIN_BOX_HEIGHT, MIN_BOX_WIDTH, balancedWrapWidth, boxFromGeometry, clampBox, dockedPanelBox, edgeResizedBox,
-    fitFontSize, geometryFromBox, movedBox, resizedBox, snappedDock,
+    DOCK_GAP, MIN_BOX_HEIGHT, MIN_BOX_WIDTH, PLACEMENT_PRESETS, balancedWrapWidth, boxFromGeometry, boxZoneAt,
+    clampBox, clampGeometry, dockedPanelBox, edgeResizedBox, fitFontSize, geometryFromBox, movedBox, resizedBox,
+    ringWidths, snapBox, snappedDock,
 } from '../shared/overlay-geometry.js';
+import {STYLE_PRESETS} from '../shared/style-presets.js';
 
 test('budget refuses past any window and names when it reopens', () => {
     const windows = [{seconds: 60, limit: 2}, {seconds: 3600, limit: 3}];
@@ -186,4 +188,35 @@ test('text fitting finds the largest fitting size and a balanced wrap', () => {
     const balanced = balancedWrapWidth(30, lineCountAt);
     assert.equal(lineCountAt(balanced), 2);
     assert.ok(balanced < 20);
+});
+
+test('boxZoneAt detects all 8 edge/corner resize zones and interior move', () => {
+    const box = {x: 100, y: 200, width: 400, height: 120};
+    assert.equal(boxZoneAt({x: 300, y: 260}, box, 16), 'move');
+    assert.deepEqual(boxZoneAt({x: 104, y: 204}, box, 16), {edges: {left: true, top: true}});
+    assert.deepEqual(boxZoneAt({x: 496, y: 316}, box, 16), {edges: {right: true, bottom: true}});
+    assert.deepEqual(boxZoneAt({x: 300, y: 205}, box, 16), {edges: {top: true}});
+    assert.deepEqual(boxZoneAt({x: 495, y: 260}, box, 16), {edges: {right: true}});
+});
+
+test('snapBox snaps box center and edges within threshold and reports guides', () => {
+    const centered = snapBox({x: 1085, y: 495, width: 400, height: 100}, area, 12);
+    assert.equal(centered.box.x, (area.width - 400) / 2);
+    assert.equal(centered.box.y, (area.height - 100) / 2);
+    assert.deepEqual(centered.guides, {x: [area.width / 2], y: [area.height / 2]});
+
+    const edge = snapBox({x: 6, y: 974, width: 400, height: 100}, area, 12);
+    assert.equal(edge.box.x, 0);
+    assert.equal(edge.box.y, 980);
+    assert.deepEqual(edge.guides, {x: [0], y: [area.height]});
+});
+
+test('clampGeometry keeps boxes inside [0, 1] and presets are valid', () => {
+    assert.deepEqual(clampGeometry({cx: 0.01, cy: 0.99, width: 0.4, height: 0.2}), {cx: 0.2, cy: 0.9, width: 0.4, height: 0.2});
+    assert.deepEqual(clampGeometry({cx: 0.5, cy: 0.5, width: 0.01, height: 0.001}), {cx: 0.5, cy: 0.5, width: 0.05, height: 0.02});
+    for (const preset of PLACEMENT_PRESETS)
+        assert.deepEqual(clampGeometry(preset.box), preset.box, preset.id);
+    assert.ok(STYLE_PRESETS.length >= 4);
+    assert.deepEqual(ringWidths('none', 64, 2), {inner: 0, outer: 0});
+    assert.ok(ringWidths('double', 64, 2).outer > 0);
 });

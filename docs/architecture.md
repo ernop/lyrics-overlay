@@ -67,15 +67,18 @@ Firefox tab (YouTube)                         GNOME Shell
   writes through the service.
 - **Shared modules** (`shared/`): lyric parsing and display timing,
   identity derivation and candidate ranking, the request budget, overlay
-  geometry, voice-wei's pitch detector, the key detector
+  geometry (`overlay-geometry.js`: clamping, placement presets, edge
+  zones, magnetic snapping, ring widths), curated style presets
+  (`style-presets.js`), voice-wei's pitch detector, the key detector
   (`key-detect.js`), what the pitch panel shows when (`pitch-layout.js`:
   its clock, which lines carry names, the note the readout holds), scales
   and note spelling (`scales.js`), the D-Bus interface
   (`dbus-interface.js`, one definition for service and shell), the lyric
   status wording (`lyrics-status.js`) and the letter colors with their
-  contrast rings (`text-ink.js`). The settings page imports
-  `lyrics-status.js`, `scales.js` and `text-ink.js` as the service serves
-  them.
+  contrast rings and custom hex parsing (`text-ink.js`). The settings page
+  imports `lyrics-status.js`, `scales.js`, `text-ink.js`,
+  `overlay-geometry.js`, `pitch-layout.js` and `style-presets.js` as the
+  service serves them.
   `scripts/install-gnome-extension.sh` copies a listed set of them into the
   installed extension's `shared/`; a shared module the shell imports must
   be added to that list, or the extension fails to load.
@@ -119,11 +122,14 @@ JSON (415), and is refused (403) when its Origin is anything but
 `Sec-Fetch-Site: cross-site`. The same guards cover every extension path
 below.
 
-The settings page's paths need the same Host. `GET /settings`, its script
-and style, the shared modules it imports and the favicon are files read
-at start; `GET /` redirects to `/settings`. It reads `GET /api/state`,
-`/api/settings` (the schema and the values), `/api/fonts` and
-`/api/microphones`. Its POSTs (`/api/settings {changes}`,
+The settings page's paths need the same Host. `GET /settings`, its
+scripts (`settings.js`, `preview.js`), its stylesheet, the shared modules
+it imports and the favicon are files read at start; `GET /` redirects to
+`/settings`. It reads `GET /api/state`, `/api/settings` (the schema and
+the values, including writable `box` and `pitch-box`), `/api/fonts`,
+`/api/microphones` and `/api/monitors` (logical monitor geometry from
+Mutter's `DisplayConfig` D-Bus interface, falling back to `1920x1080`
+when unavailable). Its POSTs (`/api/settings {changes}`,
 `/api/settings/reset {keys}`, `/api/command {op}` for the song's
 commands, `/api/pitch/fit`) need an Origin equal to `http://<Host>`, the
 page itself, and JSON.

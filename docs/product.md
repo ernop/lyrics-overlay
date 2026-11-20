@@ -41,51 +41,88 @@ indicator changes quietly.
   0.5 s steps (voice-wei's convention: Too fast shows every line later);
   Reset returns to zero. Each video remembers its offset.
 - **Text.** Size adjusts smoothly (16-256 px, a notched slider on the
-  settings page, or Ctrl+wheel over the text). Font: the desktop font or
-  any installed family that can write English, each name drawn in its own
-  face, found by typing part of its name; bold or not. More fonts
-  (owner, 2026-11-10: "many more font options"): `scripts/install-fonts.sh`
-  adds about 160 of Ubuntu's font packages for the user alone (below).
-  Color: white, yellow, orange, red, pink, magenta, purple, blue, cyan,
-  green or black. Border: double (default), single or none; the inner ring
-  is whichever of black and white contrasts more with the letters, and the
-  outer ring is the other, so the line reads on any background. Border
-  thickness (owner, 2026-11-10: "thicker border options at all types"):
-  0.25 to 4 times the standard width for the text size, for either border.
-  Each ring is solid around every part of every letter, dots and
-  punctuation included, at every thickness (owner, 2026-11-19: at 4 times,
-  the dots of i and j had rings with the background showing inside).
-  Alignment: centered (default) or left within the box.
+  settings page, Ctrl+wheel over the text, or plain wheel in Adjust mode).
+  Fit mode (2026-11-19): "Fit inside box" (default, shrinks below target
+  size when the box is too tight) or "Fill box" (scales text up or down to
+  fill the box); optional maximum line count (auto, 1, 2, 3 or 4). When
+  the box clamps the text size, the settings preview shows the exact drawn
+  vs target pixel size and offers a one-click button to expand the box to
+  fit. Font: the desktop font or any installed family that can write
+  English, each name drawn in its own face, found through an expandable
+  searchable browser with category filters (All / Sans / Serif / Display /
+  Mono) and quick-pick presets; font weight (auto from Bold, or 100-900),
+  italic, all-caps and letter spacing (-2 to 12 px). More fonts (owner,
+  2026-11-10: "many more font options"): `scripts/install-fonts.sh` adds
+  about 160 of Ubuntu's font packages for the user alone (below). Color:
+  11 named presets (white, yellow, orange, red, pink, magenta, purple,
+  blue, cyan, green, black) or any custom `#rrggbb` color, plus text
+  opacity (20%-100%). Border: double (default), single or none; automatic
+  black/white contrast rings or a custom border color, 0.25 to 4 times the
+  standard width for the text size. Each ring is solid around every part
+  of every letter, dots and punctuation included, at every thickness
+  (owner, 2026-11-19: at 4 times, the dots of i and j had rings with the
+  background showing inside). Optional drop shadow (0%-100%) and optional
+  background plate ("None", "Behind text" pill, or "Full box") with
+  configurable color, opacity, corner radius and padding. Alignment: left,
+  centered (default) or right horizontally, and top, center (default) or
+  bottom vertically within the box. One-click style presets apply curated
+  combinations of border, color, backdrop and shadow.
 - **Transitions.** Instant, a short fade-in (default), or a quick or soft
   crossfade between lines.
 - **Instant to drag and resize (owner, 2026-11-19: "super fast,
   draggable, ultra-instant").** A move repaints nothing; a resize or a
   Ctrl+scroll step repaints only the line that shows, from cached wrap
   widths and border masks, in a few milliseconds at any border thickness.
+- **Interactive box & visual adjustment (owner, 2026-11-19).** Box
+  position and size are editable from both the desktop and the settings
+  page:
+  - **Adjust box on desktop** (`overlay-adjust-mode`): a toggle button in
+    the settings page's top bar forces the overlay visible with live
+    sample text even when no song or timed line is active, shows all 8
+    edge/corner resize handles and a live pixel/percentage dimension HUD,
+    lets the user drag anywhere inside the box to move with magnetic
+    center/edge snapping (hold `Shift` to bypass snap), drag any edge or
+    corner to resize while anchoring the opposite edge, scroll to scale
+    text size without holding `Ctrl`, and press `Escape` to finish.
+  - **Studio settings page**: a two-pane live studio sits above four
+    focused tabs (`Lyric & Style`, `Box & Position`, `Pitch Panel`,
+    `Song & Lyrics`). The left pane is a vertically resizable live lyric
+    canvas over selectable scenes (Video, Dark, Light, Grid) with sample
+    line presets and custom text; the right pane is an interactive monitor
+    placement map drawn to the real monitor aspect ratio with 8-handle
+    lyric resize/drag, magnetic center snapping, placement presets,
+    multi-monitor selection, and pitch panel docking/resizing. Precise
+    pixel/percentage sliders with `-`/`+` steppers live in `Box & Position`.
 - **Media keys go through Firefox (owner, 2026-11-19).** The keyboard's
   play/pause, next and previous keys reach YouTube through Firefox's own
   desktop media player (MPRIS), which GNOME's media-keys service
   addresses; the overlay adds nothing. Next acts where YouTube offers a
   next video. A service-side player that always targets the song tab was
   offered and is not built.
-- **Pointer rules (2026-11-10).** On the lyric: a click goes to the song
-  (its Firefox tab is selected and its window raised); a right-click shows
-  the settings page; Ctrl+drag moves the box; Alt+drag resizes it freely
+- **Pointer rules (2026-11-10; extended 2026-11-19).** During normal
+  playback, on the lyric: a click goes to the song (its Firefox tab is
+  selected and its window raised); a right-click shows the settings page;
+  Ctrl+drag moves the box; Alt+drag resizes it freely about its center
   (never aspect-locked); Ctrl+wheel sizes the text. A click is never
   combined with a drag: a plain press that travels past the desktop's drag
   threshold does nothing on release. Where no lyric is drawn, clicks reach
-  the windows below. Position and size persist as fractions of the monitor.
-- **The settings page (owner, 2026-11-10).** Every setting is on one page
-  in Firefox, `http://localhost:8792/settings`: the song (identity, lyric
-  status, timing, lyric sets, wrong lyrics, search again, look up), the
-  lyric line's look, the pitch panel, the microphone, and the mouse
-  controls. A right press on the indicator, the lyric or the pitch panel
-  shows it. Each change applies to the line and the panel as it is made,
-  so the owner adjusts while watching. There is one settings tab: a right
-  press selects the open one and raises its window rather than opening
-  another. The page replaced the right-click menus, whose submenus opened
-  only from a small arrow and were hard to use; the owner asked for a page
-  that works like an ordinary one, in Firefox.
+  the windows below. In Adjust mode, the full box accepts plain drags,
+  edge/corner resizes and plain wheel resizing until Adjust mode is closed.
+  Position and size persist as fractions of the monitor.
+- **The settings page (owner, 2026-11-10; redesigned 2026-11-19).** Every
+  setting is on one page in Firefox, `http://localhost:8792/settings`: a
+  top command bar (current song, lyric status, Lyrics/Pitch switches,
+  Adjust box on desktop), the live preview and screen placement studio,
+  and four URL-hash tabs (`#lyric`, `#layout`, `#pitch`, `#song`) with
+  contextual controls that hide options when their parent feature is off
+  and a live pitch trace preview in the Pitch tab. A right press on the
+  indicator, the lyric or the pitch panel shows it. Each change applies to
+  the line and the panel as it is made, so the owner adjusts while
+  watching. There is one settings tab: a right press selects the open one
+  and raises its window rather than opening another. The page replaced the
+  right-click menus, whose submenus opened only from a small arrow and
+  were hard to use; the owner asked for a page that works like an ordinary
+  one, in Firefox.
 - **Choosing lyrics.** The settings page lists every candidate set found;
   the owner can pick one, hide a wrong one ("Wrong lyrics: hide this set"),
   search again, or look up lyrics for a video not recognized as music.

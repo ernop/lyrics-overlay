@@ -87,8 +87,9 @@ The indicator shows while YouTube plays sound and for two minutes after.
 | Lyric | click | goes to the song's Firefox tab and raises its window |
 | Lyric | right-click | the settings page |
 | Lyric | Ctrl+drag | moves the box |
-| Lyric | Alt+drag | resizes the box |
+| Lyric | Alt+drag | resizes the box about its center |
 | Lyric | Ctrl+scroll | changes the text size |
+| Adjust mode | drag / 8 handles / scroll / Esc | move with magnetic snap, resize any edge or corner, scale text without Ctrl, press Esc to finish |
 | Pitch panel | drag an edge | resizes it |
 | Pitch panel | drag a separate one | moves it; dropped against a side of the lyric, it docks there |
 | Pitch panel | drag a docked one away | makes it separate |
@@ -108,15 +109,15 @@ each change shows on the line and the pitch panel as you make it. A right
 press on the indicator, the lyric or the pitch panel selects that tab, or
 opens it, and raises its window; there is only ever one.
 
-![The settings page: the song's status and the lyric line's settings](docs/settings.png)
+![The settings page: live lyric preview, interactive screen placement map, and tabbed controls](docs/settings.png)
 
-| Section | What it holds |
+| Area | What it holds |
 |---|---|
-| Song | what is playing, its lyric status, timing (Too fast / Too slow move the lyrics 0.5 s, Reset; kept for each video), the lyric sets (Wrong lyrics: hide this set, Search again, Look up lyrics for this video), the microphone, the song's scale as heard, and the Firefox add-on's version, with an install button when Firefox runs an older one |
-| Lyric line | on or off; font, the desktop font or any installed family that can write English, found by typing part of its name; bold; size, 16 to 256 px; color; border, double, single or none, 0.25 to 4 times as thick; alignment; transition; reset position and size |
-| Pitch panel | on or off; below, above, left or right of the lyric, or separate; the notes shown, a fixed range (set, or fitted to your last 30 s of singing) or a span that follows your voice; time across, 2 to 120 s; scrolling through silences; line thickness and color; background; note names on the lines; the scale whose lines stand out, detected from the song, fixed, or none; where the current note shows, its size and cents; analyses per second |
-| Microphone | which input; echo cancelling, on by default, so the trace follows you and not the song |
-| Mouse | the pointer actions above |
+| Studio (always visible) | live lyric preview over Video/Dark/Light/Grid scenes (resizable, sample lines, clamped-size warning with one-click box expand) beside an interactive screen placement map (exact monitor ratio, 8-handle lyric resize & drag with center snap, pitch panel docking/resizing, placement presets) and **Adjust box on desktop** |
+| Lyric & Style | one-click style presets; searchable font browser with category filters, weight, italic, all-caps, letter spacing; size (16-256 px), fit mode (fit inside or fill box), max lines, horizontal & vertical alignment; 11 named colors or custom hex, text opacity; border style/thickness/color, drop shadow, pill or full-box backdrop plate, line transition |
+| Box & Position | exact pixel/percentage sliders for X, Y, width and height (for both lyric and separate pitch panel), reset position, desktop Adjust Mode toggle and mouse/keyboard reference |
+| Pitch Panel | on/off, live pitch trace preview, docking/size, fixed or voice-following range (or fit to last 30 s), window duration, scroll in silence, trace thickness/color/background, note names, scale highlighting (detected from song, fixed or none), current-note readout, analysis rate, PipeWire microphone picker and echo cancelling |
+| Song & Lyrics | what is playing, lyric status, timing nudges (Too fast / Too slow in 0.5 s steps, Reset), full-width lyric sets with Timed/Untimed pills (Wrong lyrics, Search again, Look up), microphone & detected scale readout, and Firefox add-on version with install button when outdated |
 
 White with a double border (the default), then yellow with a single border,
 left-aligned:

@@ -12,8 +12,10 @@ import Cairo from 'cairo';
 import Pango from 'gi://Pango';
 import PangoCairo from 'gi://PangoCairo';
 
-import {balancedWrapWidth, fitFontSize} from './shared/overlay-geometry.js';
-import {TEXT_COLORS, ringColors} from './shared/text-ink.js';
+import {FONT_SIZE_MAX, balancedWrapWidth, fitFontSize, ringWidths} from './shared/overlay-geometry.js';
+import {parseHexColor, resolveTextColor, ringColors} from './shared/text-ink.js';
+
+export {ringWidths};
 
 const SMALLEST_FITTED_SIZE = 12;
 const EDGE_PIXELS = 4;
@@ -36,61 +38,107 @@ const WRAP_CACHE_SIZE = 64;
 const ALIGNMENTS = Object.freeze({
     'center': Pango.Alignment.CENTER,
     'left': Pango.Alignment.LEFT,
+    'right': Pango.Alignment.RIGHT,
 });
 
-/**
- * Border ring widths in pixels for a border setting at a font size, times
- * the thickness setting (text-border-scale).
- */
-export function ringWidths(border, fontSize, scale) {
-    switch (border) {
-    case 'none':
-        return {inner: 0, outer: 0};
-    case 'single':
-        return {inner: Math.max(1.5, fontSize * 0.07) * scale, outer: 0};
-    case 'double':
-        return {inner: Math.max(1.5, fontSize * 0.055) * scale, outer: Math.max(1.5, fontSize * 0.045) * scale};
-    }
-    throw new Error(`lyrics-overlay: unknown text border "${border}"`);
+const VALIGNMENTS = new Set(['top', 'center', 'bottom']);
+const FIT_MODES = new Set(['shrink', 'fill']);
+const BACKDROPS = new Set(['none', 'pill', 'box']);
+
+function resolvedWeight(params) {
+    if (typeof params.fontWeight === 'number' && params.fontWeight >= 100)
+        return Math.min(900, Math.max(100, Math.round(params.fontWeight)));
+    return params.bold ? Pango.Weight.BOLD : Pango.Weight.NORMAL;
+}
+
+function shadowOffset(shadow, fontSize) {
+    if (!(shadow > 0))
+        return {dx: 0, dy: 0};
+    return {
+        dx: Math.max(2, Math.round(fontSize * 0.04 * (0.6 + shadow * 0.6))),
+        dy: Math.max(2, Math.round(fontSize * 0.06 * (0.6 + shadow * 0.6))),
+    };
 }
 
 function edgeFor(params, fontSize) {
     const ring = ringWidths(params.border, fontSize, params.borderScale);
-    return Math.ceil(ring.inner + ring.outer) + EDGE_PIXELS;
+    const {dx, dy} = shadowOffset(params.shadow ?? 0, fontSize);
+    const backdropPad = (params.backdrop ?? 'none') !== 'none' ? (params.backdropPadding ?? 14) : 0;
+    return Math.ceil(ring.inner + ring.outer) + Math.max(dx, dy) + backdropPad + EDGE_PIXELS;
 }
 
-function fontDescription(family, bold, fontSize) {
+function fontDescription(spec) {
     const description = new Pango.FontDescription();
-    description.set_family(family);
-    description.set_weight(bold ? Pango.Weight.BOLD : Pango.Weight.NORMAL);
-    description.set_absolute_size(fontSize * Pango.SCALE);
+    description.set_family(spec.family);
+    description.set_weight(spec.weight);
+    description.set_style(spec.italic ? Pango.Style.ITALIC : Pango.Style.NORMAL);
+    description.set_absolute_size(spec.fontSize * Pango.SCALE);
     return description;
 }
 
 function applySpec(layout, spec) {
     layout.set_alignment(ALIGNMENTS[spec.align]);
     layout.set_wrap(Pango.WrapMode.WORD_CHAR);
-    layout.set_font_description(fontDescription(spec.family, spec.bold, spec.fontSize));
+    layout.set_font_description(fontDescription(spec));
     layout.set_width(Math.round(spec.wrapWidth * Pango.SCALE));
+    if (spec.letterSpacing) {
+        const attributes = new Pango.AttrList();
+        attributes.insert(Pango.attr_letter_spacing_new(Math.round(spec.letterSpacing * Pango.SCALE)));
+        layout.set_attributes(attributes);
+    } else {
+        layout.set_attributes(null);
+    }
     layout.set_text(spec.text, -1);
+}
+
+function roundedRectangle(cr, x, y, width, height, radius) {
+    const r = Math.max(0, Math.min(radius, width / 2, height / 2));
+    cr.newSubPath();
+    cr.arc(x + width - r, y + r, r, -Math.PI / 2, 0);
+    cr.arc(x + width - r, y + height - r, r, 0, Math.PI / 2);
+    cr.arc(x + r, y + height - r, r, Math.PI / 2, Math.PI);
+    cr.arc(x + r, y + r, r, Math.PI, 1.5 * Math.PI);
+    cr.closePath();
 }
 
 /**
  * @param {Pango.Context} context measuring context
  * @param {string} text
  * @param {{fontSize: number, family: string, bold: boolean, color: string, border: string,
- *          borderScale: number, align: string, width: number, height: number}} params region size and wanted look
- * @returns {{spec: object, origin: {x: number, y: number}, ring: {inner: number, outer: number},
- *            fill: number[], inkBox: {x: number, y: number, width: number, height: number}}}
+ *          borderScale: number, align: string, width: number, height: number,
+ *          fontWeight?: number, italic?: boolean, uppercase?: boolean, letterSpacing?: number,
+ *          fitMode?: string, maxLines?: number, valign?: string, customColor?: string,
+ *          textOpacity?: number, borderColorMode?: string, borderColor?: string,
+ *          shadow?: number, backdrop?: string, backdropColor?: string, backdropOpacity?: number,
+ *          backdropRadius?: number, backdropPadding?: number}} params region size and wanted look
  */
 export function fitLyric(context, text, params) {
-    const fill = TEXT_COLORS[params.color];
-    if (!fill)
-        throw new Error(`lyrics-overlay: unknown text color "${params.color}"`);
+    const fill = resolveTextColor(params.color, params.customColor ?? '');
     if (!(params.align in ALIGNMENTS))
         throw new Error(`lyrics-overlay: unknown text alignment "${params.align}"`);
+    const valign = params.valign ?? 'center';
+    if (!VALIGNMENTS.has(valign))
+        throw new Error(`lyrics-overlay: unknown vertical alignment "${valign}"`);
+    const fitMode = params.fitMode ?? 'shrink';
+    if (!FIT_MODES.has(fitMode))
+        throw new Error(`lyrics-overlay: unknown fit mode "${fitMode}"`);
+    const backdropMode = params.backdrop ?? 'none';
+    if (!BACKDROPS.has(backdropMode))
+        throw new Error(`lyrics-overlay: unknown backdrop "${backdropMode}"`);
+
+    const displayText = params.uppercase ? text.toLocaleUpperCase() : text;
+    const maxLines = Math.max(0, Math.round(params.maxLines ?? 0));
     const layout = Pango.Layout.new(context);
-    const spec = {text, family: params.family, bold: params.bold, align: params.align, fontSize: params.fontSize, wrapWidth: 1};
+    const spec = {
+        text: displayText,
+        family: params.family,
+        weight: resolvedWeight(params),
+        italic: Boolean(params.italic),
+        letterSpacing: params.letterSpacing ?? 0,
+        align: params.align,
+        fontSize: params.fontSize,
+        wrapWidth: 1,
+    };
     const measure = (fontSize, wrapWidth) => {
         applySpec(layout, {...spec, fontSize, wrapWidth});
         return layout;
@@ -101,16 +149,20 @@ export function fitLyric(context, text, params) {
     };
     const fits = fontSize => {
         const {width, height} = room(fontSize);
-        const [, logical] = measure(fontSize, width).get_pixel_extents();
+        const measured = measure(fontSize, width);
+        if (maxLines > 0 && measured.get_line_count() > maxLines)
+            return false;
+        const [, logical] = measured.get_pixel_extents();
         return logical.height <= height && logical.width <= width;
     };
-    spec.fontSize = fitFontSize(params.fontSize, Math.min(params.fontSize, SMALLEST_FITTED_SIZE), fits);
+    const ceiling = fitMode === 'fill' ? FONT_SIZE_MAX : params.fontSize;
+    spec.fontSize = fitFontSize(ceiling, Math.min(ceiling, SMALLEST_FITTED_SIZE), fits);
     const maxWidth = room(spec.fontSize).width;
     const lineCountAt = wrapWidth => measure(spec.fontSize, wrapWidth).get_line_count();
     const lines = lineCountAt(maxWidth);
     // The narrowest width that keeps `lines` lines depends only on the text
     // and the font, so a resize that keeps both finds it here.
-    const wrapKey = `${spec.fontSize}|${spec.family}|${spec.bold}|${lines}|${text}`;
+    const wrapKey = `${spec.fontSize}|${spec.family}|${spec.weight}|${spec.italic}|${spec.letterSpacing}|${lines}|${displayText}`;
     let balanced = cacheGet(wrapCache, wrapKey);
     if (balanced === undefined) {
         balanced = balancedWrapWidth(maxWidth, lineCountAt);
@@ -119,21 +171,68 @@ export function fitLyric(context, text, params) {
     spec.wrapWidth = Math.min(balanced, maxWidth);
 
     const [ink, logical] = measure(spec.fontSize, spec.wrapWidth).get_pixel_extents();
-    const left = params.align === 'left' ? edgeFor(params, spec.fontSize) : (params.width - spec.wrapWidth) / 2;
-    const origin = {x: left, y: (params.height - logical.height) / 2};
+    const edge = edgeFor(params, spec.fontSize);
+    let left;
+    if (params.align === 'left')
+        left = edge;
+    else if (params.align === 'right')
+        left = params.width - edge - spec.wrapWidth;
+    else
+        left = (params.width - spec.wrapWidth) / 2;
+
+    let top;
+    if (valign === 'top')
+        top = edge;
+    else if (valign === 'bottom')
+        top = params.height - edge - logical.height;
+    else
+        top = (params.height - logical.height) / 2;
+
+    const origin = {x: left, y: top};
     const ring = ringWidths(params.border, spec.fontSize, params.borderScale);
     const reach = ring.inner + ring.outer;
+    const borderCustomHex = (params.borderColorMode ?? 'auto') === 'custom' ? (params.borderColor ?? '#000000') : '';
+    const colors = ringColors(fill, borderCustomHex);
+    const textInkBox = {
+        x: origin.x + ink.x - reach,
+        y: origin.y + ink.y - reach,
+        width: ink.width + 2 * reach,
+        height: ink.height + 2 * reach,
+    };
+
+    let backdrop = null;
+    let inkBox = textInkBox;
+    if (backdropMode !== 'none') {
+        const bgRgb = parseHexColor(params.backdropColor ?? '#000000') ?? [0, 0, 0];
+        const bgOpacity = params.backdropOpacity ?? 0.65;
+        const radius = params.backdropRadius ?? 12;
+        if (backdropMode === 'box') {
+            backdrop = {x: 0, y: 0, width: params.width, height: params.height, radius, rgb: bgRgb, opacity: bgOpacity};
+        } else {
+            const padX = params.backdropPadding ?? 14;
+            const padY = Math.round(padX * 0.7);
+            const bx = Math.max(0, textInkBox.x - padX);
+            const by = Math.max(0, textInkBox.y - padY);
+            const br = Math.min(params.width, textInkBox.x + textInkBox.width + padX);
+            const bb = Math.min(params.height, textInkBox.y + textInkBox.height + padY);
+            backdrop = {x: bx, y: by, width: Math.max(1, br - bx), height: Math.max(1, bb - by), radius, rgb: bgRgb, opacity: bgOpacity};
+        }
+        inkBox = {x: backdrop.x, y: backdrop.y, width: backdrop.width, height: backdrop.height};
+    }
+
     return {
         spec,
         origin,
         ring,
+        ringColors: colors,
         fill,
-        inkBox: {
-            x: origin.x + ink.x - reach,
-            y: origin.y + ink.y - reach,
-            width: ink.width + 2 * reach,
-            height: ink.height + 2 * reach,
-        },
+        textOpacity: params.textOpacity ?? 1,
+        shadow: params.shadow ?? 0,
+        backdrop,
+        inkBox,
+        lineCount: lines,
+        targetFontSize: params.fontSize,
+        clamped: fitMode === 'shrink' && spec.fontSize < params.fontSize - 0.5,
     };
 }
 
@@ -190,7 +289,7 @@ function dropRings(entry) {
  */
 function lineRings(line, lineText, spec, ring) {
     const {inner, outer} = ring;
-    const key = `${spec.fontSize}|${spec.family}|${spec.bold}|${inner}|${outer}|${lineText}`;
+    const key = `${spec.fontSize}|${spec.family}|${spec.weight}|${spec.italic}|${spec.letterSpacing}|${inner}|${outer}|${lineText}`;
     const cached = cacheGet(ringCache, key);
     if (cached)
         return cached;
@@ -219,15 +318,37 @@ function lineRings(line, lineText, spec, ring) {
 
 /** Paints a fitted lyric with its region's top-left at the cairo origin. */
 export function paintLyric(cr, fitted) {
+    if (fitted.backdrop && fitted.backdrop.opacity > 0) {
+        const {x, y, width, height, radius, rgb, opacity} = fitted.backdrop;
+        roundedRectangle(cr, x, y, width, height, radius);
+        cr.setSourceRGBA(rgb[0], rgb[1], rgb[2], opacity);
+        cr.fill();
+    }
+
     const layout = PangoCairo.create_layout(cr);
     applySpec(layout, fitted.spec);
+    const alpha = fitted.textOpacity ?? 1;
     const {inner} = fitted.ring;
+    const {dx: shadowX, dy: shadowY} = shadowOffset(fitted.shadow ?? 0, fitted.spec.fontSize);
+
     if (inner === 0) {
+        if (fitted.shadow > 0) {
+            const shadowAlpha = Math.min(0.9, fitted.shadow * 0.85) * alpha;
+            cr.setSourceRGBA(0, 0, 0, shadowAlpha * 0.45);
+            for (const [ox, oy] of [[shadowX + 1, shadowY + 1], [shadowX - 1, shadowY + 1], [shadowX, shadowY + 2]]) {
+                cr.moveTo(fitted.origin.x + ox, fitted.origin.y + oy);
+                PangoCairo.show_layout(cr, layout);
+            }
+            cr.setSourceRGBA(0, 0, 0, shadowAlpha);
+            cr.moveTo(fitted.origin.x + shadowX, fitted.origin.y + shadowY);
+            PangoCairo.show_layout(cr, layout);
+        }
         cr.moveTo(fitted.origin.x, fitted.origin.y);
-        cr.setSourceRGBA(...fitted.fill, 1);
+        cr.setSourceRGBA(...fitted.fill, alpha);
         PangoCairo.show_layout(cr, layout);
         return;
     }
+
     // Each line starts on a whole pixel, so its cached masks land exactly
     // on the letters filled there.
     const bytes = utf8.encode(fitted.spec.text);
@@ -247,9 +368,18 @@ export function paintLyric(cr, fitted) {
     for (const entry of lines)
         entry.rings = lineRings(entry.line, entry.text, fitted.spec, fitted.ring);
 
-    const colors = ringColors(fitted.fill);
+    if (fitted.shadow > 0) {
+        const shadowAlpha = Math.min(0.85, fitted.shadow * 0.78) * alpha;
+        cr.setSourceRGBA(0, 0, 0, shadowAlpha);
+        for (const {x, y, rings} of lines) {
+            const mask = rings.outer ?? rings.inner;
+            cr.maskSurface(mask, x + rings.dx + shadowX, y + rings.dy + shadowY);
+        }
+    }
+
+    const colors = fitted.ringColors ?? ringColors(fitted.fill);
     for (const layer of ['outer', 'inner']) {
-        cr.setSourceRGBA(...colors[layer], 1);
+        cr.setSourceRGBA(...colors[layer], alpha);
         for (const {x, y, rings} of lines) {
             if (rings[layer])
                 cr.maskSurface(rings[layer], x + rings.dx, y + rings.dy);
@@ -260,6 +390,6 @@ export function paintLyric(cr, fitted) {
         cr.moveTo(x, y);
         PangoCairo.layout_line_path(cr, line);
     }
-    cr.setSourceRGBA(...fitted.fill, 1);
+    cr.setSourceRGBA(...fitted.fill, alpha);
     cr.fill();
 }

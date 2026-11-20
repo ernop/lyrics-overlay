@@ -12,6 +12,7 @@ import GLib from 'gi://GLib';
 import Gio from 'gi://Gio';
 import Soup from 'gi://Soup?version=3.0';
 
+import {readMonitors} from './monitors.js';
 import {isReportError, parseCommandResult, parseGone, parseReport} from './report-schema.js';
 import {isSettingsError} from './settings-store.js';
 
@@ -238,6 +239,9 @@ export function startHttp({port, hostname, files, core, browser, addon, settings
             case '/api/microphones':
                 respondLater(message, path, pitch.microphones());
                 return;
+            case '/api/monitors':
+                respondLater(message, path, readMonitors().then(monitors => ({monitors})));
+                return;
             }
         }
         if (method === 'POST' && EXTENSION_PATHS.has(path)) {
@@ -285,7 +289,8 @@ export function loadStaticFiles(projectDir) {
     add('/settings', 'service/settings-page/index.html', 'text/html; charset=utf-8');
     add('/settings.css', 'service/settings-page/settings.css', 'text/css; charset=utf-8');
     add('/settings.js', 'service/settings-page/settings.js', 'text/javascript; charset=utf-8');
-    for (const name of ['lyrics-status.js', 'scales.js', 'text-ink.js'])
+    add('/preview.js', 'service/settings-page/preview.js', 'text/javascript; charset=utf-8');
+    for (const name of ['lyrics-status.js', 'overlay-geometry.js', 'pitch-layout.js', 'scales.js', 'style-presets.js', 'text-ink.js'])
         add(`/shared/${name}`, `shared/${name}`, 'text/javascript; charset=utf-8');
     // The extension's icon is the product's one mark, so the favicon is that file.
     add('/favicon.svg', 'firefox/icon.svg', 'image/svg+xml');

@@ -6,15 +6,45 @@
 import GLib from 'gi://GLib';
 import Gio from 'gi://Gio';
 
+import {MIN_GEOMETRY_HEIGHT, MIN_GEOMETRY_WIDTH, clampGeometry} from '../shared/overlay-geometry.js';
+
 export const SCHEMA_ID = 'org.gnome.shell.extensions.lyrics-overlay';
+
+const BOX_KEYS = ['cx', 'cy', 'width', 'height'];
+const HEX_COLOR = /^#[0-9a-f]{6}$/iu;
 
 // The schema cannot express these; a value failing one is refused.
 const VALUE_CHECKS = {
     'font-family': value => (value.length <= 200 && !/[\u0000-\u001f]/u.test(value)) || 'a font family name of at most 200 characters',
-    'pitch-line-color': value => /^#[0-9a-f]{6}$/iu.test(value) || 'a color written #rrggbb',
+    'text-custom-color': value => value === '' || HEX_COLOR.test(value) || 'empty or a color written #rrggbb',
+    'text-border-color': value => HEX_COLOR.test(value) || 'a color written #rrggbb',
+    'text-backdrop-color': value => HEX_COLOR.test(value) || 'a color written #rrggbb',
+    'overlay-preview-text': value => (value.length <= 200 && !/[\u0000-\u001f]/u.test(value)) || 'preview text of at most 200 characters',
+    'pitch-line-color': value => HEX_COLOR.test(value) || 'a color written #rrggbb',
     'pitch-microphone': value => /^[\w.:@+-]{0,200}$/u.test(value) || 'a PipeWire node name, or empty for the default',
+    'box-monitor': value => (value >= -1 && value <= 32) || 'a monitor index (-1 for primary, or 0..32)',
+    'pitch-box-monitor': value => (value >= -1 && value <= 32) || 'a monitor index (-1 for primary, or 0..32)',
 };
 const MIN_FIXED_SPAN = 6;
+
+function boxVariant(name, value) {
+    if (!value || typeof value !== 'object' || Array.isArray(value))
+        throw new SettingsError(`${name} must be an object with cx, cy, width and height`);
+    const keys = Object.keys(value);
+    if (keys.length !== BOX_KEYS.length || BOX_KEYS.some(key => !Object.hasOwn(value, key)))
+        throw new SettingsError(`${name} must hold exactly cx, cy, width and height`);
+    for (const key of BOX_KEYS) {
+        if (typeof value[key] !== 'number' || !Number.isFinite(value[key]))
+            throw new SettingsError(`${name}.${key} must be a finite number`);
+    }
+    if (value.width < MIN_GEOMETRY_WIDTH || value.width > 1)
+        throw new SettingsError(`${name}.width must be from ${MIN_GEOMETRY_WIDTH} to 1`);
+    if (value.height < MIN_GEOMETRY_HEIGHT || value.height > 1)
+        throw new SettingsError(`${name}.height must be from ${MIN_GEOMETRY_HEIGHT} to 1`);
+    if (value.cx < 0 || value.cx > 1 || value.cy < 0 || value.cy > 1)
+        throw new SettingsError(`${name} center (cx, cy) must be from 0 to 1`);
+    return new GLib.Variant('a{sd}', clampGeometry(value));
+}
 
 const SCALAR_TYPES = {
     b: {check: value => typeof value === 'boolean', want: 'true or false', variant: value => GLib.Variant.new_boolean(value)},
@@ -22,6 +52,7 @@ const SCALAR_TYPES = {
     i: {check: value => Number.isInteger(value), want: 'a whole number', variant: value => GLib.Variant.new_int32(value)},
     s: {check: value => typeof value === 'string', want: 'text', variant: value => GLib.Variant.new_string(value)},
 };
+const BOX_TYPE = 'a{sd}';
 
 export class SettingsError extends Error {}
 
@@ -67,7 +98,7 @@ export class SettingsStore {
             const type = key.get_value_type().dup_string();
             this._keys[name] = {
                 type,
-                writable: type in SCALAR_TYPES,
+                writable: type in SCALAR_TYPES || type === BOX_TYPE,
                 default: key.get_default_value().deepUnpack(),
                 ...describeRange(key),
             };
@@ -131,7 +162,9 @@ export class SettingsStore {
         if (!key)
             throw new SettingsError(`there is no setting named ${JSON.stringify(name)}`);
         if (!key.writable)
-            throw new SettingsError(`${name} is set by dragging on the desktop, or reset`);
+            throw new SettingsError(`${name} cannot be edited from the settings page`);
+        if (key.type === BOX_TYPE)
+            return boxVariant(name, value);
         const type = SCALAR_TYPES[key.type];
         if (!type.check(value))
             throw new SettingsError(`${name} must be ${type.want}`);

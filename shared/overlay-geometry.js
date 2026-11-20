@@ -8,8 +8,21 @@ export const MIN_BOX_WIDTH = 160;
 export const MIN_BOX_HEIGHT = 48;
 export const DOCK_GAP = 4;
 
+export const MIN_GEOMETRY_WIDTH = 0.05;
+export const MIN_GEOMETRY_HEIGHT = 0.02;
+
 export const FONT_SIZE_MIN = 16;
 export const FONT_SIZE_MAX = 256;
+
+/** Named placement presets for the lyric box, as monitor work-area fractions. */
+export const PLACEMENT_PRESETS = Object.freeze([
+    Object.freeze({id: 'bottom-center', label: 'Bottom center', box: Object.freeze({cx: 0.5, cy: 0.75, width: 0.6, height: 0.14})}),
+    Object.freeze({id: 'bottom-bar', label: 'Bottom wide', box: Object.freeze({cx: 0.5, cy: 0.9, width: 0.88, height: 0.14})}),
+    Object.freeze({id: 'bottom-right', label: 'Bottom right', box: Object.freeze({cx: 0.76, cy: 0.88, width: 0.44, height: 0.14})}),
+    Object.freeze({id: 'bottom-left', label: 'Bottom left', box: Object.freeze({cx: 0.24, cy: 0.88, width: 0.44, height: 0.14})}),
+    Object.freeze({id: 'top-center', label: 'Top center', box: Object.freeze({cx: 0.5, cy: 0.12, width: 0.64, height: 0.14})}),
+    Object.freeze({id: 'center', label: 'Center', box: Object.freeze({cx: 0.5, cy: 0.5, width: 0.7, height: 0.2})}),
+]);
 
 export function clampFontSize(size) {
     return Math.min(FONT_SIZE_MAX, Math.max(FONT_SIZE_MIN, size));
@@ -17,6 +30,18 @@ export function clampFontSize(size) {
 
 function clamp(value, low, high) {
     return Math.min(high, Math.max(low, value));
+}
+
+/** Clamps fractional box geometry {cx, cy, width, height} cleanly inside [0, 1]. */
+export function clampGeometry(geometry) {
+    const width = clamp(geometry.width, MIN_GEOMETRY_WIDTH, 1);
+    const height = clamp(geometry.height, MIN_GEOMETRY_HEIGHT, 1);
+    return {
+        cx: clamp(geometry.cx, width / 2, 1 - width / 2),
+        cy: clamp(geometry.cy, height / 2, 1 - height / 2),
+        width,
+        height,
+    };
 }
 
 export function clampBox(box, area) {
@@ -187,3 +212,75 @@ export function balancedWrapWidth(maxWidth, lineCountAt) {
     }
     return high;
 }
+
+/**
+ * Hit-tests a point against a box's 8 edge/corner resize zones.
+ * Returns {edges} when within `edgeZone` of any border, otherwise 'move'.
+ * @param {{x: number, y: number}} point
+ * @param {{x: number, y: number, width: number, height: number}} box
+ * @param {number} edgeZone
+ * @returns {'move'|{edges: Record<string, boolean>}}
+ */
+export function boxZoneAt(point, box, edgeZone) {
+    const near = {
+        left: point.x - box.x < edgeZone,
+        right: box.x + box.width - point.x <= edgeZone,
+        top: point.y - box.y < edgeZone,
+        bottom: box.y + box.height - point.y <= edgeZone,
+    };
+    const edges = Object.fromEntries(Object.entries(near).filter(([, isNear]) => isNear));
+    return Object.keys(edges).length ? {edges} : 'move';
+}
+
+/**
+ * Gently snaps a moving box's center to the work area's horizontal/vertical
+ * center, and its edges to the work area's edges, when within `threshold` px.
+ * Returns the snapped box and guide coordinates in stage pixels.
+ */
+export function snapBox(box, area, threshold) {
+    let {x, y} = box;
+    const {width, height} = box;
+    const guidesX = [];
+    const guidesY = [];
+    const centerX = area.x + area.width / 2;
+    const centerY = area.y + area.height / 2;
+    if (Math.abs((x + width / 2) - centerX) <= threshold) {
+        x = centerX - width / 2;
+        guidesX.push(centerX);
+    } else if (Math.abs(x - area.x) <= threshold) {
+        x = area.x;
+        guidesX.push(area.x);
+    } else if (Math.abs((x + width) - (area.x + area.width)) <= threshold) {
+        x = area.x + area.width - width;
+        guidesX.push(area.x + area.width);
+    }
+    if (Math.abs((y + height / 2) - centerY) <= threshold) {
+        y = centerY - height / 2;
+        guidesY.push(centerY);
+    } else if (Math.abs(y - area.y) <= threshold) {
+        y = area.y;
+        guidesY.push(area.y);
+    } else if (Math.abs((y + height) - (area.y + area.height)) <= threshold) {
+        y = area.y + area.height - height;
+        guidesY.push(area.y + area.height);
+    }
+    return {box: clampBox({x, y, width, height}, area), guides: {x: guidesX, y: guidesY}};
+}
+
+/**
+ * Border ring widths in pixels for a border setting at a font size, times
+ * the thickness setting (text-border-scale). Shared by GNOME Shell and the
+ * settings page's live preview so both paint the exact same border extent.
+ */
+export function ringWidths(border, fontSize, scale) {
+    switch (border) {
+    case 'none':
+        return {inner: 0, outer: 0};
+    case 'single':
+        return {inner: Math.max(1.5, fontSize * 0.07) * scale, outer: 0};
+    case 'double':
+        return {inner: Math.max(1.5, fontSize * 0.055) * scale, outer: Math.max(1.5, fontSize * 0.045) * scale};
+    }
+    throw new Error(`lyrics-overlay: unknown text border "${border}"`);
+}
+
