@@ -56,7 +56,13 @@ Firefox tab (YouTube)                         GNOME Shell
   outline. Cairo leaves a hole in a stroke wider than a small closed
   contour (the dot of an i), so each ring is several strokes stepped down
   in width by less than a dot's diameter, only the widest antialiased
-  (`tests/text-layout-ring.test.mjs`). Display settings live in its GSettings schema
+  (`tests/text-layout-ring.test.mjs`). Fitting and painting run on the
+  Shell's main thread at every resize step, so `text-layout.js` caches the
+  balanced wrap width per text and font size and each wrapped line's two
+  rings as alpha masks; a resize step that keeps the font size costs a few
+  Pango layouts and mask copies (about 7 ms for a three-line lyric at 157
+  px, against 17 to 31 ms when every step stroked the outline), and only
+  layers that show are refitted. A move only repositions the box. Display settings live in its GSettings schema
   (`org.gnome.shell.extensions.lyrics-overlay`), which the settings page
   writes through the service.
 - **Shared modules** (`shared/`): lyric parsing and display timing,

@@ -58,6 +58,10 @@ indicator changes quietly.
   Alignment: centered (default) or left within the box.
 - **Transitions.** Instant, a short fade-in (default), or a quick or soft
   crossfade between lines.
+- **Instant to drag and resize (owner, 2026-11-19: "super fast,
+  draggable, ultra-instant").** A move repaints nothing; a resize or a
+  Ctrl+scroll step repaints only the line that shows, from cached wrap
+  widths and border masks, in a few milliseconds at any border thickness.
 - **Pointer rules (2026-11-10).** On the lyric: a click goes to the song
   (its Firefox tab is selected and its window raised); a right-click shows
   the settings page; Ctrl+drag moves the box; Alt+drag resizes it freely

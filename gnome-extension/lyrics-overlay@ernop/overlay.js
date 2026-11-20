@@ -380,8 +380,12 @@ export class LyricsOverlay {
     }
 
     _refitText() {
-        for (const layer of this._layers)
-            this._fitLayer(layer, layer.text);
+        // A faded-out layer is refitted when it next takes a line
+        // (_crossTo), so a resize step fits and paints only what shows.
+        for (const [index, layer] of this._layers.entries()) {
+            if (index === this._current || layer.opacity > 0)
+                this._fitLayer(layer, layer.text);
+        }
         this._placeGrip();
     }
 

@@ -38,3 +38,17 @@ test('a wide double border around a period is solid inner ring, then solid outer
     }
     assert.deepEqual(misses, []);
 });
+
+test('a fit and a paint served from the caches match a fresh module with empty caches', async t => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lyrics-cache-'));
+    t.after(() => fs.rmSync(dir, {recursive: true, force: true}));
+    fs.symlinkSync(path.join(root, 'gnome-extension/lyrics-overlay@ernop/text-layout.js'), path.join(dir, 'text-layout.js'));
+    fs.symlinkSync(path.join(root, 'gnome-extension/lyrics-overlay@ernop/text-layout.js'), path.join(dir, 'text-layout-fresh.js'));
+    fs.symlinkSync(path.join(root, 'shared'), path.join(dir, 'shared'));
+
+    const {stdout} = await run('gjs', ['-m', path.join(root, 'tests/text-layout-cache.js'), dir, dir]);
+    const result = JSON.parse(stdout.trim().split('\n').pop());
+    assert.ok(result.wrapWidth < result.width, 'the lyric wraps, so the wrap cache is used');
+    assert.equal(result.sameFit, true);
+    assert.equal(result.samePixels, true);
+});
