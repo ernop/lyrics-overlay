@@ -516,7 +516,7 @@ test('auto-generation cancels when switching songs, skips instrumentals and long
         },
         maxGenerateDurationSeconds: 600,
         generate: req => {
-            const entry = {videoId: req.videoId, cancelled: false, resolve: null};
+            const entry = {videoId: req.videoId, force: req.force, cancelled: false, resolve: null};
             calls.push(entry);
             return {
                 promise: new Promise(resolve => { entry.resolve = resolve; }),
@@ -557,6 +557,52 @@ test('auto-generation cancels when switching songs, skips instrumentals and long
     assert.deepEqual(calls.map(c => c.videoId), ['v1']);
     assert.equal(h.lastState().generation.status, 'skipped');
     assert.match(h.lastState().generation.message, /10 minutes/u);
+
+    // Clicking "Generate timed lyrics" manually bypasses the automatic duration cap and passes force: true.
+    assert.deepEqual(h.core.command({op: 'generate'}), {ok: true});
+    assert.equal(calls.length, 2);
+    assert.deepEqual([calls[1].videoId, calls[1].force], ['vlong', true]);
+    assert.equal(h.lastState().lyrics, 'generating');
+});
+
+test('raising maxGenerateDurationSeconds re-enables automatic generation for previously duration-skipped tracks', async () => {
+    const calls = [];
+    const h = harness({
+        answers: {'Band|Epic Ballad': []},
+        maxGenerateDurationSeconds: 1200,
+        generate: req => {
+            calls.push({videoId: req.videoId, force: req.force});
+            return {promise: new Promise(() => {}), cancel: () => {}};
+        },
+    });
+    h.saved.videos.set('vepic', {
+        version: 1,
+        videoId: 'vepic',
+        identity: null,
+        lookup: {status: 'done', at: 0, query: 'Band|Epic Ballad', error: null},
+        generated: {
+            version: 1,
+            status: 'skipped',
+            mode: null,
+            at: 0,
+            error: 'Video is longer than 15 minutes',
+            candidateId: null,
+        },
+        candidates: [],
+        chosenId: null,
+        rejectedIds: [],
+        offsetSeconds: 0,
+        userRequested: false,
+    });
+    const epic = metadata('vepic', {
+        title: 'Epic Ballad',
+        lengthSeconds: 1000,
+        description: 'Provided to YouTube by Label\n\nEpic Ballad \u00b7 Band\n\nAlbum\n\n\u2117 2003 Label',
+    });
+    h.report(7, {sampledAt: h.now, media: media('vepic', {duration: 1000}), metadata: epic});
+    await h.flush();
+    assert.deepEqual(calls, [{videoId: 'vepic', force: false}]);
+    assert.equal(h.lastState().lyrics, 'generating');
 });
 
 test('a background non-music stream never flashes lyrics or cancels generation on heartbeats', async () => {
@@ -668,4 +714,92 @@ test('pausing a song keeps it active over an older background stream, while a ne
     await h.advance(2000);
     h.report(10, {sampledAt: h.now, media: media('vtalk1'), metadata: talkMeta});
     assert.equal(h.core.activeTabId(), 10);
+});
+
+test('marking a non-music video as a music video flips state, searches title-only fallback and chains into timing', async () => {
+    const genCalls = [];
+    const h = harness({
+        answers: {
+            '|Hidden Folk Tune': [],
+        },
+        generate: req => {
+            genCalls.push(req);
+            return {
+                promise: Promise.resolve({
+                    ok: true,
+                    mode: 'transcribed',
+                    lrc: '[00:05.00] Heard from audio\n',
+                    plainText: 'Heard from audio',
+                    lineCount: 1,
+                    duration: 180,
+                }),
+                cancel: () => {},
+            };
+        },
+    });
+    const fanUpload = metadata('vfan1', {
+        title: 'Hidden Folk Tune',
+        author: 'RandomUploader42',
+        category: 'People & Blogs',
+        description: '',
+    });
+    h.report(7, {sampledAt: h.now, media: media('vfan1', {currentTime: 5}), metadata: fanUpload});
+    h.report(7, {sampledAt: h.now, media: media('vfan1', {currentTime: 5, paused: true}), metadata: fanUpload});
+    await h.flush();
+    assert.equal(h.lastState().musical, false);
+    assert.equal(h.lastState().lyrics, 'not-music');
+
+    assert.deepEqual(h.core.command({op: 'lookUp'}), {ok: true});
+    assert.equal(h.lastState().musical, true);
+    await h.flush();
+    await h.flush();
+    assert.deepEqual(h.searches, ['RandomUploader42|Hidden Folk Tune', '|Hidden Folk Tune']);
+    assert.equal(genCalls.length, 1);
+    assert.equal(h.lastState().lyrics, 'timed');
+    assert.equal(h.lastLine().text, 'Heard from audio');
+});
+
+test('manual LRCLIB search and local .lrc/.txt import select lyrics immediately and cancel active generation', async () => {
+    let cancelled = false;
+    const h = harness({
+        answers: {
+            'Band|Song One': [],
+            'Real Artist|Real Song': [
+                record(42, {trackName: 'Real Song', artistName: 'Real Artist', albumName: 'Deluxe', duration: 210}),
+            ],
+        },
+        generate: () => ({
+            promise: new Promise(() => {}),
+            cancel: () => { cancelled = true; },
+        }),
+    });
+    h.report(7, {sampledAt: h.now, media: media('v1', {currentTime: 10}), metadata: metadata('v1')});
+    await h.flush();
+    assert.equal(h.lastState().lyrics, 'generating');
+
+    // Manual LRCLIB query merges its results and cancels passive generation once timed lyrics arrive.
+    assert.equal(h.core.command({op: 'searchQuery', artist: '', title: ''}).ok, false);
+    assert.deepEqual(h.core.command({op: 'searchQuery', artist: 'Real Artist', title: 'Real Song'}), {ok: true});
+    await h.flush();
+    assert.equal(cancelled, true);
+    assert.equal(h.lastState().lyrics, 'timed');
+    assert.equal(h.lastState().chosen.id, 42);
+    assert.ok(h.lastState().candidates.some(c => c.id === 42 && c.lineCount === 3));
+
+    // Importing a local .lrc file selects it immediately and survives a later search.
+    assert.equal(h.core.command({op: 'importLyrics', filename: 'empty.lrc', text: '   '}).ok, false);
+    const imported = h.core.command({
+        op: 'importLyrics',
+        filename: 'custom-version.lrc',
+        text: '[ar:Custom Artist]\n[ti:Custom Title]\n[00:08.00] Custom line one\n[00:14.00] Custom line two\n',
+    });
+    assert.equal(imported.ok, true);
+    assert.equal(imported.timed, true);
+    assert.equal(h.lastState().chosen.id, imported.id);
+    assert.equal(h.lastLine().text, 'Custom line one');
+    assert.ok(h.lastState().candidates.some(c => c.id === imported.id && c.custom && c.lineCount === 2));
+
+    // Switching back to an earlier candidate still works.
+    assert.deepEqual(h.core.command({op: 'choose', id: 42}), {ok: true});
+    assert.equal(h.lastState().chosen.id, 42);
 });

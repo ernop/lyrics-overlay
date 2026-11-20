@@ -149,6 +149,8 @@ export function buildLookupCandidates(identity) {
         addCandidate(candidates, channel, title);
     if (parsed.artist)
         addCandidate(candidates, stripVersionQualifiers(cleanSongTitle(parsed.title)), parsed.artist);
+    else if (channel)
+        addCandidate(candidates, '', stripVersionQualifiers(cleanSongTitle(title)));
     if (!candidates.length)
         addCandidate(candidates, '', identity.videoTitle);
     return candidates;

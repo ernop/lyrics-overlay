@@ -16,11 +16,11 @@ import {readMonitors} from './monitors.js';
 import {isReportError, parseCommandResult, parseGone, parseReport} from './report-schema.js';
 import {isSettingsError} from './settings-store.js';
 
-const MAX_BODY_BYTES = 64 * 1024;
+const MAX_BODY_BYTES = 256 * 1024;
 const EXTENSION_PATHS = new Set(['/api/report', '/api/gone', '/api/commands', '/api/command-result']);
 const PAGE_PATHS = new Set(['/api/settings', '/api/settings/reset', '/api/command', '/api/pitch/fit']);
 // The song controls the settings page offers (LyricsCore.command).
-const PAGE_COMMANDS = new Set(['tooFast', 'tooSlow', 'resetOffset', 'choose', 'reject', 'searchAgain', 'lookUp', 'generate']);
+const PAGE_COMMANDS = new Set(['tooFast', 'tooSlow', 'resetOffset', 'choose', 'reject', 'searchAgain', 'lookUp', 'generate', 'searchQuery', 'importLyrics']);
 // "Fit to my singing" leaves this much room around what was sung.
 const FIT_MARGIN = 1;
 const FIT_MIN_SPAN = 12;
@@ -192,11 +192,19 @@ export function startHttp({port, hostname, files, core, browser, addon, settings
             settings.reset(json.keys);
             respondJson(message, 200, {values: settings.values()});
             return;
-        case '/api/command':
+        case '/api/command': {
             if (!PAGE_COMMANDS.has(json.op))
                 throw new RequestError(400, `the page cannot send ${JSON.stringify(json.op)}`);
-            respondJson(message, 200, core.command(json.op === 'choose' ? {op: 'choose', id: json.id} : {op: json.op}));
+            let cmd = {op: json.op};
+            if (json.op === 'choose')
+                cmd = {op: 'choose', id: json.id};
+            else if (json.op === 'searchQuery')
+                cmd = {op: 'searchQuery', artist: json.artist, title: json.title};
+            else if (json.op === 'importLyrics')
+                cmd = {op: 'importLyrics', filename: json.filename, text: json.text};
+            respondJson(message, 200, core.command(cmd));
             return;
+        }
         case '/api/pitch/fit': {
             const sung = pitch.recentRange();
             if (!sung)

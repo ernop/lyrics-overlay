@@ -75,7 +75,10 @@ test('video titles produce parsed, stripped, channel and swapped candidates', ()
         {artist: 'Song', title: 'Band'},
     ]);
     const channelOnly = buildLookupCandidates({reliable: false, artist: '', title: '', videoTitle: 'Bohemian Rhapsody', channel: 'Queen Official'});
-    assert.deepEqual(channelOnly, [{artist: 'Queen', title: 'Bohemian Rhapsody'}]);
+    assert.deepEqual(channelOnly, [
+        {artist: 'Queen', title: 'Bohemian Rhapsody'},
+        {artist: '', title: 'Bohemian Rhapsody'},
+    ]);
 });
 
 const record = (id, trackName, artistName, duration, synced) => ({

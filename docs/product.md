@@ -159,20 +159,33 @@ indicator changes quietly.
     in crisp white bold text with no animation or flashing, hiding
     immediately once timed lyrics arrive. Clicking the pill still raises
     the YouTube tab; right-clicking opens the settings page.
-  - **Discipline and persistence**: only runs for the active sounding song
-    (never for `next` preloads, instrumentals, or videos longer than
-    `maxDurationSeconds`, default 900 s), cancels immediately via `SIGTERM`
-    if the user skips songs or stops, persists the generated candidate per
-    video (`gen:aligned:*` / `gen:transcribed:*`) so replays are instant,
-    automatically forwards the generated LRC to ytarchive when
+  - **Discipline and persistence**: only runs automatically for the active
+    sounding song (never for `next` preloads, instrumentals, or videos
+    longer than `maxDurationSeconds`, default 900 s), cancels immediately
+    via `SIGTERM` if the user skips songs or stops, persists the generated
+    candidate per video (`gen:aligned:*` / `gen:transcribed:*`) so replays
+    are instant, automatically forwards the generated LRC to ytarchive when
     `ytarchiveUrl` is set, and offers manual `Generate timed lyrics` /
     `Retry timing` / `Regenerate timed lyrics` in the settings page's Song
-    tab.
-- **Choosing lyrics.** The settings page lists every candidate set found;
-  the owner can pick one, hide a wrong one ("Wrong lyrics: hide this set"),
-  search again, generate or regenerate timed lyrics (when enabled), or look
-  up lyrics for a video not recognized as music. Choices and rejections are
-  remembered per video.
+    tab. Manual `Generate timed lyrics` always bypasses `maxDurationSeconds`
+    so long narrative songs can be timed on demand even above the automatic
+    cap, and raising `maxDurationSeconds` re-enables automatic generation
+    for tracks previously skipped only for duration.
+- **Choosing lyrics and overriding music detection (updated 2026-11-20).**
+  When a video is not automatically recognized as music (`not-music`), a
+  prominent **This is a music video** button appears in both the top bar
+  and the Song tab: one click permanently marks the video as music, raises
+  its tab priority, runs LRCLIB lookup (including a title-only fallback for
+  uploads whose channel is not the artist), preloads the upcoming song,
+  and chains directly into automatic local lyric timing if LRCLIB has only
+  untimed or no lyrics. In the Song tab, **Lyric sets** lists every
+  candidate with timed line counts and tags, lets the owner click any set
+  to switch immediately, hide a wrong one ("Wrong lyrics: hide this set"),
+  search again, run a manual LRCLIB artist/title search, generate or
+  regenerate timed lyrics, or load a local `.lrc` / `.txt` lyric file
+  directly (persisted per video and forwarded to ytarchive; plain `.txt`
+  files can be aligned automatically onto the song's audio). Choices,
+  imported files, and rejections are remembered per video.
 - **The icon says the state quietly.** A note beside three text lines: a
   filled note with bold lines while the overlay is on, a hollow note with
   thin lines while it is off. Only these two (owner, 2026-11-10: "just

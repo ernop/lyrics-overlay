@@ -155,7 +155,10 @@ async function flush() {
 async function post(path, body) {
     try {
         const answer = await call('POST', path, body);
-        showBanner('');
+        if (answer?.ok === false && answer.error)
+            showBanner(answer.error);
+        else
+            showBanner('');
         if (answer?.values)
             absorb(answer.values);
         await pollState();
@@ -311,6 +314,10 @@ const percent = value => `${Math.round(value * 100)}%`;
 function buildTopBar() {
     const songTitle = el('span', {class: 'topbar-title'}, 'No song playing');
     const statusPill = el('span', {class: 'pill'}, 'Idle');
+    const markMusicBtn = pressButton('This is a music video', () => post('/api/command', {op: 'lookUp'}), {
+        class: 'primary compact',
+        hidden: 'hidden',
+    });
 
     const overlayBtn = pressButton('', () => set('overlay-enabled', !model.values['overlay-enabled']), {class: 'switch'});
     const pitchBtn = pressButton('', () => set('pitch-enabled', !model.values['pitch-enabled']), {class: 'switch'});
@@ -335,6 +342,7 @@ function buildTopBar() {
             statusPill.classList.add('pill-warn');
         else if (state.lyrics === 'error')
             statusPill.classList.add('pill-alert');
+        markMusicBtn.hidden = !(state.active && state.lyrics === 'not-music');
     });
 
     const header = document.getElementById('topbar');
@@ -342,7 +350,7 @@ function buildTopBar() {
         el('div', {class: 'topbar-left'},
             el('h1', {}, 'Lyrics overlay'),
             el('span', {class: 'topbar-sep', 'aria-hidden': 'true'}),
-            el('div', {class: 'topbar-song'}, songTitle, statusPill),
+            el('div', {class: 'topbar-song'}, songTitle, statusPill, markMusicBtn),
         ),
         el('div', {class: 'topbar-actions'}, overlayBtn, pitchBtn),
     );
@@ -875,9 +883,9 @@ function buildSongTab() {
     const emptySets = el('p', {class: 'note'}, 'No lyric candidates loaded for the current video.');
 
     const command = body => post('/api/command', body);
+    const markMusic = pressButton('This is a music video', () => command({op: 'lookUp'}), {class: 'primary', hidden: 'hidden'});
     const wrong = pressButton('Wrong lyrics: hide this set', () => command({op: 'reject'}));
     const again = pressButton('Search again', () => command({op: 'searchAgain'}));
-    const lookUp = pressButton('Look up lyrics for this video', () => command({op: 'lookUp'}));
     const generate = pressButton('Generate timed lyrics', () => command({op: 'generate'}), {hidden: 'hidden'});
     const timingButtons = [
         pressButton('Too fast (\u22120.5 s)', () => command({op: 'tooFast'})),
@@ -885,12 +893,45 @@ function buildSongTab() {
         pressButton('Reset', () => command({op: 'resetOffset'})),
     ];
 
+    const fileInput = el('input', {type: 'file', accept: '.lrc,.txt,text/plain', hidden: 'hidden'});
+    const loadFileBtn = pressButton('Load .lrc / .txt file', () => fileInput.click(), {class: 'compact'});
+    fileInput.addEventListener('change', async () => {
+        const file = fileInput.files?.[0];
+        fileInput.value = '';
+        if (!file)
+            return;
+        try {
+            const text = await file.text();
+            await command({op: 'importLyrics', filename: file.name, text});
+        } catch (error) {
+            showBanner(`Could not read ${file.name}: ${error.message}`);
+        }
+    });
+
+    const artistInput = el('input', {type: 'text', class: 'search-input', 'aria-label': 'LRCLIB artist'});
+    const titleInput = el('input', {type: 'text', class: 'search-input', 'aria-label': 'LRCLIB song title'});
+    const manualSearchBtn = el('button', {type: 'submit', class: 'compact'}, 'Search LRCLIB');
+    const manualSearchForm = el('form', {class: 'manual-search-bar'},
+        el('span', {class: 'manual-search-label'}, 'Artist'), artistInput,
+        el('span', {class: 'manual-search-label'}, 'Title'), titleInput,
+        manualSearchBtn);
+    manualSearchForm.addEventListener('submit', event => {
+        event.preventDefault();
+        command({op: 'searchQuery', artist: artistInput.value, title: titleInput.value});
+    });
+    let lastVideoId = null;
+
     model.stateViews.push((state, addon) => {
         addonVersion.textContent = ADDON_TEXT[addon.status](addon);
         install.textContent = `Install ${addon.current}`;
         install.hidden = addon.status !== 'unnamed' && addon.status !== 'older';
         updateService.hidden = addon.status !== 'newer';
         playing.textContent = state.active ? state.identityText || state.videoId : 'Nothing on YouTube';
+        if (state.videoId !== lastVideoId) {
+            lastVideoId = state.videoId;
+            artistInput.value = '';
+            titleInput.value = '';
+        }
         const gen = state.generation;
         if (state.lyrics === 'generating' && gen?.message) {
             lyrics.textContent = gen.message;
@@ -902,9 +943,15 @@ function buildSongTab() {
         timing.textContent = `${state.offsetSeconds > 0 ? '+' : ''}${state.offsetSeconds.toFixed(1)} s`;
         for (const button of timingButtons)
             button.disabled = !state.active;
+        const notMusic = state.active && state.lyrics === 'not-music';
+        markMusic.hidden = !notMusic;
+        markMusic.disabled = !notMusic;
         wrong.disabled = !state.chosen;
         again.disabled = !state.active;
-        lookUp.disabled = !state.active;
+        loadFileBtn.disabled = !state.active;
+        artistInput.disabled = !state.active;
+        titleInput.disabled = !state.active;
+        manualSearchBtn.disabled = !state.active;
         const canGenerate = Boolean(gen?.available);
         generate.hidden = !canGenerate;
         generate.disabled = !state.active || state.lyrics === 'generating';
@@ -929,8 +976,12 @@ function buildSongTab() {
         const timedCount = state.candidates.filter(c => c.timed).length;
         setsCount.textContent = `${state.candidates.length} sets (${timedCount} timed)`;
         sets.replaceChildren(...state.candidates.map(candidate => {
+            const timedText = candidate.timed
+                ? (candidate.lineCount ? `Timed \u00b7 ${candidate.lineCount} lines` : 'Timed')
+                : 'Untimed';
             const tags = [
-                el('span', {class: candidate.timed ? 'pill pill-good' : 'pill pill-warn'}, candidate.timed ? 'Timed' : 'Untimed'),
+                el('span', {class: candidate.timed ? 'pill pill-good' : 'pill pill-warn'}, timedText),
+                ...(candidate.custom ? [el('span', {class: 'pill'}, 'Local file')] : []),
                 ...(candidate.generated ? [el('span', {class: 'pill'}, candidate.generated === 'aligned' ? 'Aligned' : 'Transcribed')] : []),
                 ...(!candidate.matches ? [el('span', {class: 'pill pill-warn'}, 'Weak match')] : []),
                 ...(candidate.rejected ? [el('span', {class: 'pill pill-alert'}, 'Hidden')] : []),
@@ -950,13 +1001,14 @@ function buildSongTab() {
         row('Playing', playing),
         row('Lyrics', lyrics),
         row('Timing offset', timing, ...timingButtons),
-        row('Actions', wrong, again, lookUp, generate),
+        row('Actions', markMusic, wrong, again, generate),
         row('Microphone', microphone),
         row('Detected scale', heardKey),
         row('Firefox add-on', addonVersion, install, updateService),
     );
 
-    const setsSection = section('Lyric sets', setsCount, emptySets, sets);
+    const setsHeadRight = el('div', {class: 'section-head-actions'}, setsCount, loadFileBtn, fileInput);
+    const setsSection = section('Lyric sets', setsHeadRight, manualSearchForm, emptySets, sets);
 
     return el('div', {class: 'panel'}, songSection, setsSection);
 }

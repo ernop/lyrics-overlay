@@ -105,7 +105,7 @@ export function createLyricGenerator({config, projectDir, runtimeDir, ytarchiveU
         return null;
     let runSeq = 0;
 
-    return ({videoId, identity, plainLyrics, onStage}) => {
+    return ({videoId, identity, plainLyrics, force = false, onStage}) => {
         const cancellable = new Gio.Cancellable();
         let cancelled = false;
         let promptPath = '';
@@ -128,7 +128,7 @@ export function createLyricGenerator({config, projectDir, runtimeDir, ytarchiveU
             '--model', config.model,
             '--device', config.device,
             '--compute-type', config.computeType,
-            '--max-duration', String(config.maxDurationSeconds),
+            '--max-duration', String(force ? 0 : config.maxDurationSeconds),
         );
         if (ytarchiveUrl)
             argv.push('--ytarchive-url', ytarchiveUrl);

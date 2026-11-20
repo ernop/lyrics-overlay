@@ -313,7 +313,9 @@ GSettings too, and the page shows them at its next poll (each second).
   cancel lyric generation. A tab quiet for the grace period (120 s) or that
   broke its heartbeat promise is forgotten.
 - **Video records** (`videos/<id>.json`): identity, lookup status,
-  candidates (at most 10), the chosen and rejected sets, and the timing
+  candidates (up to 20 LRCLIB results plus pinned chosen, generated, and
+  imported local-file candidates), the chosen and rejected sets, whether
+  the owner marked the video as music (`userRequested`), and the timing
   offset. Written atomically, only when they change.
 - **Lookups** queue per video, current video first, then the next one.
   Search answers are cached by query (`searches/<sha1>.json`) and the budget
@@ -331,9 +333,12 @@ Active only when `lyricsGenerator` is configured in `settings.json`
 - **Trigger**: when the active sounding song's LRCLIB lookup settles as
   `plain` or `none` (skipping instrumentals, `next` preloads, videos
   longer than `maxDurationSeconds`, and videos that already have a
-  generated candidate or were marked skipped/no-vocals), or on demand via
-  `Command {op: 'generate'}`. Switching songs or stopping playback sends
-  `SIGTERM` to the child process and discards its result.
+  generated candidate or were marked skipped/no-vocals; raising
+  `maxDurationSeconds` clears prior duration skips), or on demand via
+  `Command {op: 'generate'}` (which sets `force: true` and passes
+  `--max-duration 0` to bypass the automatic duration cap). Switching
+  songs or stopping playback sends `SIGTERM` to the child process and
+  discards its result.
 - **Audio & transcription**: `generate-lyrics.py` first tries
   `<ytarchiveUrl>/media/<videoId>/_condensed/soundtrack.mp3` when
   `ytarchiveUrl` is configured, and otherwise fetches audio with anonymous
@@ -361,8 +366,8 @@ Active only when `lyricsGenerator` is configured in `settings.json`
 Name `net.fuseki.LyricsOverlay`, path `/net/fuseki/LyricsOverlay`,
 interface `net.fuseki.LyricsOverlay1` (`shared/dbus-interface.js`):
 `GetState() -> s`, `GetLine() -> s`, `Command(s) -> s` (JSON ops: tooFast,
-tooSlow, resetOffset, choose, reject, searchAgain, lookUp, generate,
-pitch), `FocusSong() -> s`, `OpenSettings() -> s`, signals `StateChanged`,
+tooSlow, resetOffset, choose, reject, searchAgain, lookUp, searchQuery,
+importLyrics, generate, pitch), `FocusSong() -> s`, `OpenSettings() -> s`, signals `StateChanged`,
 `LineChanged`, `PitchFrames`. All payloads are JSON strings. `state`
 includes `generation: {available, status, mode, stage, message}`.
 
