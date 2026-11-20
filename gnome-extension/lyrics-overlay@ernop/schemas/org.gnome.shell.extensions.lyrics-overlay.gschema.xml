@@ -47,10 +47,52 @@
         <choice value="none"/>
         <choice value="single"/>
         <choice value="double"/>
+        <choice value="triple"/>
+        <choice value="quad"/>
         <choice value="glow"/>
       </choices>
-      <default>'double'</default>
-      <summary>Proportional contrast border around letters: fused x-height body with crisp outer rim and smooth dark backing cloud (double), feathered outer halo (glow), single outline, or none</summary>
+      <default>'triple'</default>
+      <summary>Concentric contrast borders around letters: none, 1 to 4 solid rings (single, double, triple, quad), or a fused inner body with feathered halo (glow)</summary>
+    </key>
+    <key name="text-border-cloud" type="b">
+      <default>false</default>
+      <summary>Add a soft dark Gaussian backing cloud behind the border rings</summary>
+    </key>
+    <key name="text-border-1-color" type="s">
+      <default>''</default>
+      <summary>Ring 1 (innermost) border color as #rrggbb; empty uses automatic contrast</summary>
+    </key>
+    <key name="text-border-1-width" type="d">
+      <range min="0" max="0.35"/>
+      <default>0</default>
+      <summary>Ring 1 border thickness as a fraction of font size (em); 0 uses the preset default</summary>
+    </key>
+    <key name="text-border-2-color" type="s">
+      <default>''</default>
+      <summary>Ring 2 border color as #rrggbb; empty uses automatic contrast</summary>
+    </key>
+    <key name="text-border-2-width" type="d">
+      <range min="0" max="0.35"/>
+      <default>0</default>
+      <summary>Ring 2 border thickness as a fraction of font size (em); 0 uses the preset default</summary>
+    </key>
+    <key name="text-border-3-color" type="s">
+      <default>''</default>
+      <summary>Ring 3 border color as #rrggbb; empty uses automatic contrast</summary>
+    </key>
+    <key name="text-border-3-width" type="d">
+      <range min="0" max="0.35"/>
+      <default>0</default>
+      <summary>Ring 3 border thickness as a fraction of font size (em); 0 uses the preset default</summary>
+    </key>
+    <key name="text-border-4-color" type="s">
+      <default>''</default>
+      <summary>Ring 4 (outermost) border color as #rrggbb; empty uses automatic contrast</summary>
+    </key>
+    <key name="text-border-4-width" type="d">
+      <range min="0" max="0.35"/>
+      <default>0</default>
+      <summary>Ring 4 border thickness as a fraction of font size (em); 0 uses the preset default</summary>
     </key>
     <key name="text-backdrop" type="s">
       <choices>

@@ -226,8 +226,16 @@ test('clampGeometry keeps boxes inside [0, 1] and presets are valid', () => {
     assert.equal(borderSpec('single', 64).outer, 0);
     assert.ok(borderSpec('single', 64).inner > 4);
     const dbl = borderSpec('double', 64);
-    assert.ok(dbl.inner > dbl.outer && dbl.outer > 1.5 && dbl.bridge && dbl.auraSpread > 10 && dbl.targetSpaceEm < 0.25);
-    const glow = borderSpec('glow', 64);
+    assert.ok(dbl.inner > dbl.outer && dbl.outer > 4 && dbl.bridge && dbl.auraSpread === 0 && dbl.targetSpaceEm < 0.25);
+    const dblCloud = borderSpec('double', 64, {cloud: true});
+    assert.ok(dblCloud.auraSpread > 10 && dblCloud.auraAlpha > 0.5);
+    const triple = borderSpec('triple', 64);
+    assert.equal(triple.rings.length, 3);
+    assert.ok(triple.totalReach > dbl.totalReach && triple.bridge);
+    const quad = borderSpec('quad', 64, {ringWidths: [0.1, 0.09, 0.08, 0.07]});
+    assert.equal(quad.rings.length, 4);
+    assert.ok(Math.abs(quad.rings[2].em - 0.08) < 0.0001);
+    const glow = borderSpec('glow', 64, {cloud: true});
     assert.ok(glow.inner > 4 && glow.outer > 4 && glow.bridge && glow.featheredOuter && glow.auraSpread > 10);
     assert.ok(Math.abs(normalizedSpaceScale(0.50, 0.22) - 0.44) < 0.001);
     assert.equal(normalizedSpaceScale(0.18, 0.22), 1);

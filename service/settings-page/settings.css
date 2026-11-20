@@ -627,6 +627,28 @@ button.dot-swatch[aria-pressed="true"] {
     margin-left: 0.25rem;
 }
 
+.ring-chips {
+    display: inline-flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 0.35rem;
+}
+
+button.ring-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+    font-variant-numeric: tabular-nums;
+}
+
+.ring-chip-dot {
+    width: 0.82rem;
+    height: 0.82rem;
+    border-radius: 999px;
+    border: 1.5px solid #fff;
+    flex: none;
+}
+
 input[type="color"] {
     width: 2.1rem;
     height: 1.7rem;

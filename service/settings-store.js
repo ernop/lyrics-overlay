@@ -13,10 +13,16 @@ export const SCHEMA_ID = 'org.gnome.shell.extensions.lyrics-overlay';
 const BOX_KEYS = ['cx', 'cy', 'width', 'height'];
 const HEX_COLOR = /^#[0-9a-f]{6}$/iu;
 
+const optionalHex = value => value === '' || HEX_COLOR.test(value) || 'empty or a color written #rrggbb';
+
 // The schema cannot express these; a value failing one is refused.
 const VALUE_CHECKS = {
     'font-family': value => (value.length <= 200 && !/[\u0000-\u001f]/u.test(value)) || 'a font family name of at most 200 characters',
-    'text-custom-color': value => value === '' || HEX_COLOR.test(value) || 'empty or a color written #rrggbb',
+    'text-custom-color': optionalHex,
+    'text-border-1-color': optionalHex,
+    'text-border-2-color': optionalHex,
+    'text-border-3-color': optionalHex,
+    'text-border-4-color': optionalHex,
     'text-backdrop-color': value => HEX_COLOR.test(value) || 'a color written #rrggbb',
     'pitch-line-color': value => HEX_COLOR.test(value) || 'a color written #rrggbb',
     'pitch-microphone': value => /^[\w.:@+-]{0,200}$/u.test(value) || 'a PipeWire node name, or empty for the default',

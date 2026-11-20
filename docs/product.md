@@ -62,30 +62,36 @@ indicator changes quietly.
   - **Size** (`16-256 px`), **Style** (`Bold` on by default, `Italic`).
   - **Color**: 11 named presets (white, yellow, orange, red, pink, magenta,
     purple, blue, cyan, green, black) or any custom `#rrggbb` color.
-  - **Border** (`Double` | `Glow` | `Single` | `None`): proportional to the
-    font size, with automatic WCAG black/white contrast colors and no raw
-    thickness multiplier. Word spaces are font-normalized against each
-    font's measured space advance (`normalizedSpaceScale`) so wide
-    monospace fonts tighten down to the same compact rhythm as proportional
-    fonts instead of splitting words into islands (owner, 2026-11-20:
-    "gaps between words are just too big ... want the lyric area to
-    dominate its local space including the background, more"). `Double`
-    (default) fuses a bold inner contrast body (`0.155 em`) and a
-    continuous x-height word bridge (tight `0.22 em` word-space cap) inside
-    a crisp outer contrast trim (`0.038 em`), backed by a smooth dark
-    Gaussian backing cloud (`0.48 em` spread) that gently dims the desktop
-    or video behind the lyric while letting ascenders and descenders keep
-    their organic silhouette. Multi-line wrapped lyrics paint layer by
-    layer (all clouds, all outer rims, all inner bodies, then letter fills)
-    so stacked lines fuse vertically too. `Glow` uses the same fused inner
-    body, x-height word bridge, and `0.22 em` space cap inside a feathered
-    outer contrast halo (`0.095 em`) over a softer dark backing cloud
-    (`0.42 em`). `Single` draws a clean `0.085 em` contrast outline
-    (`0.26 em` space cap); `None` draws bare letters (`0.26 em` space cap).
-    Each ring is solid around every small closed contour (dots of i and j,
-    periods, bold o counters) at every size (owner, 2026-11-19), and the
-    x-height bridge applies only to multi-character lines clamped to each
-    line's ink height.
+  - **Border** (`None` | `Single` | `Double` | `Triple` | `Quad` | `Glow`,
+    extended 2026-11-20 for Japanese broadcast telop / *fuchidori*
+    multi-ring legibility): proportional to font size, with calibrated
+    progressive band thicknesses and automatic WCAG contrast alternation so
+    lyrics stay razor-sharp over both pure white and pure black video
+    without needing a backdrop plate or murky shadow cloud. Word spaces are
+    font-normalized against each font's measured space advance
+    (`normalizedSpaceScale`) so wide monospace fonts tighten down to the
+    same compact rhythm as proportional fonts instead of splitting words
+    into islands (owner, 2026-11-20). `Single` draws 1 crisp outline
+    (`0.10 em`, `0.26 em` space cap). Multi-ring modes (`Double`, `Triple`
+    default, `Quad`, `Glow`) use a `0.22 em` space cap, an x-height word
+    bridge clamped to each line's ink height (multi-character lines only),
+    stepped solid dilation rings with 1.5 px under-overlap so small closed
+    contours (dots of i/j, periods, tight kanji strokes, bold o counters)
+    and inter-ring seams never punch through, and layer-by-layer painting
+    across wrapped lines so stacked lines fuse vertically:
+    - `Double`: `0.145 em` inner body + bold `0.080 em` contrast rim.
+    - `Triple` (default): `0.125 em` inner + `0.080 em` middle contrast
+      band + `0.060 em` outer dark/light seal — zero backdrop required.
+    - `Quad`: `0.125 / 0.070 / 0.060 / 0.050 em` four-band telop (chromatic
+      fills echo their own color in Ring 3 inside a dark outer Ring 4 seal;
+      white/black fills alternate four high-contrast bands).
+    - `Glow`: `0.145 em` inner body + `0.105 em` feathered outer halo.
+    Each active ring's color (`text-border-1..4-color`: automatic contrast
+    or any `#rrggbb`) and width (`text-border-1..4-width`: `2%–35%` of font
+    size, scaling with `Ctrl+scroll`) can be customized independently in
+    the settings page, alongside an optional **Soft cloud** toggle
+    (`text-border-cloud`, off by default) for the 3-pass separable A8
+    Gaussian dark backing cloud.
   - **Backdrop**: `None` (default), `Behind text` pill, or `Full bar`, with
     color and opacity controls shown only when enabled and `em`-proportional
     padding and corner radius computed automatically.

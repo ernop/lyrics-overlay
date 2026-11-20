@@ -7,7 +7,8 @@ import GdkPixbuf from 'gi://GdkPixbuf';
 import Pango from 'gi://Pango';
 import PangoCairo from 'gi://PangoCairo';
 
-const [dir, png, text, size = '220', border = 'double', family = 'Sans'] = ARGV;
+const [dir, png, text, size = '220', border = 'double', family = 'Sans', extraJson = ''] = ARGV;
+const extra = extraJson ? JSON.parse(extraJson) : {};
 const {fitLyric, paintLyric} = await import(`file://${dir}/text-layout.js`);
 
 const WIDTH = 800, HEIGHT = 600;
@@ -19,12 +20,13 @@ const context = PangoCairo.FontMap.get_default().create_context();
 const fitted = fitLyric(context, text, {
     fontSize: Number(size), family, bold: true, color: 'yellow', border,
     align: 'center', anchor: 'center', width: WIDTH, height: HEIGHT,
+    ...extra,
 });
 paintLyric(cr, fitted);
 cr.$dispose();
 surface.writeToPNG(png);
 
-const reach = fitted.ring.inner + fitted.ring.outer;
+const reach = fitted.ring.totalReach;
 const box = fitted.inkBox;
 const center = {x: box.x + box.width / 2, y: box.y + box.height / 2};
 const rx = box.width / 2 - reach;
@@ -40,7 +42,7 @@ const pixelAt = (px, py) => {
 };
 
 const samples = [];
-const maxR = fitted.ring.inner + fitted.ring.outer;
+const maxR = fitted.ring.totalReach;
 for (let offset = 3; offset < maxR - 2; offset += 2) {
     for (let step = 0; step < 32; step++) {
         const angle = step * Math.PI / 16;

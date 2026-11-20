@@ -4,9 +4,9 @@
 // Map) beside a calm borderless inspector (Lyrics, Pitch, Song).
 
 import {LYRICS_STATUS_TEXT} from '/shared/lyrics-status.js';
-import {PLACEMENT_PRESETS} from '/shared/overlay-geometry.js';
+import {BORDER_DEFAULTS, PLACEMENT_PRESETS, borderSpec} from '/shared/overlay-geometry.js';
 import {keyName, noteLabel, pitchClassNames, SCALES} from '/shared/scales.js';
-import {TEXT_COLORS, hexColor, nearestNamedColor, parseHexColor, resolveTextColor} from '/shared/text-ink.js';
+import {TEXT_COLORS, hexColor, nearestNamedColor, parseHexColor, resolveRingColors, resolveTextColor} from '/shared/text-ink.js';
 import {LyricPreviewCanvas, PitchPreviewCanvas, ScreenPlacementMap} from '/preview.js';
 
 const POLL_MS = 1000;
@@ -690,6 +690,161 @@ function backdropColorRow() {
     );
 }
 
+const RING_TICKS = [0.02, 0.08, 0.15, 0.25, 0.35];
+const RING_MIN = 0.02;
+const RING_MAX = 0.35;
+const RING_RESET_KEYS = [
+    'text-border-cloud',
+    'text-border-1-color', 'text-border-1-width',
+    'text-border-2-color', 'text-border-2-width',
+    'text-border-3-color', 'text-border-3-width',
+    'text-border-4-color', 'text-border-4-width',
+];
+
+function borderRingsRows() {
+    let activeIdx = 0;
+
+    const ringChipsWrap = el('div', {class: 'ring-chips'});
+    const cloudBtn = pressButton('', () => set('text-border-cloud', !model.values['text-border-cloud']), {class: 'compact'});
+    const resetBtn = pressButton('Reset rings', () => post('/api/settings/reset', {keys: RING_RESET_KEYS}), {
+        class: 'compact',
+        hidden: 'hidden',
+    });
+    const chipsRow = row('Rings', ringChipsWrap, cloudBtn, resetBtn);
+
+    const colorLabel = el('div', {class: 'label'}, 'Ring 1 color');
+    const autoColorBtn = pressButton('Auto', () => set(`text-border-${activeIdx + 1}-color`, ''), {class: 'compact'});
+    const ringSwatches = [
+        ['#000000', 'Black'],
+        ['#ffffff', 'White'],
+        ...Object.entries(TEXT_COLORS)
+            .filter(([name]) => name !== 'black' && name !== 'white')
+            .map(([name, rgb]) => [hexColor(rgb), name[0].toUpperCase() + name.slice(1)]),
+    ].map(([hex, label]) => {
+        const btn = pressButton('', () => set(`text-border-${activeIdx + 1}-color`, hex), {
+            class: 'dot-swatch',
+            title: label,
+            'aria-label': `Ring color ${label}`,
+            style: {background: hex},
+        });
+        return {hex, btn};
+    });
+    const colorPicker = el('input', {type: 'color', 'aria-label': 'Custom ring color'});
+    const colorHex = el('span', {class: 'hex-readout'});
+    colorPicker.addEventListener('input', () => set(`text-border-${activeIdx + 1}-color`, colorPicker.value.toLowerCase()));
+    const colorRow = el('div', {class: 'row'},
+        colorLabel,
+        el('div', {class: 'controls'},
+            el('div', {class: 'swatch-strip'},
+                autoColorBtn,
+                ...ringSwatches.map(s => s.btn),
+                el('span', {class: 'color-custom-wrap'}, colorPicker, colorHex),
+            )));
+
+    const widthLabel = el('div', {class: 'label'}, 'Ring 1 width');
+    const widthVal = el('span', {class: 'value'});
+    const widthInput = el('input', {type: 'range', min: '0', max: String(SLIDER_STEPS), step: '1', 'aria-label': 'Ring width'});
+    const toPos = v => Math.round(((v - RING_MIN) / (RING_MAX - RING_MIN)) * SLIDER_STEPS);
+    const fromPos = p => Number((RING_MIN + (p / SLIDER_STEPS) * (RING_MAX - RING_MIN)).toFixed(3));
+    const widthTicks = el('div', {class: 'ticks'}, ...RING_TICKS.map(tick => el('span', {
+        class: 'tick',
+        style: {left: `${((tick - RING_MIN) / (RING_MAX - RING_MIN)) * 100}%`},
+    }, `${Math.round(tick * 100)}%`)));
+    const currentEm = () => {
+        const border = model.values['text-border'];
+        const defs = BORDER_DEFAULTS[border] ?? [];
+        const custom = Number(model.values[`text-border-${activeIdx + 1}-width`]) || 0;
+        return custom > 0 ? custom : (defs[activeIdx]?.em ?? 0.1);
+    };
+    const nudgeWidth = delta => {
+        const next = Math.min(RING_MAX, Math.max(RING_MIN, Number((currentEm() + delta).toFixed(3))));
+        set(`text-border-${activeIdx + 1}-width`, next);
+    };
+    const downBtn = pressButton('\u2212', () => nudgeWidth(-0.01), {class: 'step', 'aria-label': 'Thinner ring'});
+    const upBtn = pressButton('+', () => nudgeWidth(0.01), {class: 'step', 'aria-label': 'Thicker ring'});
+    const autoWidthBtn = pressButton('Auto', () => set(`text-border-${activeIdx + 1}-width`, 0), {
+        class: 'compact',
+        hidden: 'hidden',
+    });
+    widthInput.addEventListener('pointerdown', () => hold(`text-border-${activeIdx + 1}-width`, true));
+    widthInput.addEventListener('pointerup', () => hold(`text-border-${activeIdx + 1}-width`, false));
+    widthInput.addEventListener('pointercancel', () => hold(`text-border-${activeIdx + 1}-width`, false));
+    widthInput.addEventListener('input', () => set(`text-border-${activeIdx + 1}-width`, fromPos(Number(widthInput.value))));
+    const widthRow = el('div', {class: 'row'},
+        widthLabel,
+        el('div', {class: 'controls'},
+            el('div', {class: 'slider'},
+                widthVal,
+                el('div', {class: 'track'}, widthInput, widthTicks),
+                el('span', {class: 'slider-steppers'}, downBtn, upBtn, autoWidthBtn),
+            )));
+
+    const ringName = (border, idx) => (border === 'glow' && idx === 1 ? 'Halo' : `Ring ${idx + 1}`);
+
+    const syncUI = values => {
+        const border = values['text-border'] ?? 'triple';
+        const defs = BORDER_DEFAULTS[border] ?? [];
+        const count = defs.length;
+        const hidden = count === 0;
+        chipsRow.hidden = hidden;
+        colorRow.hidden = hidden;
+        widthRow.hidden = hidden;
+        if (hidden)
+            return;
+        if (activeIdx >= count)
+            activeIdx = count - 1;
+
+        const fontSize = values['font-size'] ?? 48;
+        const fill = resolveTextColor(values['text-color'], values['text-custom-color'] ?? '');
+        const customHexes = [1, 2, 3, 4].map(i => values[`text-border-${i}-color`] ?? '');
+        const customWidths = [1, 2, 3, 4].map(i => Number(values[`text-border-${i}-width`]) || 0);
+        const palette = resolveRingColors(fill, count, customHexes);
+        const spec = borderSpec(border, fontSize, {ringWidths: customWidths, cloud: Boolean(values['text-border-cloud'])});
+
+        const hasCustom = Boolean(values['text-border-cloud'])
+            || customHexes.slice(0, count).some(Boolean)
+            || customWidths.slice(0, count).some(w => w > 0);
+        cloudBtn.setAttribute('aria-pressed', String(Boolean(values['text-border-cloud'])));
+        cloudBtn.textContent = values['text-border-cloud'] ? 'Soft cloud: On' : 'Soft cloud: Off';
+        resetBtn.hidden = !hasCustom;
+
+        ringChipsWrap.replaceChildren(...spec.rings.map((entry, idx) => {
+            const hex = hexColor(palette[idx]);
+            const chip = pressButton('', () => {
+                activeIdx = idx;
+                syncUI(model.values);
+            }, {class: 'ring-chip compact'});
+            chip.setAttribute('aria-pressed', String(idx === activeIdx));
+            chip.append(
+                el('span', {class: 'ring-chip-dot', style: {background: hex}}),
+                el('span', {}, `${ringName(border, idx)} \u00b7 ${Math.round(entry.em * 100)}%`),
+            );
+            return chip;
+        }));
+
+        const name = ringName(border, activeIdx);
+        colorLabel.textContent = `${name} color`;
+        const customHex = (customHexes[activeIdx] ?? '').toLowerCase();
+        const resolvedHex = hexColor(palette[activeIdx]).toLowerCase();
+        autoColorBtn.setAttribute('aria-pressed', String(!customHex));
+        for (const swatch of ringSwatches)
+            swatch.btn.setAttribute('aria-pressed', String(Boolean(customHex) && customHex === swatch.hex));
+        colorPicker.value = resolvedHex;
+        colorHex.textContent = customHex ? resolvedHex.toUpperCase() : `${resolvedHex.toUpperCase()} (Auto)`;
+
+        widthLabel.textContent = `${name} width`;
+        const activeRing = spec.rings[activeIdx];
+        const em = activeRing.em;
+        const px = Math.round(activeRing.width);
+        widthVal.textContent = `${Math.round(em * 100)}% \u00b7 ${px} px`;
+        widthInput.value = String(toPos(Math.min(RING_MAX, Math.max(RING_MIN, em))));
+        autoWidthBtn.hidden = !(customWidths[activeIdx] > 0);
+    };
+
+    view(syncUI);
+    return [chipsRow, colorRow, widthRow];
+}
+
 function buildLyricsTab() {
     const boldBtn = pressButton('Bold', () => set('font-bold', !model.values['font-bold']));
     const italicBtn = pressButton('Italic', () => set('font-italic', !model.values['font-italic']));
@@ -706,7 +861,8 @@ function buildLyricsTab() {
 
     const appearance = section('Appearance', null,
         textColorRow(),
-        segmentedRow('text-border', 'Border', {double: 'Double', glow: 'Glow', single: 'Single', none: 'None'}),
+        segmentedRow('text-border', 'Border', {none: 'None', single: 'Single', double: 'Double', triple: 'Triple', quad: 'Quad', glow: 'Glow'}),
+        ...borderRingsRows(),
         segmentedRow('text-backdrop', 'Backdrop', {none: 'None', pill: 'Behind text', box: 'Full bar'}),
         backdropColorRow(),
         whenVisible(sliderRow('text-backdrop-opacity', 'Backdrop opacity', {

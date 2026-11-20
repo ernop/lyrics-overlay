@@ -45,7 +45,11 @@ const GEOMETRY_KEYS = ['cx', 'cy', 'width', 'height'];
 
 const LOOK_KEYS = new Set([
     'font-size', 'font-family', 'font-bold', 'font-italic',
-    'text-color', 'text-custom-color', 'text-border',
+    'text-color', 'text-custom-color', 'text-border', 'text-border-cloud',
+    'text-border-1-color', 'text-border-1-width',
+    'text-border-2-color', 'text-border-2-width',
+    'text-border-3-color', 'text-border-3-width',
+    'text-border-4-color', 'text-border-4-width',
     'text-backdrop', 'text-backdrop-color', 'text-backdrop-opacity',
     'text-align', 'pitch-dock', 'pitch-enabled',
 ]);
@@ -607,6 +611,9 @@ export class LyricsOverlay {
             color: s.get_string('text-color'),
             customColor: s.get_string('text-custom-color'),
             border: s.get_string('text-border'),
+            borderCloud: s.get_boolean('text-border-cloud'),
+            ringColors: [1, 2, 3, 4].map(i => s.get_string(`text-border-${i}-color`)),
+            ringWidths: [1, 2, 3, 4].map(i => s.get_double(`text-border-${i}-width`)),
             backdrop: s.get_string('text-backdrop'),
             backdropColor: s.get_string('text-backdrop-color'),
             backdropOpacity: s.get_double('text-backdrop-opacity'),

@@ -273,7 +273,7 @@ test('the settings page reads and writes the settings the shell reads, and only 
     const {port, stored} = await startService(t);
     const {schema, values} = JSON.parse((await request(port, {urlPath: '/api/settings'})).body);
     assert.deepEqual(schema['font-size'], {type: 'd', writable: true, default: 48, min: 16, max: 256});
-    assert.deepEqual(schema['text-border'].choices, ['none', 'single', 'double', 'glow']);
+    assert.deepEqual(schema['text-border'].choices, ['none', 'single', 'double', 'triple', 'quad', 'glow']);
     assert.deepEqual(schema['text-align'].choices, ['center', 'left', 'right']);
     assert.deepEqual(schema.transition.choices, ['instant', 'fade-in']);
     assert.equal(schema.box.writable, true, 'the settings page can position and resize the box');

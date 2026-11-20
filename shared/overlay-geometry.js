@@ -294,56 +294,82 @@ export function normalizedSpaceScale(naturalSpaceRatio, targetSpaceEm) {
 }
 
 /**
- * Proportional border ring geometry, optical word-fusion bridge, and smooth
- * dark backing cloud parameters at a font size. Shared by GNOME Shell
- * (Pango/Cairo) and the settings page preview.
- * - `double`: normalized tight spaces (0.22 em cap) + fused bold inner body
- *   (0.155 em) + x-height word bridge + crisp outer contrast trim (0.038 em)
- *   + smooth dark backing cloud (0.48 em) that dims the surrounding background.
- * - `glow`: normalized tight spaces (0.22 em cap) + fused inner body
- *   (0.155 em) + x-height word bridge + smooth feathered outer contrast halo
- *   (0.095 em) + soft dark backing cloud (0.42 em).
- * - `single`: clean proportional contrast outline (0.085 em, 0.26 em space cap).
- * - `none`: bare letters (0.26 em space cap).
+ * Calibrated default ring profiles per border mode (em-proportional, modeled on
+ * Japanese broadcast telop / anime multi-ring fuchidori proportions):
+ * - `none`: bare letters.
+ * - `single`: 1 bold WCAG contrast outline (0.10 em).
+ * - `double`: fused inner body (0.145 em) + bold contrast rim (0.080 em).
+ * - `triple`: inner body (0.125 em) + bright middle band (0.080 em) + outer
+ *   contrast seal (0.060 em) that stays sharp over pure white or pure black
+ *   video without needing a backdrop box or shadow cloud.
+ * - `quad`: four progressive concentric bands (0.110 / 0.070 / 0.060 / 0.050 em).
+ * - `glow`: fused inner body (0.145 em) + smooth feathered halo (0.105 em).
  */
-export function borderSpec(border, fontSize) {
-    switch (border) {
-    case 'none':
-        return {inner: 0, outer: 0, targetSpaceEm: 0.26, bridge: false, auraSpread: 0, auraAlpha: 0, featheredOuter: false, extraPad: 0};
-    case 'single':
-        return {inner: Math.max(1.5, fontSize * 0.085), outer: 0, targetSpaceEm: 0.26, bridge: false, auraSpread: 0, auraAlpha: 0, featheredOuter: false, extraPad: 0};
-    case 'double': {
-        const inner = Math.max(2, fontSize * 0.155);
-        const outer = Math.max(1.5, fontSize * 0.038);
-        const auraSpread = Math.max(8, fontSize * 0.48);
-        return {
-            inner,
-            outer,
-            targetSpaceEm: 0.22,
-            bridge: true,
-            auraSpread,
-            auraAlpha: 0.88,
-            featheredOuter: false,
-            extraPad: Math.ceil(auraSpread),
-        };
-    }
-    case 'glow': {
-        const inner = Math.max(2, fontSize * 0.155);
-        const outer = Math.max(2, fontSize * 0.095);
-        const auraSpread = Math.max(8, fontSize * 0.42);
-        return {
-            inner,
-            outer,
-            targetSpaceEm: 0.22,
-            bridge: true,
-            auraSpread,
-            auraAlpha: 0.65,
-            featheredOuter: true,
-            extraPad: Math.ceil(Math.max(outer * 0.6, auraSpread)),
-        };
-    }
-    }
-    throw new Error(`lyrics-overlay: unknown text border "${border}"`);
+export const BORDER_DEFAULTS = Object.freeze({
+    none: Object.freeze([]),
+    single: Object.freeze([
+        Object.freeze({em: 0.10, min: 1.5, feathered: false}),
+    ]),
+    double: Object.freeze([
+        Object.freeze({em: 0.145, min: 2, feathered: false}),
+        Object.freeze({em: 0.080, min: 2, feathered: false}),
+    ]),
+    triple: Object.freeze([
+        Object.freeze({em: 0.125, min: 2, feathered: false}),
+        Object.freeze({em: 0.080, min: 2, feathered: false}),
+        Object.freeze({em: 0.060, min: 1.5, feathered: false}),
+    ]),
+    quad: Object.freeze([
+        Object.freeze({em: 0.125, min: 2, feathered: false}),
+        Object.freeze({em: 0.070, min: 2, feathered: false}),
+        Object.freeze({em: 0.060, min: 1.5, feathered: false}),
+        Object.freeze({em: 0.050, min: 1.5, feathered: false}),
+    ]),
+    glow: Object.freeze([
+        Object.freeze({em: 0.145, min: 2, feathered: false}),
+        Object.freeze({em: 0.105, min: 2, feathered: true}),
+    ]),
+});
+
+/**
+ * Proportional border ring geometry, optical word-fusion bridge, and optional
+ * smooth dark backing cloud parameters at a font size. Shared by desktop/shell
+ * (Pango/Cairo) and the settings page preview.
+ * @param {string} border
+ * @param {number} fontSize
+ * @param {{ringWidths?: ReadonlyArray<number>, cloud?: boolean}|null} [options]
+ */
+export function borderSpec(border, fontSize, options = null) {
+    const defaults = BORDER_DEFAULTS[border];
+    if (!defaults)
+        throw new Error(`lyrics-overlay: unknown text border "${border}"`);
+    const customWidths = options?.ringWidths ?? [];
+    const rings = defaults.map((def, idx) => {
+        const customEm = Number(customWidths[idx]) || 0;
+        const em = customEm > 0 ? Math.min(0.35, Math.max(0.01, customEm)) : def.em;
+        const width = Math.max(customEm > 0 ? 1 : def.min, fontSize * em);
+        return {width, em, feathered: def.feathered};
+    });
+    const inner = rings[0]?.width ?? 0;
+    const outer = rings[1]?.width ?? 0;
+    const totalReach = rings.reduce((sum, entry) => sum + entry.width, 0);
+    const featheredOuter = Boolean(rings.length && rings[rings.length - 1].feathered);
+    const cloud = Boolean(options?.cloud) && rings.length > 0;
+    const auraSpread = cloud ? Math.max(8, fontSize * (featheredOuter ? 0.42 : 0.48)) : 0;
+    const auraAlpha = cloud ? (featheredOuter ? 0.65 : 0.88) : 0;
+    const featherPad = featheredOuter ? rings[rings.length - 1].width * 0.6 : 0;
+    return {
+        rings,
+        inner,
+        outer,
+        totalReach,
+        targetSpaceEm: rings.length >= 2 ? 0.22 : 0.26,
+        bridge: rings.length >= 2,
+        auraSpread,
+        auraAlpha,
+        featheredOuter,
+        extraPad: Math.ceil(Math.max(featherPad, auraSpread)),
+    };
 }
 
 /** Automatic em-proportional backdrop padding and corner radius. */

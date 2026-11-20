@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
-    TEXT_COLORS, hexColor, nearestNamedColor, parseHexColor, resolveTextColor, ringColors,
+    TEXT_COLORS, hexColor, nearestNamedColor, parseHexColor, resolveRingColors, resolveTextColor, ringColors,
 } from '../shared/text-ink.js';
 
 const WHITE = [1, 1, 1];
@@ -43,4 +43,12 @@ test('custom hex colors parse, resolve, find nearest preset, and compute contras
     assert.equal(nearestNamedColor([0.05, 0.05, 0.05]), 'black');
     assert.deepEqual(ringColors(TEXT_COLORS.white), {inner: BLACK, outer: WHITE});
     assert.deepEqual(ringColors(TEXT_COLORS.black), {inner: WHITE, outer: BLACK});
+});
+
+test('multi-ring defaults alternate contrast cleanly and honor per-ring custom hex overrides', () => {
+    assert.deepEqual(resolveRingColors(TEXT_COLORS.pink, 3), [BLACK, WHITE, BLACK]);
+    assert.deepEqual(resolveRingColors(TEXT_COLORS.pink, 4), [BLACK, WHITE, TEXT_COLORS.pink, BLACK]);
+    assert.deepEqual(resolveRingColors(TEXT_COLORS.white, 4), [BLACK, WHITE, BLACK, WHITE]);
+    assert.deepEqual(resolveRingColors(TEXT_COLORS.black, 3), [WHITE, BLACK, WHITE]);
+    assert.deepEqual(resolveRingColors(TEXT_COLORS.pink, 3, ['', '#ff0000', '']), [BLACK, [1, 0, 0], BLACK]);
 });

@@ -13,7 +13,7 @@ import Pango from 'gi://Pango';
 import PangoCairo from 'gi://PangoCairo';
 
 import {backdropMetrics, balancedWrapWidth, borderSpec, normalizedSpaceScale} from './overlay-geometry.js';
-import {parseHexColor, resolveTextColor, ringColors} from './text-ink.js';
+import {parseHexColor, resolveRingColors, resolveTextColor, ringColors} from './text-ink.js';
 
 export {borderSpec};
 
@@ -39,11 +39,18 @@ const BACKDROPS = new Set(['none', 'pill', 'box']);
 const utf8 = new TextEncoder();
 const fromUtf8 = new TextDecoder();
 
+function borderOptions(params) {
+    return {
+        ringWidths: params.ringWidths,
+        cloud: Boolean(params.borderCloud),
+    };
+}
+
 function edgePadding(params, fontSize) {
-    const ring = borderSpec(params.border, fontSize);
+    const ring = borderSpec(params.border, fontSize, borderOptions(params));
     const backdropMode = params.backdrop ?? 'none';
     const bp = backdropMode === 'pill' ? backdropMetrics(fontSize) : {padX: 0, padY: 0};
-    const reach = ring.inner + ring.outer + ring.extraPad;
+    const reach = ring.totalReach + ring.extraPad;
     return {
         x: Math.ceil(reach) + bp.padX + EDGE_PIXELS,
         y: Math.ceil(reach) + bp.padY + EDGE_PIXELS,
@@ -143,7 +150,7 @@ export function fitLyric(context, text, params) {
     if (!BACKDROPS.has(backdropMode))
         throw new Error(`lyrics-overlay: unknown backdrop "${backdropMode}"`);
 
-    const ring = borderSpec(params.border, params.fontSize);
+    const ring = borderSpec(params.border, params.fontSize, borderOptions(params));
     const pad = edgePadding(params, params.fontSize);
     const maxWidth = Math.max(1, params.width - 2 * pad.x);
     const layout = Pango.Layout.new(context);
@@ -198,8 +205,13 @@ export function fitLyric(context, text, params) {
         top = Math.max(pad.y, (surfaceHeight - logical.height) / 2);
 
     const origin = {x: left, y: top};
-    const solidReach = ring.inner + ring.outer;
-    const colors = ringColors(fill);
+    const solidReach = ring.totalReach;
+    const baseColors = ringColors(fill);
+    const ringPalette = resolveRingColors(fill, ring.rings.length, params.ringColors);
+    const colors = {
+        inner: ringPalette[0] ?? baseColors.inner,
+        outer: ringPalette[1] ?? baseColors.outer,
+    };
     const textInkBox = {
         x: origin.x + ink.x - solidReach,
         y: origin.y + ink.y - solidReach,
@@ -238,6 +250,7 @@ export function fitLyric(context, text, params) {
         ring,
         border: params.border,
         ringColors: colors,
+        ringPalette,
         fill,
         backdrop,
         inkBox,
@@ -290,8 +303,8 @@ function cacheSet(cache, key, value, size, drop = () => {}) {
 
 function dropRings(entry) {
     entry.aura?.surface.finish();
-    entry.outer?.finish();
-    entry.inner?.finish();
+    for (const mask of entry.masks ?? [])
+        mask?.finish();
 }
 
 function bridgeRect(ink, lineText, fontMetrics) {
@@ -382,18 +395,20 @@ const GLOW_BANDS = [
 ];
 
 /**
- * Pre-renders the border (and optional smooth dark backing cloud) of one
- * laid-out line into cached A8 alpha masks positioned relative to its baseline.
+ * Pre-renders every concentric border ring (and optional smooth dark backing
+ * cloud) of one laid-out line into cached A8 alpha masks positioned relative
+ * to its baseline.
  */
 function lineRings(line, lineText, spec, border, ring, fontMetrics) {
-    const key = `${spec.fontSize}|${spec.family}|${spec.bold}|${spec.italic}|${spec.spaceScale}|${border}|${lineText}`;
+    const geomSig = ring.rings.map(r => `${r.width.toFixed(2)}${r.feathered ? 'f' : ''}`).join(',');
+    const key = `${spec.fontSize}|${spec.family}|${spec.bold}|${spec.italic}|${spec.spaceScale}|${border}|${geomSig}|${ring.auraSpread.toFixed(1)}|${lineText}`;
     const cached = cacheGet(ringCache, key);
     if (cached)
         return cached;
 
     const [ink] = line.get_pixel_extents();
-    const {inner, outer, bridge: wantBridge, auraSpread, featheredOuter, extraPad} = ring;
-    const pad = Math.ceil(inner + outer + extraPad) + 6;
+    const {rings: ringList, totalReach, bridge: wantBridge, auraSpread, extraPad} = ring;
+    const pad = Math.ceil(totalReach + extraPad) + 6;
     const dx = ink.x - pad;
     const dy = ink.y - pad;
     const width = ink.width + 2 * pad;
@@ -401,32 +416,40 @@ function lineRings(line, lineText, spec, border, ring, fontMetrics) {
     const step = Math.max(1, spec.fontSize * RING_STEP_OF_FONT_SIZE);
     const bridge = wantBridge ? bridgeRect(ink, lineText, fontMetrics) : null;
 
-    const innerMask = strokedMask(line, width, height, dx, dy, inner, 0, step, bridge);
-
-    let outerMask = null;
-    if (outer > 0 && featheredOuter) {
-        outerMask = new Cairo.ImageSurface(Cairo.Format.A8, width, height);
-        const ocr = new Cairo.Context(outerMask);
-        for (const band of GLOW_BANDS) {
-            const bandSurf = strokedMask(
-                line, width, height, dx, dy, inner + outer * band.frac, inner, step, bridge,
-            );
-            ocr.setSourceRGBA(0, 0, 0, band.alpha);
-            ocr.maskSurface(bandSurf, 0, 0);
-            bandSurf.finish();
+    const masks = [];
+    let prevReach = 0;
+    let lastSolidMask = null;
+    for (const entry of ringList) {
+        const reach = prevReach + entry.width;
+        // Overlap 1.5 px beneath the next inner ring so concentric bands never
+        // show a 1-pixel antialiased seam between adjacent colors.
+        const seamFloor = prevReach > 0 ? Math.max(0, prevReach - 1.5) : 0;
+        let mask;
+        if (entry.feathered) {
+            mask = new Cairo.ImageSurface(Cairo.Format.A8, width, height);
+            const ocr = new Cairo.Context(mask);
+            for (const band of GLOW_BANDS) {
+                const bandSurf = strokedMask(
+                    line, width, height, dx, dy, prevReach + entry.width * band.frac, seamFloor, step, bridge,
+                );
+                ocr.setSourceRGBA(0, 0, 0, band.alpha);
+                ocr.maskSurface(bandSurf, 0, 0);
+                bandSurf.finish();
+            }
+            ocr.$dispose();
+        } else {
+            mask = strokedMask(line, width, height, dx, dy, reach, seamFloor, step, bridge);
+            lastSolidMask = mask;
         }
-        ocr.$dispose();
-    } else if (outer > 0) {
-        outerMask = strokedMask(line, width, height, dx, dy, inner + outer, inner, step, bridge);
+        masks.push(mask);
+        prevReach = reach;
     }
 
     let aura = null;
-    if (auraSpread > 0) {
-        const auraSource = !featheredOuter && outerMask ? outerMask : innerMask;
-        aura = buildAuraMask(auraSource, width, height, auraSpread);
-    }
+    if (auraSpread > 0 && lastSolidMask)
+        aura = buildAuraMask(lastSolidMask, width, height, auraSpread);
 
-    const entry = {dx, dy, aura, outer: outerMask, inner: innerMask};
+    const entry = {dx, dy, aura, masks};
     cacheSet(ringCache, key, entry, RING_CACHE_SIZE, dropRings);
     return entry;
 }
@@ -443,7 +466,7 @@ export function paintLyric(cr, fitted) {
     const layout = PangoCairo.create_layout(cr);
     applySpec(layout, fitted.spec);
 
-    if (fitted.ring.inner === 0) {
+    if (!fitted.ring.rings.length) {
         cr.moveTo(fitted.origin.x, fitted.origin.y);
         cr.setSourceRGB(...fitted.fill);
         PangoCairo.show_layout(cr, layout);
@@ -473,8 +496,8 @@ export function paintLyric(cr, fitted) {
         );
     }
 
-    // Paint layer-by-layer across all lines (cloud -> outer rim -> inner body
-    // -> fills) so stacked wrapped lines fuse smoothly into one graphic unit.
+    // Paint layer-by-layer across all lines (cloud -> outermost ring -> ... ->
+    // innermost ring -> fills) so stacked wrapped lines fuse smoothly.
     if (fitted.ring.auraSpread > 0 && fitted.ring.auraAlpha > 0) {
         const dropY = Math.round(fitted.spec.fontSize * 0.03);
         for (const {x, y, rings} of lines) {
@@ -489,12 +512,12 @@ export function paintLyric(cr, fitted) {
         }
     }
 
-    const colors = fitted.ringColors ?? ringColors(fitted.fill);
-    for (const layer of ['outer', 'inner']) {
-        cr.setSourceRGB(...colors[layer]);
+    const palette = fitted.ringPalette ?? resolveRingColors(fitted.fill, fitted.ring.rings.length);
+    for (let i = fitted.ring.rings.length - 1; i >= 0; i--) {
+        cr.setSourceRGB(...palette[i]);
         for (const {x, y, rings} of lines) {
-            if (rings[layer])
-                cr.maskSurface(rings[layer], x + rings.dx, y + rings.dy);
+            if (rings.masks[i])
+                cr.maskSurface(rings.masks[i], x + rings.dx, y + rings.dy);
         }
     }
 

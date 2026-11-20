@@ -15,7 +15,7 @@ import {
 } from '/shared/overlay-geometry.js';
 import {labeledLines, noteLines} from '/shared/pitch-layout.js';
 import {keyName, noteLabel, pitchClassNames, scalePitchClasses} from '/shared/scales.js';
-import {hexColor, parseHexColor, resolveTextColor, ringColors} from '/shared/text-ink.js';
+import {hexColor, parseHexColor, resolveRingColors, resolveTextColor} from '/shared/text-ink.js';
 
 const EDGE_PIXELS = 4;
 const DOCKED_HEIGHT_RANGE = [0.03, 0.6];
@@ -92,10 +92,17 @@ function wrapLines(ctx, text, maxWidth) {
     return lines;
 }
 
+function borderOpts(values) {
+    return {
+        cloud: Boolean(values['text-border-cloud']),
+        ringWidths: [1, 2, 3, 4].map(i => values[`text-border-${i}-width`] ?? 0),
+    };
+}
+
 function edgePad(values, fontSize) {
-    const ring = borderSpec(values['text-border'], fontSize);
+    const ring = borderSpec(values['text-border'], fontSize, borderOpts(values));
     const bp = (values['text-backdrop'] ?? 'none') === 'pill' ? backdropMetrics(fontSize) : {padX: 0, padY: 0};
-    const reach = ring.inner + ring.outer + ring.extraPad;
+    const reach = ring.totalReach + ring.extraPad;
     return {
         x: Math.ceil(reach) + bp.padX + EDGE_PIXELS,
         y: Math.ceil(reach) + bp.padY + EDGE_PIXELS,
@@ -110,7 +117,7 @@ export function computeLyricLayout(ctx, text, values, monitor) {
     const boxW = Math.max(160, Math.round(values.box.width * monitor.width));
     const boxH = Math.max(48, Math.round(values.box.height * monitor.height));
     const fontSize = values['font-size'];
-    const ring = borderSpec(values['text-border'], fontSize);
+    const ring = borderSpec(values['text-border'], fontSize, borderOpts(values));
     const pad = edgePad(values, fontSize);
     const maxWidth = Math.max(1, boxW - 2 * pad.x);
     const lineStep = fontSize * 1.24;
@@ -239,8 +246,9 @@ export class LyricPreviewCanvas {
         ctx.scale(scale, scale);
 
         const fill = resolveTextColor(values['text-color'], values['text-custom-color'] ?? '');
-        const rColors = ringColors(fill);
         const {ring, fontSize, pad} = layout;
+        const customHexes = [1, 2, 3, 4].map(i => values[`text-border-${i}-color`] ?? '');
+        const ringPalette = resolveRingColors(fill, ring.rings.length, customHexes);
         const align = values['text-align'] ?? 'center';
         const anchor = verticalAnchorFor(values.box.cy, values['pitch-dock'], values['pitch-enabled']);
 
@@ -270,7 +278,7 @@ export class LyricPreviewCanvas {
                 roundedRectPath(ctx, 0, 0, layout.boxW, layout.renderH, metrics.radius);
                 ctx.fill();
             } else {
-                const reach = ring.inner + ring.outer;
+                const reach = ring.totalReach;
                 const minX = Math.min(...layout.lineWidths.map(lineX));
                 const maxX = Math.max(...layout.lineWidths.map(lw => lineX(lw) + lw));
                 const px = Math.max(0, minX - reach - metrics.padX);
@@ -337,9 +345,18 @@ export class LyricPreviewCanvas {
             paintPass('stroke', color, 2 * reach);
         };
 
-        // Smooth dark backing cloud behind double/glow borders
-        if (ring.auraSpread > 0 && ring.auraAlpha > 0) {
-            const auraReach = !ring.featheredOuter && ring.outer > 0 ? ring.inner + ring.outer : ring.inner;
+        // Precompute cumulative reach for each ring from innermost (0) to outermost (n-1).
+        const reaches = [];
+        let acc = 0;
+        for (const entry of ring.rings) {
+            acc += entry.width;
+            reaches.push(acc);
+        }
+
+        // Optional smooth dark backing cloud behind rings
+        if (ring.auraSpread > 0 && ring.auraAlpha > 0 && reaches.length) {
+            const solidIdx = ring.featheredOuter && reaches.length > 1 ? reaches.length - 2 : reaches.length - 1;
+            const auraReach = reaches[solidIdx];
             const blurPx = ring.auraSpread * 0.55 * scale * dpr;
             const dropPx = Math.round(fontSize * 0.03) * scale * dpr;
             ctx.save();
@@ -354,17 +371,18 @@ export class LyricPreviewCanvas {
             ctx.restore();
         }
 
-        // Outer border (feathered glow or crisp contrast trim)
-        if (ring.outer > 0 && ring.featheredOuter) {
-            for (const pass of GLOW_CANVAS_PASSES)
-                paintSilhouette(rgba(rColors.outer, pass.alpha), ring.inner + ring.outer * pass.frac);
-        } else if (ring.outer > 0) {
-            paintSilhouette(rgba(rColors.outer, 1), ring.inner + ring.outer);
+        // Concentric rings painted outermost -> innermost so each band stays sharp.
+        for (let i = ring.rings.length - 1; i >= 0; i--) {
+            const entry = ring.rings[i];
+            const color = ringPalette[i];
+            const prevReach = i > 0 ? reaches[i - 1] : 0;
+            if (entry.feathered) {
+                for (const pass of GLOW_CANVAS_PASSES)
+                    paintSilhouette(rgba(color, pass.alpha), prevReach + entry.width * pass.frac);
+            } else {
+                paintSilhouette(rgba(color, 1), reaches[i]);
+            }
         }
-
-        // Inner contrast body
-        if (ring.inner > 0)
-            paintSilhouette(rgba(rColors.inner, 1), ring.inner);
 
         // Pure opaque letter fill
         paintPass('fill', rgba(fill, 1));

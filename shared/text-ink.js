@@ -79,6 +79,36 @@ export function ringColors(fill) {
     return {inner, outer: inner === BLACK ? WHITE : BLACK};
 }
 
+/**
+ * Default concentric ring colors for 1 to 4 rings (broadcast telop / anime
+ * fuchidori alternation):
+ * - 1 ring: WCAG primary contrast (black on bright/colored fill, white on black).
+ * - 2 rings: primary contrast inner body, opposite contrast outer band.
+ * - 3 rings: dark -> light -> dark (or light -> dark -> light) outer seal,
+ *   reading cleanly on both pure black and pure white video with no backdrop.
+ * - 4 rings: for chromatic fills (pink, yellow, cyan, ...), inner contrast ->
+ *   opposite contrast -> fill color echo -> outer contrast seal; for white or
+ *   black fills, four alternating high-contrast bands.
+ * @param {readonly number[]} fill
+ * @param {number} count
+ * @param {ReadonlyArray<string>} [customHexes] per-ring "#rrggbb" or "" for auto
+ * @returns {Array<readonly number[]>}
+ */
+export function resolveRingColors(fill, count, customHexes = []) {
+    const {inner, outer} = ringColors(fill);
+    const isChromatic = Math.max(fill[0], fill[1], fill[2]) - Math.min(fill[0], fill[1], fill[2]) > 0.12;
+    const defaults = count === 4 && isChromatic
+        ? [inner, outer, fill, inner]
+        : [inner, outer, inner, outer];
+    const resolved = [];
+    for (let i = 0; i < count; i++) {
+        const hex = customHexes?.[i] ?? '';
+        const parsed = hex ? parseHexColor(hex) : null;
+        resolved.push(parsed ?? defaults[i]);
+    }
+    return resolved;
+}
+
 /** "#rrggbb" for a color, for swatches. */
 export function hexColor(rgb) {
     return `#${rgb.map(channel => Math.round(channel * 255).toString(16).padStart(2, '0')).join('')}`;
