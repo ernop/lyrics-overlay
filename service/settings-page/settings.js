@@ -1,14 +1,11 @@
-// The settings studio (http://localhost:8792/settings and http://lyrics.localhost/settings):
-// live visual lyric preview, interactive screen placement map with 8-handle
-// resize and pitch docking, one-click style presets, and four focused
-// workspaces synced in real time to GNOME Shell via GSettings.
+// Lyrics overlay settings page (http://localhost:8792/settings):
+// Two-column pro studio layout with a sticky left live stage (switching
+// cleanly between Live Preview / Live Pitch Preview and interactive Screen
+// Map) beside a calm borderless inspector (Lyrics, Pitch, Song).
 
 import {LYRICS_STATUS_TEXT} from '/shared/lyrics-status.js';
-import {
-    MIN_GEOMETRY_HEIGHT, MIN_GEOMETRY_WIDTH, PLACEMENT_PRESETS, clampGeometry,
-} from '/shared/overlay-geometry.js';
+import {PLACEMENT_PRESETS} from '/shared/overlay-geometry.js';
 import {keyName, noteLabel, pitchClassNames, SCALES} from '/shared/scales.js';
-import {STYLE_PRESETS} from '/shared/style-presets.js';
 import {TEXT_COLORS, hexColor, nearestNamedColor, parseHexColor, resolveTextColor} from '/shared/text-ink.js';
 import {LyricPreviewCanvas, PitchPreviewCanvas, ScreenPlacementMap} from '/preview.js';
 
@@ -28,6 +25,7 @@ const ADDON_TEXT = {
 const SLIDER_STEPS = 1000;
 const MIN_FIXED_SPAN = 6;
 const SHARPS = pitchClassNames(null);
+const DEFAULT_SAMPLE = 'Amazing grace, how sweet the sound';
 
 const LINE_COLORS = [
     ['#facc15', 'Yellow'], ['#ffffff', 'White'], ['#fb923c', 'Orange'], ['#ef4444', 'Red'], ['#f472b6', 'Pink'],
@@ -38,34 +36,10 @@ const BACKDROP_SWATCHES = [
     ['#000000', 'Black'], ['#141824', 'Midnight'], ['#1f2937', 'Slate'], ['#2b1429', 'Plum'], ['#ffffff', 'White'],
 ];
 
-const WEIGHT_CHOICES = [
-    [300, 'Light'],
-    [400, 'Regular'],
-    [500, 'Medium'],
-    [600, 'Semi'],
-    [700, 'Bold'],
-    [800, 'Extra'],
-    [900, 'Black'],
-];
-
-const SAMPLE_LINES = [
-    {id: 'live', label: 'Live line', text: null},
-    {id: 'short', label: 'Short', text: 'Amazing grace, how sweet the sound'},
-    {id: 'long', label: 'Long wrap', text: 'And when the broken hearted people living in the world agree, there will be an answer'},
-    {id: 'dots', label: 'i, j, o', text: 'Timing & lighting in the midnight glow...'},
-    {id: 'countdown', label: 'Countdown', text: '3 Amazing grace, how sweet the sound'},
-];
-
-const QUICK_FONTS = [
-    '', 'Adwaita Sans', 'DejaVu Sans', 'Liberation Sans', 'Ubuntu', 'Noto Sans',
-    'DejaVu Serif', 'Liberation Serif', 'DejaVu Sans Mono', 'JetBrains Mono',
-];
-
 const TABS = [
-    {id: 'lyric', label: 'Lyric style'},
-    {id: 'layout', label: 'Box & position'},
-    {id: 'pitch', label: 'Pitch panel'},
-    {id: 'song', label: 'Song & lyrics'},
+    {id: 'lyric', label: 'Lyrics'},
+    {id: 'pitch', label: 'Pitch'},
+    {id: 'song', label: 'Song'},
 ];
 
 const DEFAULT_MONITOR = {index: 0, x: 0, y: 0, width: 1920, height: 1080, scale: 1, primary: true, label: 'Primary (1920\u00d71080)'};
@@ -83,13 +57,13 @@ const model = {
     views: [],
     stateViews: [],
     activeTab: 'lyric',
+    stageMode: 'preview', // 'preview' | 'map'
     previewScene: 'video',
-    sampleMode: 'short',
-    customSample: 'Amazing grace, how sweet the sound',
-    lastTelemetry: null,
+    customSample: '',
     lyricPreview: null,
     placementMap: null,
     pitchPreview: null,
+    stageSync: null,
 };
 
 // ----- service
@@ -121,9 +95,11 @@ function activeMonitor(monitorKey = 'box-monitor') {
 }
 
 function activeSampleText() {
-    if (model.sampleMode === 'live' && model.line?.text)
+    if (model.customSample.trim())
+        return model.customSample;
+    if (model.line?.text)
         return model.line.text;
-    return model.customSample || 'Amazing grace, how sweet the sound';
+    return DEFAULT_SAMPLE;
 }
 
 function render() {
@@ -179,82 +155,96 @@ async function flush() {
 async function post(path, body) {
     try {
         const answer = await call('POST', path, body);
+        showBanner('');
         if (answer?.values)
             absorb(answer.values);
-        showBanner('');
+        await pollState();
     } catch (error) {
         showBanner(error.message);
     }
-    pollState();
 }
 
 async function pollSettings() {
+    if (model.sending || model.pending.size)
+        return;
     try {
-        const {values} = await call('GET', '/api/settings');
-        if (!model.sending)
-            absorb(values);
+        absorb((await call('GET', '/api/settings')).values);
     } catch {
-        showBanner('The lyrics service is not running.');
+        // pollState reports a stopped service.
     }
 }
 
 async function pollState() {
     try {
-        const {state, line, addon} = await call('GET', '/api/state');
-        const lineChanged = line?.text !== model.line?.text;
-        model.state = state;
-        model.line = line ?? {text: '', key: 'none'};
-        model.addon = addon;
-        for (const view of model.stateViews)
-            view(state, addon, model.line);
-        if (lineChanged && model.sampleMode === 'live')
+        const answer = await call('GET', '/api/state');
+        model.state = answer.state;
+        model.addon = answer.addon;
+        const nextLine = answer.line ?? {text: '', key: 'none'};
+        const lineChanged = nextLine.text !== model.line.text || nextLine.key !== model.line.key;
+        model.line = nextLine;
+        for (const fn of model.stateViews)
+            fn(model.state, model.addon, model.line);
+        if (lineChanged)
             render();
-        else if (model.pitchPreview)
-            model.pitchPreview.render(model.values, state?.key ?? null);
-    } catch {
-        showBanner('The lyrics service is not running.');
+        showBanner('');
+    } catch (error) {
+        showBanner(`Could not reach the service: ${error.message}`);
     }
 }
 
-// ----- DOM building blocks
+// ----- DOM helpers
 
-function el(tag, props = {}, ...children) {
+function el(tag, attrs = {}, ...children) {
     const node = document.createElement(tag);
-    for (const [name, value] of Object.entries(props)) {
-        if (value === undefined || value === null)
+    for (const [name, value] of Object.entries(attrs)) {
+        if (value === null || value === undefined || value === false)
             continue;
-        if (name === 'class')
-            node.className = value;
-        else if (name === 'style')
+        if (name === 'style')
             Object.assign(node.style, value);
-        else if (name.startsWith('on'))
-            node.addEventListener(name.slice(2), value);
         else
-            node.setAttribute(name, value);
+            node.setAttribute(name, value === true ? '' : String(value));
     }
     node.append(...children);
     return node;
 }
 
-function view(update) {
-    model.views.push(update);
+function view(fn) {
+    model.views.push(fn);
+}
+
+function section(title, headRight, ...rows) {
+    const head = el('div', {class: 'section-head'}, el('h2', {}, title));
+    if (headRight)
+        head.append(headRight);
+    return el('section', {class: 'section'}, head, ...rows);
 }
 
 function row(label, ...controls) {
-    return el('div', {class: 'row'}, el('span', {class: 'label'}, label), el('div', {class: 'controls'}, ...controls));
+    return el('div', {class: 'row'},
+        el('div', {class: 'label'}, label),
+        el('div', {class: 'controls'}, ...controls));
 }
 
-function card(title, headExtra, ...children) {
-    const head = el('div', {class: 'card-head'}, el('h2', {}, title), ...(headExtra ? [headExtra] : []));
-    return el('section', {class: 'card'}, head, ...children.flat());
+function whenVisible(node, predicate) {
+    view(values => {
+        node.hidden = !predicate(values);
+    });
+    return node;
 }
 
-function pressButton(text, onclick, props = {}) {
-    return el('button', {type: 'button', onclick, ...props}, text);
+function pressButton(text, onClick, attrs = {}) {
+    const button = el('button', {type: 'button', ...attrs}, text);
+    button.addEventListener('click', onClick);
+    return button;
 }
 
-function cssFamily(family) {
-    return `"${family.replaceAll('\\', '\\\\').replaceAll('"', '\\"')}"`;
+function segmentedRow(key, label, choices) {
+    const buttons = Object.entries(choices).map(([value, text]) => {
+        const button = pressButton(text, () => set(key, value));
+        view(values => button.setAttribute('aria-pressed', String(values[key] === value)));
+        return button;
+    });
+    return row(label, el('div', {class: 'seg'}, ...buttons));
 }
 
 function switchRow(key, label) {
@@ -266,333 +256,211 @@ function switchRow(key, label) {
     return row(label, button);
 }
 
-/** @param {Record<string, string>} labels the text for every choice the schema allows */
-function choiceRow(key, label, labels) {
-    const choices = model.schema[key].choices;
-    const missing = choices.filter(choice => !(choice in labels));
-    if (missing.length || Object.keys(labels).length !== choices.length)
-        throw new Error(`the page's labels for ${key} do not match its choices (${choices.join(', ')})`);
-    const buttons = Object.entries(labels).map(([value, text]) => {
-        const button = pressButton(text, () => set(key, value));
-        view(values => button.setAttribute('aria-pressed', String(values[key] === value)));
-        return button;
-    });
-    return row(label, ...buttons);
-}
-
-/**
- * Notched slider with labeled endpoints, tabular current value, -/+ steppers,
- * and double-click on the value to reset that setting to its default.
- */
 function sliderRow(key, label, {ticks, format, log = false, integer = false, stepBy = null}) {
     const {min, max} = model.schema[key];
-    if (ticks[0] !== min || ticks[ticks.length - 1] !== max)
-        throw new Error(`the ${key} slider must label both ends, ${min} and ${max}`);
-    const fraction = value => log ? Math.log(value / min) / Math.log(max / min) : (value - min) / (max - min);
-    const valueAt = position => {
-        const f = position / SLIDER_STEPS;
-        const value = log ? min * (max / min) ** f : min + (max - min) * f;
-        return integer ? Math.round(value) : value;
+    const toPosition = value => (log ? Math.log(value / min) / Math.log(max / min) : (value - min) / (max - min));
+    const fromPosition = position => {
+        const raw = log ? min * (max / min) ** position : min + position * (max - min);
+        return Math.min(max, Math.max(min, integer ? Math.round(raw) : raw));
     };
-    const nudge = dir => {
+    const shown = el('span', {class: 'value'});
+    const input = el('input', {type: 'range', min: 0, max: SLIDER_STEPS, step: 1, 'aria-label': label});
+    const nudge = direction => {
         const current = model.values[key];
         let next;
         if (stepBy !== null)
-            next = current + dir * stepBy;
+            next = current + direction * stepBy;
         else if (log)
-            next = current * (1.08 ** dir);
+            next = current * (1.06 ** direction);
         else
-            next = current + dir * ((max - min) / 25);
-        next = Math.min(max, Math.max(min, integer ? Math.round(next) : next));
+            next = current + direction * (max - min) / 20;
+        next = Math.min(max, Math.max(min, integer ? Math.round(next) : Math.round(next * 1000) / 1000));
         set(key, next);
     };
-    const input = el('input', {type: 'range', min: '0', max: String(SLIDER_STEPS), step: '1', 'aria-label': label});
-    const shown = el('span', {class: 'value', title: 'Double-click to reset to default'});
-    shown.addEventListener('dblclick', () => post('/api/settings/reset', {keys: [key]}));
     const minus = pressButton('\u2212', () => nudge(-1), {class: 'step', 'aria-label': `Decrease ${label}`});
     const plus = pressButton('+', () => nudge(1), {class: 'step', 'aria-label': `Increase ${label}`});
-    const notches = el('div', {class: 'ticks'},
-        ...ticks.map(tick => el('span', {class: 'tick', style: {left: `${fraction(tick) * 100}%`}}, format(tick, true))));
+
+    const release = () => {
+        model.held.delete(key);
+    };
     input.addEventListener('pointerdown', () => model.held.add(key));
-    for (const name of ['pointerup', 'pointercancel', 'change'])
-        input.addEventListener(name, () => model.held.delete(key));
-    input.addEventListener('input', () => set(key, valueAt(Number(input.value))));
+    input.addEventListener('pointerup', release);
+    input.addEventListener('pointercancel', release);
+    input.addEventListener('blur', release);
+    input.addEventListener('input', () => set(key, fromPosition(Number(input.value) / SLIDER_STEPS)));
+    const tickMarks = el('div', {class: 'ticks', 'aria-hidden': 'true'}, ...ticks.map(value =>
+        el('span', {class: 'tick', style: {left: `${toPosition(value) * 100}%`}}, format(value))));
     view(values => {
+        const value = values[key];
+        shown.textContent = format(value);
         if (!model.held.has(key))
-            input.value = String(Math.round(fraction(values[key]) * SLIDER_STEPS));
-        shown.textContent = format(values[key], false);
+            input.value = String(Math.round(toPosition(value) * SLIDER_STEPS));
+        input.setAttribute('aria-valuetext', format(value));
     });
     return row(label, el('div', {class: 'slider'},
         shown,
-        el('div', {class: 'track'}, input, notches),
+        el('div', {class: 'track'}, input, tickMarks),
         el('div', {class: 'slider-steppers'}, minus, plus)));
 }
 
-/**
- * Custom notched slider bound to a virtual accessor (used for box X/Y/W/H
- * coordinates where one key holds an object).
- */
-function virtualSliderRow(holdKey, label, {min, max, ticks, format, get, setValue, stepBy}) {
-    const fraction = value => (value - min) / (max - min);
-    const input = el('input', {type: 'range', min: '0', max: String(SLIDER_STEPS), step: '1', 'aria-label': label});
-    const shown = el('span', {class: 'value'});
-    const minus = pressButton('\u2212', () => setValue(Math.max(min, get(model.values) - stepBy)), {class: 'step', 'aria-label': `Decrease ${label}`});
-    const plus = pressButton('+', () => setValue(Math.min(max, get(model.values) + stepBy)), {class: 'step', 'aria-label': `Increase ${label}`});
-    const notches = el('div', {class: 'ticks'},
-        ...ticks.map(tick => el('span', {class: 'tick', style: {left: `${fraction(tick) * 100}%`}}, format(tick, true))));
-    input.addEventListener('pointerdown', () => model.held.add(holdKey));
-    for (const name of ['pointerup', 'pointercancel', 'change'])
-        input.addEventListener(name, () => model.held.delete(holdKey));
-    input.addEventListener('input', () => {
-        const value = min + (max - min) * (Number(input.value) / SLIDER_STEPS);
-        setValue(value);
-    });
-    view(values => {
-        const val = get(values);
-        if (!model.held.has(holdKey))
-            input.value = String(Math.round(fraction(Math.min(max, Math.max(min, val))) * SLIDER_STEPS));
-        shown.textContent = format(val, false);
-    });
-    return row(label, el('div', {class: 'slider'},
-        shown,
-        el('div', {class: 'track'}, input, notches),
-        el('div', {class: 'slider-steppers'}, minus, plus)));
-}
+const unit = (suffix, decimals = 0) => value => `${decimals ? Number(value).toFixed(decimals).replace(/\.0$/u, '') : Math.round(value)} ${suffix}`;
+const percent = value => `${Math.round(value * 100)}%`;
 
-const percent = (value, short) => `${Math.round(value * 100)}${short ? '' : '%'}`;
-const unit = (suffix, digits = 0) => (value, short) => short ? `${value}` : `${value.toFixed(digits)} ${suffix}`;
-
-function whenVisible(node, predicate) {
-    view(values => {
-        node.hidden = !predicate(values);
-    });
-    return node;
-}
-
-// ----- Top Command Bar
+// ----- Top bar
 
 function buildTopBar() {
-    const songTitle = el('span', {class: 'topbar-title'}, 'Nothing on YouTube');
-    const lyricsPill = el('span', {class: 'pill'}, 'Idle');
-    const lyricsToggle = pressButton('', () => set('overlay-enabled', !model.values['overlay-enabled']));
-    const pitchToggle = pressButton('', () => set('pitch-enabled', !model.values['pitch-enabled']));
-    const adjustBtn = pressButton('', () => set('overlay-adjust-mode', !model.values['overlay-adjust-mode']));
-    const addonInstall = el('a', {class: 'button primary', href: ADDON_DOWNLOAD, hidden: 'hidden'});
+    const songTitle = el('span', {class: 'topbar-title'}, 'No song playing');
+    const statusPill = el('span', {class: 'pill'}, 'Idle');
+
+    const overlayBtn = pressButton('', () => set('overlay-enabled', !model.values['overlay-enabled']), {class: 'switch'});
+    const pitchBtn = pressButton('', () => set('pitch-enabled', !model.values['pitch-enabled']), {class: 'switch'});
 
     view(values => {
-        lyricsToggle.setAttribute('aria-pressed', String(values['overlay-enabled']));
-        lyricsToggle.textContent = values['overlay-enabled'] ? 'Lyrics: On' : 'Lyrics: Off';
-        pitchToggle.setAttribute('aria-pressed', String(values['pitch-enabled']));
-        pitchToggle.textContent = values['pitch-enabled'] ? 'Pitch: On' : 'Pitch: Off';
-        const adjusting = Boolean(values['overlay-adjust-mode']);
-        adjustBtn.className = adjusting ? 'adjust-active' : 'action-accent';
-        adjustBtn.setAttribute('aria-pressed', String(adjusting));
-        adjustBtn.textContent = adjusting ? 'Adjusting on desktop \u2014 Done' : 'Adjust box on desktop';
+        overlayBtn.setAttribute('aria-pressed', String(values['overlay-enabled']));
+        overlayBtn.textContent = values['overlay-enabled'] ? 'Lyrics: On' : 'Lyrics: Off';
+        pitchBtn.setAttribute('aria-pressed', String(values['pitch-enabled']));
+        pitchBtn.textContent = values['pitch-enabled'] ? 'Pitch: On' : 'Pitch: Off';
     });
 
-    model.stateViews.push((state, addon) => {
-        songTitle.textContent = state.active ? (state.identityText || state.videoId) : 'Nothing on YouTube';
-        lyricsPill.textContent = LYRICS_STATUS_TEXT[state.lyrics];
-        lyricsPill.className = state.lyrics === 'timed' ? 'pill pill-good'
-            : (state.lyrics === 'plain' || state.lyrics === 'waiting') ? 'pill pill-warn'
-                : state.lyrics === 'error' ? 'pill pill-alert' : 'pill';
-        addonInstall.textContent = `Install add-on ${addon.current}`;
-        addonInstall.hidden = addon.status !== 'unnamed' && addon.status !== 'older';
+    model.stateViews.push(state => {
+        songTitle.textContent = state.active ? (state.identityText || state.videoId) : 'No song playing';
+        statusPill.textContent = LYRICS_STATUS_TEXT[state.lyrics] ?? state.lyrics;
+        statusPill.className = 'pill';
+        if (state.lyrics === 'timed')
+            statusPill.classList.add('pill-good');
+        else if (state.lyrics === 'searching' || state.lyrics === 'waiting' || state.lyrics === 'plain')
+            statusPill.classList.add('pill-warn');
+        else if (state.lyrics === 'error')
+            statusPill.classList.add('pill-alert');
     });
 
-    const bar = document.getElementById('topbar');
-    bar.replaceChildren(
+    const header = document.getElementById('topbar');
+    header.replaceChildren(
         el('div', {class: 'topbar-left'},
             el('h1', {}, 'Lyrics overlay'),
-            el('div', {class: 'topbar-song'}, songTitle, lyricsPill)),
-        el('div', {class: 'topbar-actions'}, lyricsToggle, pitchToggle, adjustBtn, addonInstall),
+            el('span', {class: 'topbar-sep', 'aria-hidden': 'true'}),
+            el('div', {class: 'topbar-song'}, songTitle, statusPill),
+        ),
+        el('div', {class: 'topbar-actions'}, overlayBtn, pitchBtn),
     );
 }
 
-// ----- Hero Visual Studio
+// ----- Left sticky Live Stage (unified Lyric/Pitch Preview + Screen Map)
 
-function fitBoxHeightToText() {
-    if (!model.lastTelemetry)
-        return;
-    const box = model.values.box;
-    const nextHeight = Math.max(box.height, model.lastTelemetry.neededHeightFraction);
-    set('box', clampGeometry({...box, height: nextHeight}));
-}
+function buildStage() {
+    const stage = document.getElementById('stage');
 
-function buildStudio() {
-    // Left pane: Live Lyric Preview
-    const drawnMetric = el('span', {class: 'metric-value'});
-    const linesMetric = el('span', {class: 'pill'});
-    const fitBtn = pressButton('Expand box to fit text', fitBoxHeightToText, {class: 'compact action-accent', hidden: 'hidden'});
-    const sceneButtons = [
-        ['video', 'Video'], ['dark', 'Dark'], ['light', 'Light'], ['grid', 'Grid'],
+    // Top mode toggle: Preview | Screen map
+    const previewModeBtn = pressButton('Preview', () => {
+        model.stageMode = 'preview';
+        model.stageSync();
+    });
+    const mapModeBtn = pressButton('Screen map', () => {
+        model.stageMode = 'map';
+        model.stageSync();
+    });
+    const modeSeg = el('div', {class: 'seg compact'}, previewModeBtn, mapModeBtn);
+
+    // Scene toggle (Video / Dark / Light) for lyric preview
+    const sceneButtons = {};
+    const sceneSeg = el('div', {class: 'seg compact'}, ...[
+        ['video', 'Video'],
+        ['dark', 'Dark'],
+        ['light', 'Light'],
     ].map(([id, label]) => {
         const btn = pressButton(label, () => {
             model.previewScene = id;
-            updateScenes();
+            for (const [sid, b] of Object.entries(sceneButtons))
+                b.setAttribute('aria-pressed', String(sid === id));
             render();
-        }, {class: 'compact'});
-        btn.dataset.scene = id;
+        });
+        btn.setAttribute('aria-pressed', String(id === model.previewScene));
+        sceneButtons[id] = btn;
         return btn;
-    });
-    const updateScenes = () => {
-        for (const btn of sceneButtons)
-            btn.setAttribute('aria-pressed', String(btn.dataset.scene === model.previewScene));
-    };
-    updateScenes();
+    }));
 
-    const previewCanvas = el('canvas', {'aria-label': 'Live lyric preview'});
-    const previewFrame = el('div', {class: 'preview-frame'}, previewCanvas);
-    const clampBanner = el('div', {class: 'clamp-banner', hidden: 'hidden'});
-    const clampText = el('span', {});
-    clampBanner.append(clampText, fitBtn);
-
-    model.lyricPreview = new LyricPreviewCanvas(previewCanvas, telemetry => {
-        model.lastTelemetry = telemetry;
-        if (model.values['text-fit-mode'] === 'fill') {
-            drawnMetric.textContent = `Auto-filled ${Math.round(telemetry.drawnSize)} px`;
-            drawnMetric.className = 'metric-value';
-            clampBanner.hidden = true;
-            fitBtn.hidden = true;
-        } else if (telemetry.clamped) {
-            drawnMetric.textContent = `Drawn ${Math.round(telemetry.drawnSize)} / ${Math.round(telemetry.targetSize)} px`;
-            drawnMetric.className = 'metric-value metric-warn';
-            clampText.textContent = `Box height (${telemetry.boxH} px) limits ${Math.round(telemetry.targetSize)} px text + border to ${Math.round(telemetry.drawnSize)} px.`;
-            clampBanner.hidden = false;
-            fitBtn.hidden = false;
-        } else {
-            drawnMetric.textContent = `${Math.round(telemetry.drawnSize)} px`;
-            drawnMetric.className = 'metric-value';
-            clampBanner.hidden = true;
-            fitBtn.hidden = true;
-        }
-        linesMetric.textContent = `${telemetry.lines.length} ${telemetry.lines.length === 1 ? 'line' : 'lines'}`;
+    // 1. Lyric preview pane
+    const lyricCanvas = el('canvas', {'aria-label': 'Live lyric preview'});
+    const telemetryLine = el('span', {class: 'metric-value'}, '48 px');
+    model.lyricPreview = new LyricPreviewCanvas(lyricCanvas, layout => {
+        telemetryLine.textContent = `${Math.round(layout.fontSize)} px \u00b7 ${layout.lines.length} ${layout.lines.length === 1 ? 'line' : 'lines'} \u00b7 ${layout.boxW}\u00d7${layout.boxH} px`;
     });
 
     const sampleInput = el('input', {
+        id: 'sample-input',
         type: 'text',
         class: 'sample-input',
-        value: model.customSample,
-        placeholder: 'Type sample lyric to test...',
-        'aria-label': 'Sample lyric text',
+        placeholder: 'Auto (live song line or default)',
+        'aria-label': 'Preview lyric text',
     });
-    let previewTextTimer = 0;
-    const syncDesktopPreviewText = text => {
-        clearTimeout(previewTextTimer);
-        previewTextTimer = setTimeout(() => {
-            if (model.values && model.values['overlay-preview-text'] !== text)
-                set('overlay-preview-text', text.slice(0, 200));
-        }, 250);
-    };
-    sampleInput.addEventListener('input', () => {
-        model.sampleMode = 'custom';
-        model.customSample = sampleInput.value;
-        updateSamples();
+    const clearSampleBtn = pressButton('Auto', () => {
+        model.customSample = '';
+        sampleInput.value = '';
+        clearSampleBtn.hidden = true;
         render();
-        syncDesktopPreviewText(sampleInput.value);
+    }, {class: 'compact', hidden: 'hidden'});
+    sampleInput.addEventListener('input', () => {
+        model.customSample = sampleInput.value;
+        clearSampleBtn.hidden = !model.customSample.trim();
+        render();
     });
-    const sampleButtons = SAMPLE_LINES.map(item => {
-        const btn = pressButton(item.label, () => {
-            model.sampleMode = item.id;
-            if (item.text !== null) {
-                model.customSample = item.text;
-                sampleInput.value = item.text;
-                syncDesktopPreviewText(item.text);
-            }
-            updateSamples();
-            render();
-        }, {class: 'compact'});
-        btn.dataset.sample = item.id;
-        return btn;
-    });
-    const updateSamples = () => {
-        for (const btn of sampleButtons)
-            btn.setAttribute('aria-pressed', String(btn.dataset.sample === model.sampleMode));
-    };
-    updateSamples();
 
-    const previewPane = el('div', {class: 'studio-pane'},
-        el('div', {class: 'pane-head'},
-            el('div', {class: 'pane-head-left'}, el('h2', {}, 'Live preview'), drawnMetric, linesMetric),
-            el('div', {class: 'pane-head-right'}, ...sceneButtons)),
-        previewFrame,
-        clampBanner,
-        el('div', {class: 'sample-bar'}, ...sampleButtons, sampleInput),
+    const lyricPane = el('div', {style: {display: 'flex', flexDirection: 'column', gap: '0.75rem'}},
+        el('div', {class: 'stage-canvas-frame'}, lyricCanvas),
+        el('div', {class: 'sample-row'},
+            el('label', {class: 'sample-label', for: 'sample-input'}, 'Sample'),
+            sampleInput,
+            clearSampleBtn),
+        el('div', {class: 'stage-meta'},
+            telemetryLine,
+            el('span', {class: 'hint-line'}, 'Hover lyric on desktop to drag or resize'),
+        ),
     );
 
-    // Right pane: Interactive Screen Placement Map
-    const boxMetric = el('span', {class: 'metric-value'});
-    const monitorPicker = el('div', {class: 'pane-head-right'});
-    const rebuildMonitors = () => {
-        if (model.monitors.length <= 1) {
-            monitorPicker.replaceChildren(el('span', {class: 'pill'}, model.monitors[0].label));
-            return;
-        }
-        const primary = model.monitors.find(m => m.primary) ?? model.monitors[0];
-        const ordered = [primary, ...model.monitors.filter(m => m !== primary)];
-        let secondaryNum = 1;
-        const buttons = ordered.map(m => {
-            const isPrimary = m === primary;
-            const target = isPrimary ? -1 : m.index;
-            const text = isPrimary ? `Primary ${m.width}\u00d7${m.height}` : `Monitor ${++secondaryNum} ${m.width}\u00d7${m.height}`;
-            const btn = pressButton(text, () => set('box-monitor', target), {class: 'compact'});
-            btn.dataset.monitor = String(target);
-            btn.dataset.realIndex = String(m.index);
-            return btn;
-        });
-        monitorPicker.replaceChildren(...buttons);
-        markMonitors();
-    };
-    const markMonitors = () => {
-        const current = model.values?.['box-monitor'] ?? -1;
-        for (const child of monitorPicker.children) {
-            if (child.tagName === 'BUTTON') {
-                const target = Number(child.dataset.monitor);
-                const realIdx = Number(child.dataset.realIndex);
-                const active = target === -1 ? (current < 0 || current === realIdx) : current === target;
-                child.setAttribute('aria-pressed', String(active));
-            }
-        }
-    };
-    rebuildMonitors();
+    // 2. Pitch preview pane (auto-shown when Pitch tab is active)
+    const pitchCanvas = el('canvas', {'aria-label': 'Live pitch panel preview'});
+    model.pitchPreview = new PitchPreviewCanvas(pitchCanvas);
+    const pitchMeta = el('span', {class: 'metric-value'});
+    view(values => {
+        const rangeText = values['pitch-range'] === 'fixed'
+            ? `${noteLabel(values['pitch-range-bottom'], SHARPS)}\u2013${noteLabel(values['pitch-range-top'], SHARPS)}`
+            : `${values['pitch-follow-span']} st follow`;
+        pitchMeta.textContent = `${rangeText} \u00b7 ${Number(values['pitch-window-seconds']).toFixed(1).replace(/\.0$/u, '')} s \u00b7 ${values['pitch-dock']}`;
+    });
+    const pitchPane = el('div', {style: {display: 'flex', flexDirection: 'column', gap: '0.75rem'}, hidden: 'hidden'},
+        el('div', {class: 'pitch-stage-frame'}, pitchCanvas),
+        el('div', {class: 'stage-meta'},
+            pitchMeta,
+            el('span', {class: 'hint-line'}, 'Drag pitch panel edges on desktop to resize or dock'),
+        ),
+    );
 
-    const placementCanvas = el('canvas', {'aria-label': 'Interactive screen placement map'});
-    const placementStage = el('div', {class: 'placement-stage'}, placementCanvas);
+    // 3. Interactive Screen Map pane
+    const mapStage = el('div', {class: 'placement-stage'});
+    const mapCanvas = el('canvas', {'aria-label': 'Interactive screen placement map'});
+    mapStage.append(mapCanvas);
     model.placementMap = new ScreenPlacementMap({
-        stage: placementStage,
-        canvas: placementCanvas,
+        stage: mapStage,
+        canvas: mapCanvas,
         onChange: changes => setMany(changes),
         onHold: (keys, held) => {
-            for (const k of keys) {
-                if (held) model.held.add(k);
-                else model.held.delete(k);
+            for (const key of keys) {
+                if (held) model.held.add(key);
+                else model.held.delete(key);
             }
         },
     });
 
-    const placementPresets = [
-        ...PLACEMENT_PRESETS.map(preset => pressButton(preset.label, () => set('box', {...preset.box}), {class: 'compact'})),
-        pressButton('Reset box', () => post('/api/settings/reset', {keys: ['box', 'box-monitor']}), {class: 'compact'}),
-    ];
-
-    view(values => {
-        const mon = activeMonitor('box-monitor');
-        const pxW = Math.round(values.box.width * mon.width);
-        const pxH = Math.round(values.box.height * mon.height);
-        boxMetric.textContent = `${pxW}\u00d7${pxH} px (${Math.round(values.box.width * 100)}%\u00d7${Math.round(values.box.height * 100)}%)`;
-        markMonitors();
-    });
-
-    const placementPane = el('div', {class: 'studio-pane'},
-        el('div', {class: 'pane-head'},
-            el('div', {class: 'pane-head-left'}, el('h2', {}, 'Screen placement'), boxMetric),
-            monitorPicker),
-        el('div', {class: 'placement-wrap'}, placementStage),
-        el('div', {class: 'preset-strip'}, ...placementPresets),
-    );
-
-    document.getElementById('studio').replaceChildren(previewPane, placementPane);
-
+    const monitorBar = el('div', {class: 'seg compact', hidden: 'hidden'});
+    const rebuildMonitors = () => {
+        monitorBar.hidden = model.monitors.length <= 1;
+        monitorBar.replaceChildren(...model.monitors.map(mon => {
+            const btn = pressButton(mon.label, () => set('box-monitor', mon.primary ? -1 : mon.index));
+            btn.setAttribute('aria-pressed', String(activeMonitor('box-monitor').index === mon.index));
+            return btn;
+        }));
+    };
+    view(rebuildMonitors);
     call('GET', '/api/monitors').then(answer => {
         if (Array.isArray(answer?.monitors) && answer.monitors.length) {
             model.monitors = answer.monitors;
@@ -600,425 +468,274 @@ function buildStudio() {
             render();
         }
     }).catch(() => {});
-}
 
-// ----- Tab 1: Lyric Style
-
-function buildStylePresetsCard() {
-    const tiles = STYLE_PRESETS.map(preset => {
-        const specimenSpan = el('span', {
-            style: {
-                color: preset.preview.color,
-                background: preset.preview.bg,
-                textShadow: preset.preview.border === 'double'
-                    ? '-1px -1px 0 #000, 1px -1px 0 #000, -1px 1px 0 #000, 1px 1px 0 #000, 0 0 5px #fff'
-                    : preset.preview.border === 'single'
-                        ? '-1px -1px 0 #000, 1px -1px 0 #000, -1px 1px 0 #000, 1px 1px 0 #000'
-                        : '0 2px 5px #000',
-            },
-        }, 'Aa Lyrics');
-        const tile = pressButton('', () => setMany(preset.changes), {class: 'preset-tile'});
-        tile.append(el('div', {class: 'preset-specimen'}, specimenSpan), el('span', {class: 'preset-name'}, preset.label));
-        return tile;
+    const mapMetrics = el('span', {class: 'metric-value'});
+    view(values => {
+        const mon = activeMonitor('box-monitor');
+        const pxW = Math.round(values.box.width * mon.width);
+        const pxH = Math.round(values.box.height * mon.height);
+        mapMetrics.textContent = `${pxW}\u00d7${pxH} px (${Math.round(values.box.width * 100)}%\u00d7${Math.round(values.box.height * 100)}%)`;
     });
-    const section = card('Quick style presets', null, el('div', {class: 'style-preset-grid'}, ...tiles));
-    section.classList.add('style-presets-card');
-    return section;
+
+    const snapBar = el('div', {class: 'controls'},
+        el('div', {class: 'seg compact'}, ...PLACEMENT_PRESETS.map(preset =>
+            pressButton(preset.label, () => set('box', {...preset.box})))),
+        pressButton('Reset', () => post('/api/settings/reset', {keys: ['box', 'box-monitor']}), {class: 'compact'}),
+    );
+
+    const mapPane = el('div', {class: 'map-stage-wrap', hidden: 'hidden'},
+        monitorBar,
+        mapStage,
+        el('div', {class: 'stage-meta'}, mapMetrics, el('span', {class: 'hint-line'}, 'Drag box or any edge; hold Shift to disable snap')),
+        snapBar,
+    );
+
+    model.stageSync = () => {
+        const isMap = model.stageMode === 'map';
+        const isPitch = !isMap && model.activeTab === 'pitch';
+        const isLyric = !isMap && !isPitch;
+        previewModeBtn.textContent = model.activeTab === 'pitch' ? 'Pitch preview' : 'Preview';
+        previewModeBtn.setAttribute('aria-pressed', String(!isMap));
+        mapModeBtn.setAttribute('aria-pressed', String(isMap));
+        sceneSeg.hidden = !isLyric;
+        lyricPane.hidden = !isLyric;
+        pitchPane.hidden = !isPitch;
+        mapPane.hidden = !isMap;
+        requestAnimationFrame(() => render());
+    };
+
+    stage.replaceChildren(
+        el('div', {class: 'stage-bar'}, modeSeg, sceneSeg),
+        lyricPane,
+        pitchPane,
+        mapPane,
+    );
+    model.stageSync();
 }
+
+// ----- Tab 1: Lyrics (clean 8-control pro inspector)
 
 function classifyFont(family) {
     const lower = family.toLowerCase();
-    if (/mono|code|consolas|courier|fixed|term|hack|fira code|jetbrains/u.test(lower))
+    if (/mono|code|console|courier|terminal|fixed|hack|fira code|jetbrains|agave|inconsolata/u.test(lower))
         return 'mono';
-    if (/serif|garamond|georgia|times|palatino|cambria|c059|bookman|charter|baskerville|crimson|playfair|merriweather/u.test(lower) && !/sans/u.test(lower))
+    if (/serif|georgia|times|garamond|palatino|baskerville|crimson|playfair|merriweather|lora|eb |book|charter|cambria/u.test(lower) && !/sans/u.test(lower))
         return 'serif';
+    if (/display|script|hand|brush|comic|impact|lobster|pacifico|bebas|anton|bangers|marker|chalk|stencil|black|condensed|poster|retro/u.test(lower))
+        return 'display';
     return 'sans';
 }
 
-function buildFontControl() {
-    const current = el('span', {class: 'font-current-name'});
-    let open = false;
+function fontPickerRow() {
     let families = [];
     let category = 'all';
+    let expanded = false;
 
-    const toggleBtn = pressButton('Browse fonts', () => {
-        open = !open;
-        browser.hidden = !open;
-        toggleBtn.setAttribute('aria-pressed', String(open));
-        if (open)
+    const current = el('span', {class: 'font-current-name'});
+    const toggleBtn = pressButton('Choose font', () => {
+        expanded = !expanded;
+        browser.hidden = !expanded;
+        toggleBtn.setAttribute('aria-pressed', String(expanded));
+        toggleBtn.textContent = expanded ? 'Close list' : 'Choose font';
+        if (expanded)
             search.focus();
     }, {class: 'compact'});
+    const defaultBtn = pressButton('Desktop default', () => set('font-family', ''), {class: 'compact'});
 
-    const quickRow = el('div', {class: 'controls'});
-    const search = el('input', {type: 'search', placeholder: 'Filter fonts by name...', 'aria-label': 'Find a font by name'});
+    const search = el('input', {type: 'search', placeholder: 'Filter fonts...', 'aria-label': 'Filter fonts'});
+    const countPill = el('span', {class: 'pill'}, 'Loading...');
     const list = el('div', {class: 'list fonts', role: 'listbox', 'aria-label': 'Fonts'});
 
-    const catButtons = [['all', 'All'], ['sans', 'Sans'], ['serif', 'Serif'], ['mono', 'Mono']].map(([id, text]) => {
-        const btn = pressButton(text, () => {
+    const catButtons = {};
+    const catSeg = el('div', {class: 'seg compact'}, ...[
+        ['all', 'All'], ['sans', 'Sans'], ['serif', 'Serif'], ['display', 'Display'], ['mono', 'Mono'],
+    ].map(([id, label]) => {
+        const btn = pressButton(label, () => {
             category = id;
-            updateCats();
+            for (const [cid, b] of Object.entries(catButtons))
+                b.setAttribute('aria-pressed', String(cid === id));
             buildList();
-        }, {class: 'compact'});
-        btn.dataset.cat = id;
+        });
+        btn.setAttribute('aria-pressed', String(id === category));
+        catButtons[id] = btn;
         return btn;
-    });
-    const updateCats = () => {
-        for (const btn of catButtons)
-            btn.setAttribute('aria-pressed', String(btn.dataset.cat === category));
-    };
-    updateCats();
-
-    const markSelected = () => {
-        const chosen = model.values['font-family'];
-        for (const button of list.children)
-            button.setAttribute('aria-pressed', String(button.dataset.family === chosen));
-        for (const button of quickRow.children)
-            button.setAttribute('aria-pressed', String(button.dataset.family === chosen));
-    };
-
-    const buildQuick = () => {
-        const installed = new Set(families);
-        const picks = QUICK_FONTS.filter(f => f === '' || installed.has(f)).slice(0, 7);
-        quickRow.replaceChildren(...picks.map(family => {
-            const btn = pressButton(family || 'Desktop font', () => set('font-family', family), {
-                class: 'compact',
-                style: family ? {fontFamily: cssFamily(family)} : {},
-            });
-            btn.dataset.family = family;
-            return btn;
-        }));
-        markSelected();
-    };
+    }));
 
     const buildList = () => {
+        const chosen = model.values['font-family'];
         const query = search.value.trim().toLowerCase();
-        const items = ['', ...families].filter(family => {
-            if (query && !(family || 'desktop font').toLowerCase().includes(query))
+        const filtered = families.filter(family => {
+            if (category !== 'all' && classifyFont(family) !== category)
                 return false;
-            if (category !== 'all' && family && classifyFont(family) !== category)
-                return false;
-            return true;
+            return !query || family.toLowerCase().includes(query);
         });
-        list.replaceChildren(...items.map(family => {
-            const btn = pressButton(family || 'Desktop font', () => set('font-family', family),
-                family ? {style: {fontFamily: cssFamily(family)}} : {});
-            btn.dataset.family = family;
+        const items = [];
+        if ((!query || 'desktop default'.includes(query)) && category === 'all')
+            items.push(['', 'Desktop default']);
+        for (const family of filtered)
+            items.push([family, family]);
+        if (chosen && !families.includes(chosen) && !query)
+            items.push([chosen, `${chosen} (not installed)`]);
+
+        countPill.textContent = `${filtered.length} fonts`;
+        list.replaceChildren(...items.map(([value, label]) => {
+            const btn = pressButton(label, () => set('font-family', value), {
+                style: value ? {fontFamily: `"${value.replaceAll('"', '\\"')}", sans-serif`} : {},
+            });
+            btn.setAttribute('aria-pressed', String(value === chosen));
             return btn;
         }));
-        markSelected();
     };
 
     search.addEventListener('input', buildList);
 
-    const browser = el('div', {class: 'font-browser', hidden: 'hidden'},
-        el('div', {class: 'font-browser-bar'}, search, ...catButtons),
-        list);
-
     view(values => {
-        const family = values['font-family'];
-        current.textContent = family || 'Desktop font';
-        current.style.fontFamily = family ? cssFamily(family) : '';
+        const fam = values['font-family'];
+        current.textContent = fam || 'Desktop default';
+        current.style.fontFamily = fam ? `"${fam.replaceAll('"', '\\"')}", system-ui, sans-serif` : 'system-ui, sans-serif';
+        current.style.fontWeight = values['font-bold'] ? '700' : '400';
         current.style.fontStyle = values['font-italic'] ? 'italic' : 'normal';
-        current.style.fontWeight = String(values['font-weight'] >= 100 ? values['font-weight'] : (values['font-bold'] ? 700 : 400));
-        markSelected();
+        defaultBtn.hidden = !fam;
+        buildList();
     });
 
     call('GET', '/api/fonts').then(answer => {
-        families = answer.families;
-        toggleBtn.textContent = `Browse all (${families.length})`;
-        buildQuick();
+        families = answer.families ?? [];
         buildList();
     }, error => showBanner(`Could not list the fonts: ${error.message}`));
 
-    return [
-        row('Font', el('div', {class: 'font-summary-row'}, current, toggleBtn)),
-        el('div', {class: 'row'}, el('span', {class: 'label'}, 'Quick fonts'), quickRow),
+    const browser = el('div', {class: 'font-browser', hidden: 'hidden'},
+        el('div', {class: 'font-browser-bar'}, search, catSeg, countPill),
+        list,
+    );
+
+    return row('Font',
+        el('div', {class: 'font-summary-row'}, current, toggleBtn, defaultBtn),
         browser,
-    ];
+    );
 }
 
-function buildWeightRow() {
-    const buttons = WEIGHT_CHOICES.map(([weight, label]) => {
-        const btn = pressButton(label, () => setMany({'font-weight': weight, 'font-bold': weight >= 600}), {
-            class: 'compact',
-            style: {fontWeight: String(weight)},
+function textColorRow() {
+    const swatches = Object.entries(TEXT_COLORS).map(([name, rgb]) => {
+        const hex = hexColor(rgb);
+        const label = name[0].toUpperCase() + name.slice(1);
+        const btn = pressButton('', () => setMany({'text-color': name, 'text-custom-color': ''}), {
+            class: 'dot-swatch',
+            title: label,
+            'aria-label': label,
+            style: {background: hex},
         });
-        view(values => {
-            const active = values['font-weight'] >= 100 ? values['font-weight'] : (values['font-bold'] ? 700 : 400);
-            btn.setAttribute('aria-pressed', String(active === weight));
-        });
+        view(values => btn.setAttribute('aria-pressed', String(!values['text-custom-color'] && values['text-color'] === name)));
         return btn;
     });
-    return row('Weight', ...buttons);
-}
 
-function buildTextColorRow() {
-    const buttons = model.schema['text-color'].choices.map(name => {
-        const label = `${name[0].toUpperCase()}${name.slice(1)}`;
-        const button = pressButton('', () => setMany({'text-color': name, 'text-custom-color': ''}), {class: 'swatch'});
-        button.append(el('span', {class: 'chip', style: {background: hexColor(TEXT_COLORS[name])}}), label);
-        view(values => button.setAttribute('aria-pressed', String(!values['text-custom-color'] && values['text-color'] === name)));
-        return button;
-    });
-    const customInput = el('input', {type: 'color', 'aria-label': 'Custom text color'});
+    const picker = el('input', {type: 'color', 'aria-label': 'Custom text color'});
     const hexOut = el('span', {class: 'hex-readout'});
-    customInput.addEventListener('input', () => {
-        const hex = customInput.value.toLowerCase();
+    picker.addEventListener('input', () => {
+        const hex = picker.value.toLowerCase();
         const rgb = parseHexColor(hex);
-        const nearest = rgb ? nearestNamedColor(rgb) : model.values['text-color'];
-        setMany({'text-custom-color': hex, 'text-color': nearest});
+        const named = rgb ? nearestNamedColor(rgb) : model.values['text-color'];
+        setMany({'text-color': named, 'text-custom-color': hex});
     });
+
     view(values => {
         const rgb = resolveTextColor(values['text-color'], values['text-custom-color'] ?? '');
         const hex = hexColor(rgb);
-        customInput.value = hex;
-        hexOut.textContent = values['text-custom-color'] ? hex.toUpperCase() : 'Custom';
+        picker.value = hex;
+        hexOut.textContent = hex.toUpperCase();
     });
-    return row('Text color', ...buttons, el('span', {class: 'color-custom-wrap'}, customInput, hexOut));
+
+    return row('Color', el('div', {class: 'swatch-strip'},
+        ...swatches,
+        el('span', {class: 'color-custom-wrap'}, picker, hexOut),
+    ));
 }
 
-function buildBorderColorRow() {
-    const autoBtn = pressButton('Auto contrast', () => set('text-border-color-mode', 'auto'));
-    const customBtn = pressButton('Custom', () => set('text-border-color-mode', 'custom'));
-    const picker = el('input', {type: 'color', 'aria-label': 'Custom border color'});
-    const hexOut = el('span', {class: 'hex-readout'});
-    picker.addEventListener('input', () => setMany({'text-border-color-mode': 'custom', 'text-border-color': picker.value.toLowerCase()}));
-    const pickerWrap = el('span', {class: 'color-custom-wrap'}, picker, hexOut);
-    view(values => {
-        const custom = values['text-border-color-mode'] === 'custom';
-        autoBtn.setAttribute('aria-pressed', String(!custom));
-        customBtn.setAttribute('aria-pressed', String(custom));
-        picker.value = values['text-border-color'].toLowerCase();
-        hexOut.textContent = values['text-border-color'].toUpperCase();
-        pickerWrap.hidden = !custom;
-    });
-    return whenVisible(row('Border color', autoBtn, customBtn, pickerWrap), values => values['text-border'] !== 'none');
-}
-
-function buildBackdropColorRow() {
+function backdropColorRow() {
     const swatches = BACKDROP_SWATCHES.map(([hex, label]) => {
-        const btn = pressButton('', () => set('text-backdrop-color', hex), {class: 'swatch'});
-        btn.append(el('span', {class: 'chip', style: {background: hex}}), label);
-        view(values => btn.setAttribute('aria-pressed', String(values['text-backdrop-color'].toLowerCase() === hex)));
+        const btn = pressButton('', () => set('text-backdrop-color', hex), {
+            class: 'dot-swatch',
+            title: label,
+            'aria-label': `Backdrop ${label}`,
+            style: {background: hex},
+        });
+        view(values => btn.setAttribute('aria-pressed', String((values['text-backdrop-color'] ?? '#000000').toLowerCase() === hex)));
         return btn;
     });
     const picker = el('input', {type: 'color', 'aria-label': 'Custom backdrop color'});
+    const hexOut = el('span', {class: 'hex-readout'});
     picker.addEventListener('input', () => set('text-backdrop-color', picker.value.toLowerCase()));
     view(values => {
-        picker.value = values['text-backdrop-color'].toLowerCase();
+        const hex = (values['text-backdrop-color'] ?? '#000000').toLowerCase();
+        picker.value = hex;
+        hexOut.textContent = hex.toUpperCase();
     });
-    return whenVisible(row('Backdrop color', ...swatches, picker), values => values['text-backdrop'] !== 'none');
+    return whenVisible(
+        row('Backdrop color', el('div', {class: 'swatch-strip'},
+            ...swatches,
+            el('span', {class: 'color-custom-wrap'}, picker, hexOut),
+        )),
+        v => v['text-backdrop'] !== 'none',
+    );
 }
 
-function buildMaxLinesRow() {
-    const options = [[0, 'Auto'], [1, '1 line'], [2, '2 lines'], [3, '3 lines'], [4, '4 lines']];
-    const buttons = options.map(([count, label]) => {
-        const btn = pressButton(label, () => set('text-max-lines', count));
-        view(values => btn.setAttribute('aria-pressed', String(values['text-max-lines'] === count)));
-        return btn;
+function buildLyricsTab() {
+    const boldBtn = pressButton('Bold', () => set('font-bold', !model.values['font-bold']));
+    const italicBtn = pressButton('Italic', () => set('font-italic', !model.values['font-italic']));
+    view(v => {
+        boldBtn.setAttribute('aria-pressed', String(v['font-bold']));
+        italicBtn.setAttribute('aria-pressed', String(v['font-italic']));
     });
-    return row('Max lines', ...buttons);
-}
 
-function buildLyricStyleTab() {
-    const fontSizeSlider = whenVisible(
-        sliderRow('font-size', 'Target size', {
-            ticks: [16, 24, 32, 48, 64, 96, 128, 256],
-            format: unit('px'),
-            log: true,
-        }),
-        values => values['text-fit-mode'] !== 'fill',
-    );
-    const fillHint = whenVisible(
-        row('Text size', el('span', {class: 'note'}, 'Auto-fills the box up to 256 px. Resize the box to scale text.')),
-        values => values['text-fit-mode'] === 'fill',
+    const typography = section('Typography', null,
+        fontPickerRow(),
+        sliderRow('font-size', 'Size', {ticks: [16, 28, 48, 84, 144, 256], format: unit('px'), log: true}),
+        row('Style', el('div', {class: 'seg'}, boldBtn, italicBtn)),
     );
 
-    const typographyCard = card('Typography', null,
-        ...buildFontControl(),
-        buildWeightRow(),
-        row('Style',
-            (() => {
-                const btn = pressButton('Italic', () => set('font-italic', !model.values['font-italic']));
-                view(v => btn.setAttribute('aria-pressed', String(v['font-italic'])));
-                return btn;
-            })(),
-            (() => {
-                const btn = pressButton('UPPERCASE', () => set('text-uppercase', !model.values['text-uppercase']));
-                view(v => btn.setAttribute('aria-pressed', String(v['text-uppercase'])));
-                return btn;
-            })()),
-        sliderRow('text-letter-spacing', 'Letter spacing', {
-            ticks: [-2, 0, 2, 4, 8, 12],
-            format: (v, s) => s ? `${v}` : `${v > 0 ? '+' : ''}${v.toFixed(1)} px`,
-            stepBy: 0.5,
-        }),
-    );
-
-    const sizingCard = card('Size, fit & alignment', null,
-        choiceRow('text-fit-mode', 'Sizing mode', {shrink: 'Target size (shrink if long)', fill: 'Fill the box'}),
-        fontSizeSlider,
-        fillHint,
-        buildMaxLinesRow(),
-        choiceRow('text-align', 'Horizontal', {left: 'Left', center: 'Center', right: 'Right'}),
-        choiceRow('text-valign', 'Vertical', {top: 'Top', center: 'Middle', bottom: 'Bottom'}),
-        choiceRow('transition', 'Transition', {
-            'instant': 'Instant',
-            'fade-in': 'Fade 0.15 s',
-            'crossfade-quick': 'Quick 0.12 s',
-            'crossfade-soft': 'Soft 0.25 s',
-        }),
-    );
-
-    const colorCard = card('Color, outline & shadow', null,
-        buildTextColorRow(),
-        sliderRow('text-opacity', 'Text opacity', {ticks: [0.2, 0.4, 0.6, 0.8, 1], format: percent, stepBy: 0.05}),
-        choiceRow('text-border', 'Border', {none: 'None', single: 'Single', double: 'Double'}),
-        whenVisible(sliderRow('text-border-scale', 'Border thickness', {
-            ticks: [0.25, 0.5, 1, 2, 4],
-            format: (value, short) => `${short ? value : value.toFixed(2)}\u00d7`,
-            log: true,
-        }), values => values['text-border'] !== 'none'),
-        buildBorderColorRow(),
-        sliderRow('text-shadow', 'Drop shadow', {ticks: [0, 0.25, 0.5, 0.75, 1], format: percent, stepBy: 0.05}),
-    );
-
-    const backdropCard = card('Backdrop plate', null,
-        choiceRow('text-backdrop', 'Style', {none: 'None', pill: 'Text pill', box: 'Full box'}),
-        buildBackdropColorRow(),
-        whenVisible(sliderRow('text-backdrop-opacity', 'Opacity', {
+    const appearance = section('Appearance', null,
+        textColorRow(),
+        segmentedRow('text-border', 'Border', {double: 'Double', glow: 'Glow', single: 'Single', none: 'None'}),
+        segmentedRow('text-backdrop', 'Backdrop', {none: 'None', pill: 'Behind text', box: 'Full bar'}),
+        backdropColorRow(),
+        whenVisible(sliderRow('text-backdrop-opacity', 'Backdrop opacity', {
             ticks: [0, 0.25, 0.5, 0.75, 1], format: percent, stepBy: 0.05,
-        }), values => values['text-backdrop'] !== 'none'),
-        whenVisible(sliderRow('text-backdrop-radius', 'Corner radius', {
-            ticks: [0, 8, 16, 24, 32, 40], format: unit('px'), integer: true, stepBy: 2,
-        }), values => values['text-backdrop'] !== 'none'),
-        whenVisible(sliderRow('text-backdrop-padding', 'Padding', {
-            ticks: [4, 12, 20, 32, 48], format: unit('px'), integer: true, stepBy: 2,
-        }), values => values['text-backdrop'] !== 'none'),
+        }), v => v['text-backdrop'] !== 'none'),
     );
 
-    return el('div', {class: 'tab-panel'}, buildStylePresetsCard(), typographyCard, sizingCard, colorCard, backdropCard);
+    const layoutMotion = section('Layout & motion', null,
+        segmentedRow('text-align', 'Alignment', {left: 'Left', center: 'Center', right: 'Right'}),
+        segmentedRow('transition', 'Transition', {'fade-in': 'Fade (0.15 s)', instant: 'Instant'}),
+    );
+
+    return el('div', {class: 'panel'}, typography, appearance, layoutMotion);
 }
 
-// ----- Tab 2: Box & Position
-
-function boxSlidersFor(key, monitorKey, title) {
-    const posX = v => {
-        const b = v[key];
-        const span = Math.max(0.0001, 1 - b.width);
-        return Math.min(1, Math.max(0, (b.cx - b.width / 2) / span));
-    };
-    const posY = v => {
-        const b = v[key];
-        const span = Math.max(0.0001, 1 - b.height);
-        return Math.min(1, Math.max(0, (b.cy - b.height / 2) / span));
-    };
-    const setPos = (axis, frac) => {
-        const b = model.values[key];
-        if (axis === 'x')
-            set(key, clampGeometry({...b, cx: b.width / 2 + frac * (1 - b.width)}));
-        else
-            set(key, clampGeometry({...b, cy: b.height / 2 + frac * (1 - b.height)}));
-    };
-    const setSize = (axis, frac) => {
-        const b = model.values[key];
-        if (axis === 'w')
-            set(key, clampGeometry({...b, width: Math.min(1, Math.max(MIN_GEOMETRY_WIDTH, frac))}));
-        else
-            set(key, clampGeometry({...b, height: Math.min(1, Math.max(MIN_GEOMETRY_HEIGHT, frac))}));
-    };
-
-    const pxFormat = (axis, short) => (value, isTick) => {
-        if (isTick)
-            return `${Math.round(value * 100)}`;
-        const mon = activeMonitor(monitorKey);
-        const px = Math.round(value * (axis === 'w' ? mon.width : mon.height));
-        return `${Math.round(value * 100)}% (${px} px)`;
-    };
-
-    const posFormat = axis => (value, isTick) => {
-        if (isTick)
-            return `${Math.round(value * 100)}`;
-        const mon = activeMonitor(monitorKey);
-        const b = model.values[key];
-        const px = axis === 'x'
-            ? Math.round((b.cx - b.width / 2) * mon.width)
-            : Math.round((b.cy - b.height / 2) * mon.height);
-        return `${Math.round(value * 100)}% (${axis.toUpperCase()} ${px} px)`;
-    };
-
-    const actions = [
-        pressButton('Center X', () => set(key, clampGeometry({...model.values[key], cx: 0.5})), {class: 'compact'}),
-        pressButton('Center Y', () => set(key, clampGeometry({...model.values[key], cy: 0.5})), {class: 'compact'}),
-        ...(key === 'box' ? [pressButton('Fit height to text', fitBoxHeightToText, {class: 'compact action-accent'})] : []),
-        pressButton('Reset', () => post('/api/settings/reset', {keys: [key, monitorKey]}), {class: 'compact'}),
-    ];
-
-    return card(title, null,
-        virtualSliderRow(key, 'Horizontal position', {
-            min: 0, max: 1, ticks: [0, 0.25, 0.5, 0.75, 1],
-            format: posFormat('x'),
-            get: posX, setValue: v => setPos('x', v), stepBy: 0.02,
-        }),
-        virtualSliderRow(key, 'Vertical position', {
-            min: 0, max: 1, ticks: [0, 0.25, 0.5, 0.75, 1],
-            format: posFormat('y'),
-            get: posY, setValue: v => setPos('y', v), stepBy: 0.02,
-        }),
-        virtualSliderRow(key, 'Width', {
-            min: 0.05, max: 1, ticks: [0.05, 0.25, 0.5, 0.75, 1],
-            format: pxFormat('w'),
-            get: v => v[key].width, setValue: v => setSize('w', v), stepBy: 0.02,
-        }),
-        virtualSliderRow(key, 'Height', {
-            min: 0.02, max: 1, ticks: [0.02, 0.25, 0.5, 0.75, 1],
-            format: pxFormat('h'),
-            get: v => v[key].height, setValue: v => setSize('h', v), stepBy: 0.01,
-        }),
-        row('Quick actions', ...actions),
-    );
-}
-
-function buildLayoutTab() {
-    const adjustCard = card('Interactive desktop adjust & mouse controls', null,
-        switchRow('overlay-adjust-mode', 'Adjust box on desktop'),
-        row('About adjust mode', el('span', {class: 'note'},
-            'Shows the lyric box on your desktop with 8 edge/corner resize handles, magnetic center snap, scroll-to-size, and a sample line even when no song plays.')),
-        el('table', {class: 'help-table'},
-            el('tbody', {},
-                el('tr', {}, el('th', {}, el('kbd', {}, 'Adjust mode')), el('td', {}, 'Drag anywhere to move; drag any of 8 edges or corners to resize; scroll for text size; Shift disables snap; Esc finishes.')),
-                el('tr', {}, el('th', {}, el('kbd', {}, 'Ctrl'), ' + drag lyric'), el('td', {}, 'Move the lyric box anytime during playback.')),
-                el('tr', {}, el('th', {}, el('kbd', {}, 'Alt'), ' + drag lyric'), el('td', {}, 'Resize the lyric box freely about its center anytime.')),
-                el('tr', {}, el('th', {}, el('kbd', {}, 'Ctrl'), ' + scroll lyric'), el('td', {}, 'Scale text size up or down smoothly.')),
-                el('tr', {}, el('th', {}, 'Click lyric'), el('td', {}, 'Jump to the playing YouTube tab and raise Firefox.')),
-                el('tr', {}, el('th', {}, 'Right-click'), el('td', {}, 'Open this settings page from the lyric, pitch panel or tray icon.')),
-                el('tr', {}, el('th', {}, 'Click tray icon'), el('td', {}, 'Toggle the lyrics overlay on or off.')),
-                el('tr', {}, el('th', {}, 'Drag pitch panel'), el('td', {}, 'Drag edges to resize; drag body near the lyric to dock, or pull away to separate.')),
-            ),
-        ),
-    );
-    const pitchBoxCard = whenVisible(
-        boxSlidersFor('pitch-box', 'pitch-box-monitor', 'Separate pitch panel geometry'),
-        v => v['pitch-enabled'] && v['pitch-dock'] === 'separate',
-    );
-    return el('div', {class: 'tab-panel'}, boxSlidersFor('box', 'box-monitor', 'Lyric box geometry'), adjustCard, pitchBoxCard);
-}
-
-// ----- Tab 3: Pitch Panel
+// ----- Tab 2: Pitch
 
 function lineColorRow() {
-    const buttons = LINE_COLORS.map(([hex, label]) => {
-        const button = pressButton('', () => set('pitch-line-color', hex), {class: 'swatch'});
-        button.append(el('span', {class: 'chip', style: {background: hex}}), label);
-        view(values => button.setAttribute('aria-pressed', String(values['pitch-line-color'].toLowerCase() === hex)));
-        return button;
+    const swatches = LINE_COLORS.map(([hex, label]) => {
+        const btn = pressButton('', () => set('pitch-line-color', hex), {
+            class: 'dot-swatch',
+            title: label,
+            'aria-label': `Line color ${label}`,
+            style: {background: hex},
+        });
+        view(values => btn.setAttribute('aria-pressed', String(values['pitch-line-color'].toLowerCase() === hex)));
+        return btn;
     });
-    const custom = el('input', {type: 'color', 'aria-label': 'Any color'});
+    const custom = el('input', {type: 'color', 'aria-label': 'Custom pitch line color'});
+    const hexOut = el('span', {class: 'hex-readout'});
     custom.addEventListener('input', () => set('pitch-line-color', custom.value));
     view(values => {
-        custom.value = values['pitch-line-color'].toLowerCase();
+        const hex = values['pitch-line-color'].toLowerCase();
+        custom.value = hex;
+        hexOut.textContent = hex.toUpperCase();
     });
-    return row('Line color', ...buttons, custom);
+    return row('Line color', el('div', {class: 'swatch-strip'},
+        ...swatches,
+        el('span', {class: 'color-custom-wrap'}, custom, hexOut),
+    ));
 }
 
 function noteRow(key, label) {
@@ -1052,7 +769,7 @@ function rootRow() {
         });
         return button;
     });
-    return whenVisible(row('Scale root', ...buttons), values => values['pitch-scale'] === 'fixed');
+    return whenVisible(row('Scale root', el('div', {class: 'seg compact'}, ...buttons)), values => values['pitch-scale'] === 'fixed');
 }
 
 function microphoneRows() {
@@ -1082,23 +799,8 @@ function microphoneRows() {
 }
 
 function buildPitchTab() {
-    const pitchCanvas = el('canvas', {'aria-label': 'Live pitch panel preview'});
-    model.pitchPreview = new PitchPreviewCanvas(pitchCanvas);
-    const previewCard = card('Pitch panel preview',
-        (() => {
-            const btn = pressButton('', () => set('pitch-enabled', !model.values['pitch-enabled']), {class: 'switch'});
-            view(v => {
-                btn.setAttribute('aria-pressed', String(v['pitch-enabled']));
-                btn.textContent = v['pitch-enabled'] ? 'Pitch: On' : 'Pitch: Off';
-            });
-            return btn;
-        })(),
-        el('div', {class: 'pitch-preview-frame'}, pitchCanvas),
-    );
-    previewCard.classList.add('full-span');
-
-    const placementCard = card('Placement & size', null,
-        choiceRow('pitch-dock', 'Placement', {below: 'Below', above: 'Above', left: 'Left', right: 'Right', separate: 'Separate'}),
+    const placement = section('Placement', null,
+        segmentedRow('pitch-dock', 'Dock', {below: 'Below', above: 'Above', left: 'Left', right: 'Right', separate: 'Separate'}),
         whenVisible(sliderRow('pitch-docked-height', 'Docked height', {
             ticks: [0.03, 0.15, 0.3, 0.45, 0.6], format: percent, stepBy: 0.02,
         }), v => v['pitch-dock'] === 'below' || v['pitch-dock'] === 'above'),
@@ -1106,13 +808,13 @@ function buildPitchTab() {
             ticks: [0.05, 0.18, 0.32, 0.46, 0.6], format: percent, stepBy: 0.02,
         }), v => v['pitch-dock'] === 'left' || v['pitch-dock'] === 'right'),
         whenVisible(row('Separate box',
-            el('span', {class: 'note'}, 'Drag and resize directly on the Screen placement map above.'),
-            pressButton('Reset position and size', () => post('/api/settings/reset', {keys: ['pitch-box', 'pitch-box-monitor']}), {class: 'compact'}),
+            el('span', {class: 'note'}, 'Switch the stage to Screen map to place it.'),
+            pressButton('Reset box', () => post('/api/settings/reset', {keys: ['pitch-box', 'pitch-box-monitor']}), {class: 'compact'}),
         ), v => v['pitch-dock'] === 'separate'),
     );
 
-    const rangeCard = card('Note range & timing', null,
-        choiceRow('pitch-range', 'Notes shown', {fixed: 'Fixed range', follow: 'Follow my voice'}),
+    const range = section('Note range & timing', null,
+        segmentedRow('pitch-range', 'Notes shown', {fixed: 'Fixed range', follow: 'Follow voice'}),
         whenVisible(noteRow('pitch-range-top', 'Highest note'), v => v['pitch-range'] === 'fixed'),
         whenVisible(noteRow('pitch-range-bottom', 'Lowest note'), v => v['pitch-range'] === 'fixed'),
         whenVisible(row('Auto-fit', pressButton('Fit to my last 30 s of singing', () => post('/api/pitch/fit', {}))), v => v['pitch-range'] === 'fixed'),
@@ -1120,41 +822,41 @@ function buildPitchTab() {
             ticks: [6, 12, 18, 24, 36], format: unit('semitones'), integer: true, stepBy: 1,
         }), v => v['pitch-range'] === 'follow'),
         sliderRow('pitch-window-seconds', 'Time across', {ticks: [2, 5, 10, 20, 45, 120], format: unit('s', 1), log: true}),
-        switchRow('pitch-time-in-silence', 'Scroll through silences'),
-        sliderRow('pitch-rate', 'Analyses per second', {ticks: [10, 25, 50, 75, 100], format: unit('per s'), integer: true, stepBy: 5}),
+        switchRow('pitch-time-in-silence', 'Scroll in silence'),
+        sliderRow('pitch-rate', 'Analyses per s', {ticks: [10, 25, 50, 75, 100], format: unit('per s'), integer: true, stepBy: 5}),
     );
 
     const scaleTypes = Object.fromEntries(Object.entries(SCALES).map(([type, scale]) => [type, scale.name[0].toUpperCase() + scale.name.slice(1)]));
-    const lookCard = card('Trace, grid & readout', null,
+    const trace = section('Trace & readout', null,
         sliderRow('pitch-line-width', 'Line thickness', {ticks: [0.5, 1, 2, 4, 8, 12], format: unit('px', 1), log: true}),
         lineColorRow(),
         sliderRow('pitch-background-opacity', 'Background', {ticks: [0, 0.25, 0.5, 0.75, 1], format: percent, stepBy: 0.05}),
-        choiceRow('pitch-labels', 'Note names', {all: 'Every line', scale: 'Scale notes', c: 'C only', none: 'None'}),
+        segmentedRow('pitch-labels', 'Note names', {all: 'All', scale: 'Scale', c: 'C only', none: 'None'}),
         whenVisible(sliderRow('pitch-label-size', 'Note name size', {
             ticks: [8, 12, 16, 24, 32], format: unit('px'), stepBy: 1,
         }), v => v['pitch-labels'] !== 'none'),
-        choiceRow('pitch-readout', 'Current note', {
-            'right': 'Right col', 'left': 'Left col', 'top-right': 'Top right',
-            'top-left': 'Top left', 'bottom-right': 'Bottom right', 'bottom-left': 'Bottom left', 'off': 'Hidden',
+        segmentedRow('pitch-readout', 'Current note', {
+            'right': 'Right', 'left': 'Left', 'top-right': 'Top R',
+            'top-left': 'Top L', 'bottom-right': 'Bot R', 'bottom-left': 'Bot L', 'off': 'Off',
         }),
-        whenVisible(sliderRow('pitch-readout-size', 'Note readout size', {
+        whenVisible(sliderRow('pitch-readout-size', 'Readout size', {
             ticks: [0.15, 0.35, 0.55, 0.75, 1], format: percent, stepBy: 0.05,
         }), v => v['pitch-readout'] !== 'off'),
         whenVisible(switchRow('pitch-readout-cents', 'Show cents'), v => v['pitch-readout'] !== 'off'),
     );
 
-    const scaleMicCard = card('Scale & microphone', null,
-        choiceRow('pitch-scale', 'Scale', {detect: 'Detect from song', fixed: 'Fixed', none: 'None'}),
+    const scaleMic = section('Scale & microphone', null,
+        segmentedRow('pitch-scale', 'Scale', {detect: 'Detect from song', fixed: 'Fixed', none: 'None'}),
         rootRow(),
-        whenVisible(choiceRow('pitch-scale-type', 'Scale type', scaleTypes), v => v['pitch-scale'] === 'fixed'),
-        whenVisible(switchRow('pitch-show-key', 'Name the scale'), v => v['pitch-scale'] !== 'none'),
+        whenVisible(segmentedRow('pitch-scale-type', 'Scale type', scaleTypes), v => v['pitch-scale'] === 'fixed'),
+        whenVisible(switchRow('pitch-show-key', 'Name scale'), v => v['pitch-scale'] !== 'none'),
         ...microphoneRows(),
     );
 
-    return el('div', {class: 'tab-panel'}, previewCard, placementCard, rangeCard, lookCard, scaleMicCard);
+    return el('div', {class: 'panel'}, placement, range, trace, scaleMic);
 }
 
-// ----- Tab 4: Song & Lyrics
+// ----- Tab 3: Song & Lyrics
 
 function buildSongTab() {
     const playing = el('span', {class: 'value'});
@@ -1221,7 +923,7 @@ function buildSongTab() {
         emptySets.hidden = Boolean(state.candidates.length);
     });
 
-    const songCard = card('Active song & timing', null,
+    const songSection = section('Active song & timing', null,
         row('Playing', playing),
         row('Lyrics', lyrics),
         row('Timing offset', timing, ...timingButtons),
@@ -1230,20 +932,17 @@ function buildSongTab() {
         row('Detected scale', heardKey),
         row('Firefox add-on', addonVersion, install, updateService),
     );
-    songCard.classList.add('full-span');
 
-    const setsCard = card('Lyric sets', setsCount, emptySets, sets);
-    setsCard.classList.add('full-span');
+    const setsSection = section('Lyric sets', setsCount, emptySets, sets);
 
-    return el('div', {class: 'tab-panel single-col'}, songCard, setsCard);
+    return el('div', {class: 'panel'}, songSection, setsSection);
 }
 
 // ----- Tabs & page lifecycle
 
 function buildWorkspace() {
     const panels = {
-        lyric: buildLyricStyleTab(),
-        layout: buildLayoutTab(),
+        lyric: buildLyricsTab(),
         pitch: buildPitchTab(),
         song: buildSongTab(),
     };
@@ -1269,9 +968,7 @@ function buildWorkspace() {
         }
         if (window.location.hash !== `#${id}`)
             history.replaceState(null, '', `#${id}`);
-        // Re-render pitch canvas cleanly once visible
-        if (id === 'pitch' && model.pitchPreview)
-            requestAnimationFrame(() => model.pitchPreview.render(model.values, model.state?.key ?? null));
+        model.stageSync?.();
     };
 
     const nav = document.getElementById('tabs');
@@ -1299,10 +996,8 @@ async function start() {
     const answer = await call('GET', '/api/settings');
     model.schema = answer.schema;
     model.values = answer.values;
-    if (model.values['overlay-preview-text'])
-        model.customSample = model.values['overlay-preview-text'];
     buildTopBar();
-    buildStudio();
+    buildStage();
     buildWorkspace();
     render();
     pollState();

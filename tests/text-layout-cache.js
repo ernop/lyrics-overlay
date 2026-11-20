@@ -14,8 +14,8 @@ const fresh = await import(`file://${dir}/text-layout-fresh.js`);
 const context = PangoCairo.FontMap.get_default().create_context();
 const text = 'Stub words that wrap onto two lines, ïj; with dots';
 const params = width => ({
-    fontSize: 90, family: 'Sans', bold: false, color: 'white', border: 'double', borderScale: 2,
-    align: 'center', width, height: 500,
+    fontSize: 90, family: 'Sans', bold: true, color: 'white', border: 'double',
+    align: 'center', anchor: 'center', width, height: 500,
 });
 
 function paint(module, fitted, name) {

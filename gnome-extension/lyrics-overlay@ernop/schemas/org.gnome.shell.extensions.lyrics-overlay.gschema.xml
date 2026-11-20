@@ -8,7 +8,7 @@
     <key name="font-size" type="d">
       <range min="16" max="256"/>
       <default>48</default>
-      <summary>Lyric text size in pixels; a line too long for the box shrinks to fit</summary>
+      <summary>Constant lyric text size in pixels; long lines wrap naturally without shrinking</summary>
     </key>
     <key name="font-family" type="s">
       <default>''</default>
@@ -17,36 +17,9 @@
     <key name="font-bold" type="b">
       <default>true</default>
     </key>
-    <key name="font-weight" type="i">
-      <range min="0" max="900"/>
-      <default>0</default>
-      <summary>Explicit font weight (100-900); 0 follows font-bold (700 or 400)</summary>
-    </key>
     <key name="font-italic" type="b">
       <default>false</default>
       <summary>Draw the lyric line in italic</summary>
-    </key>
-    <key name="text-uppercase" type="b">
-      <default>false</default>
-      <summary>Draw the lyric line in uppercase letters</summary>
-    </key>
-    <key name="text-letter-spacing" type="d">
-      <range min="-2" max="12"/>
-      <default>0</default>
-      <summary>Extra spacing between letters in pixels</summary>
-    </key>
-    <key name="text-fit-mode" type="s">
-      <choices>
-        <choice value="shrink"/>
-        <choice value="fill"/>
-      </choices>
-      <default>'shrink'</default>
-      <summary>How text scales to the box: draw up to font-size and shrink long lines, or auto-fill the box</summary>
-    </key>
-    <key name="text-max-lines" type="i">
-      <range min="0" max="4"/>
-      <default>0</default>
-      <summary>Maximum wrapped lines inside the box; 0 wraps automatically</summary>
     </key>
     <key name="text-color" type="s">
       <choices>
@@ -69,41 +42,15 @@
       <default>''</default>
       <summary>Custom letter color as #rrggbb; empty uses text-color</summary>
     </key>
-    <key name="text-opacity" type="d">
-      <range min="0.2" max="1"/>
-      <default>1</default>
-      <summary>Opacity of the letters and their border rings</summary>
-    </key>
     <key name="text-border" type="s">
       <choices>
         <choice value="none"/>
         <choice value="single"/>
         <choice value="double"/>
+        <choice value="glow"/>
       </choices>
       <default>'double'</default>
-      <summary>Rings around the letters: black or white, whichever contrasts more with the letter color, then the other</summary>
-    </key>
-    <key name="text-border-scale" type="d">
-      <range min="0.25" max="4"/>
-      <default>1</default>
-      <summary>Ring thickness as a multiple of the standard width for the text size</summary>
-    </key>
-    <key name="text-border-color-mode" type="s">
-      <choices>
-        <choice value="auto"/>
-        <choice value="custom"/>
-      </choices>
-      <default>'auto'</default>
-      <summary>Whether border ring color is automatic WCAG contrast or custom text-border-color</summary>
-    </key>
-    <key name="text-border-color" type="s">
-      <default>'#000000'</default>
-      <summary>Custom inner border ring color as #rrggbb</summary>
-    </key>
-    <key name="text-shadow" type="d">
-      <range min="0" max="1"/>
-      <default>0</default>
-      <summary>Drop shadow strength behind the lyric text</summary>
+      <summary>Proportional contrast border around letters: fused dark body with crisp outer rim (double), feathered outer halo (glow), single outline, or none</summary>
     </key>
     <key name="text-backdrop" type="s">
       <choices>
@@ -112,7 +59,7 @@
         <choice value="box"/>
       </choices>
       <default>'none'</default>
-      <summary>Background plate behind the lyric: none, snug rounded pill around text, or full box</summary>
+      <summary>Background plate behind the lyric: none, snug rounded bar behind text, or full bar</summary>
     </key>
     <key name="text-backdrop-color" type="s">
       <default>'#000000'</default>
@@ -123,16 +70,6 @@
       <default>0.65</default>
       <summary>Backdrop plate opacity</summary>
     </key>
-    <key name="text-backdrop-radius" type="i">
-      <range min="0" max="40"/>
-      <default>12</default>
-      <summary>Backdrop corner radius in pixels</summary>
-    </key>
-    <key name="text-backdrop-padding" type="i">
-      <range min="4" max="48"/>
-      <default>14</default>
-      <summary>Padding around text for the backdrop plate in pixels</summary>
-    </key>
     <key name="text-align" type="s">
       <choices>
         <choice value="center"/>
@@ -142,31 +79,13 @@
       <default>'center'</default>
       <summary>Horizontal alignment of the lyric across its box</summary>
     </key>
-    <key name="text-valign" type="s">
-      <choices>
-        <choice value="top"/>
-        <choice value="center"/>
-        <choice value="bottom"/>
-      </choices>
-      <default>'center'</default>
-      <summary>Vertical alignment of the lyric within its box</summary>
-    </key>
-    <key name="overlay-adjust-mode" type="b">
-      <default>false</default>
-      <summary>Interactive on-screen layout mode: shows box handles, preview text and direct drag/resize</summary>
-    </key>
-    <key name="overlay-preview-text" type="s">
-      <default>''</default>
-      <summary>Sample lyric line shown during adjust mode when no song lyric is active</summary>
-    </key>
     <key name="transition" type="s">
       <choices>
         <choice value="instant"/>
         <choice value="fade-in"/>
-        <choice value="crossfade-quick"/>
-        <choice value="crossfade-soft"/>
       </choices>
       <default>'fade-in'</default>
+      <summary>Line transition: brief 0.15 s fade-in or instant cut</summary>
     </key>
     <key name="pitch-enabled" type="b">
       <default>false</default>

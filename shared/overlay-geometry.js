@@ -1,8 +1,9 @@
-// Overlay box geometry and text fitting, independent of the shell.
-// Boxes are stage pixels {x, y, width, height}; saved geometry is the box
-// center and size as fractions of its monitor's work area, so it survives
-// resolution and scale changes. The pitch panel is a box too: separate,
-// or docked against a side of the lyric box.
+// Overlay box geometry, proportional border specifications, and balanced
+// wrapping, independent of the shell. Boxes are stage pixels
+// {x, y, width, height}; saved geometry is the box center and size as
+// fractions of its monitor's work area, so it survives resolution and scale
+// changes. The pitch panel is a box too: separate, or docked against a side
+// of the lyric box.
 
 export const MIN_BOX_WIDTH = 160;
 export const MIN_BOX_HEIGHT = 48;
@@ -16,12 +17,12 @@ export const FONT_SIZE_MAX = 256;
 
 /** Named placement presets for the lyric box, as monitor work-area fractions. */
 export const PLACEMENT_PRESETS = Object.freeze([
-    Object.freeze({id: 'bottom-center', label: 'Bottom center', box: Object.freeze({cx: 0.5, cy: 0.75, width: 0.6, height: 0.14})}),
-    Object.freeze({id: 'bottom-bar', label: 'Bottom wide', box: Object.freeze({cx: 0.5, cy: 0.9, width: 0.88, height: 0.14})}),
-    Object.freeze({id: 'bottom-right', label: 'Bottom right', box: Object.freeze({cx: 0.76, cy: 0.88, width: 0.44, height: 0.14})}),
-    Object.freeze({id: 'bottom-left', label: 'Bottom left', box: Object.freeze({cx: 0.24, cy: 0.88, width: 0.44, height: 0.14})}),
-    Object.freeze({id: 'top-center', label: 'Top center', box: Object.freeze({cx: 0.5, cy: 0.12, width: 0.64, height: 0.14})}),
-    Object.freeze({id: 'center', label: 'Center', box: Object.freeze({cx: 0.5, cy: 0.5, width: 0.7, height: 0.2})}),
+    Object.freeze({id: 'bottom-center', label: 'Bottom', box: Object.freeze({cx: 0.5, cy: 0.75, width: 0.6, height: 0.14})}),
+    Object.freeze({id: 'bottom-bar', label: 'Wide', box: Object.freeze({cx: 0.5, cy: 0.9, width: 0.88, height: 0.14})}),
+    Object.freeze({id: 'bottom-left', label: 'Lower left', box: Object.freeze({cx: 0.24, cy: 0.88, width: 0.44, height: 0.14})}),
+    Object.freeze({id: 'bottom-right', label: 'Lower right', box: Object.freeze({cx: 0.76, cy: 0.88, width: 0.44, height: 0.14})}),
+    Object.freeze({id: 'center', label: 'Center', box: Object.freeze({cx: 0.5, cy: 0.5, width: 0.7, height: 0.18})}),
+    Object.freeze({id: 'top-center', label: 'Top', box: Object.freeze({cx: 0.5, cy: 0.12, width: 0.64, height: 0.14})}),
 ]);
 
 export function clampFontSize(size) {
@@ -82,23 +83,9 @@ export function movedBox(start, dx, dy, area) {
 }
 
 /**
- * Free resize about the box center: pulling away from the center on
- * either axis grows that axis, pulling toward it shrinks it. Width and
- * height change independently; there is no aspect lock.
- */
-export function resizedBox(start, press, pointer, area) {
-    const centerX = start.x + start.width / 2;
-    const centerY = start.y + start.height / 2;
-    const signX = press.x >= centerX ? 1 : -1;
-    const signY = press.y >= centerY ? 1 : -1;
-    const width = start.width + 2 * signX * (pointer.x - press.x);
-    const height = start.height + 2 * signY * (pointer.y - press.y);
-    return clampBox({x: centerX - width / 2, y: centerY - height / 2, width, height}, area);
-}
-
-/**
- * Resize by dragging edges: the named edges follow the pointer, the
- * opposite ones stay put, within the work area and down to the minimum.
+ * Resize by dragging edges or corners: the named edges follow the pointer,
+ * the opposite ones stay anchored, within the work area and down to the
+ * minimum size.
  * @param {{left?: boolean, right?: boolean, top?: boolean, bottom?: boolean}} edges
  */
 export function edgeResizedBox(start, edges, dx, dy, area) {
@@ -118,6 +105,52 @@ export function edgeResizedBox(start, edges, dx, dy, area) {
         height = clamp(height + dy, MIN_BOX_HEIGHT, area.y + area.height - y);
     }
     return {x, y, width, height};
+}
+
+/**
+ * Automatic vertical anchor for wrapped lyrics: bottom-placed lyrics (or
+ * lyrics with a pitch panel docked below) anchor at the bottom and expand
+ * upward so the reading baseline stays steady and clear of the panel;
+ * top-placed lyrics anchor at the top and expand downward; middle-placed
+ * lyrics stay centered.
+ * @param {number} cy fractional vertical center in [0, 1]
+ * @param {string} [pitchDock]
+ * @param {boolean} [pitchEnabled]
+ * @returns {'top'|'center'|'bottom'}
+ */
+export function verticalAnchorFor(cy, pitchDock = 'below', pitchEnabled = false) {
+    if (pitchEnabled && pitchDock === 'below')
+        return 'bottom';
+    if (pitchEnabled && pitchDock === 'above')
+        return 'top';
+    if (cy >= 0.58)
+        return 'bottom';
+    if (cy <= 0.42)
+        return 'top';
+    return 'center';
+}
+
+/**
+ * Computes the actual surface rectangle for a lyric that wraps naturally at
+ * a constant font size: matches `box` when the lyric fits inside it, and
+ * expands vertically along `anchor` (clamped inside `area`) when multi-line
+ * text needs more room.
+ * @param {{x: number, y: number, width: number, height: number}} box
+ * @param {number} requiredHeight
+ * @param {'top'|'center'|'bottom'} anchor
+ * @param {{x: number, y: number, width: number, height: number}} area
+ */
+export function expandedRenderBox(box, requiredHeight, anchor, area) {
+    const height = clamp(Math.max(box.height, Math.ceil(requiredHeight)), MIN_BOX_HEIGHT, area.height);
+    let y;
+    if (anchor === 'bottom')
+        y = box.y + box.height - height;
+    else if (anchor === 'top')
+        y = box.y;
+    else
+        y = box.y + (box.height - height) / 2;
+    y = clamp(y, area.y, area.y + area.height - height);
+    return {x: box.x, y, width: box.width, height};
 }
 
 /** The docked panel's edge away from the lyric: the one that resizes it. */
@@ -172,25 +205,6 @@ export function snappedDock(panel, lyric, distance) {
     }
     const near = gaps.filter(([, gap]) => gap <= distance).sort((a, b) => a[1] - b[1]);
     return near.length ? near[0][0] : null;
-}
-
-/**
- * Largest size in [minimum, wanted] for which fits(size) holds, to within
- * half a pixel; minimum when nothing fits.
- */
-export function fitFontSize(wanted, minimum, fits) {
-    if (fits(wanted))
-        return wanted;
-    let low = minimum;
-    let high = wanted;
-    while (high - low > 0.5) {
-        const mid = (low + high) / 2;
-        if (fits(mid))
-            low = mid;
-        else
-            high = mid;
-    }
-    return low;
 }
 
 /**
@@ -268,19 +282,41 @@ export function snapBox(box, area, threshold) {
 }
 
 /**
- * Border ring widths in pixels for a border setting at a font size, times
- * the thickness setting (text-border-scale). Shared by GNOME Shell and the
- * settings page's live preview so both paint the exact same border extent.
+ * Proportional border ring geometry and optical fusion parameters at a font
+ * size. Shared by GNOME Shell (Pango/Cairo) and the settings page preview.
+ * - `double`: fused bold dark body (0.112 em, 0.85x word spacing) + crisp
+ *   outer contrast trim (0.036 em) + subtle feathered drop shadow.
+ * - `glow`: fused bold inner body (0.112 em, 0.85x word spacing) + smooth
+ *   feathered outer contrast halo (0.090 em).
+ * - `single`: clean proportional contrast outline (0.085 em).
+ * - `none`: bare letters.
  */
-export function ringWidths(border, fontSize, scale) {
+export function borderSpec(border, fontSize) {
     switch (border) {
     case 'none':
-        return {inner: 0, outer: 0};
+        return {inner: 0, outer: 0, spaceScale: 1, shadow: false, featheredOuter: false, extraPad: 0};
     case 'single':
-        return {inner: Math.max(1.5, fontSize * 0.07) * scale, outer: 0};
-    case 'double':
-        return {inner: Math.max(1.5, fontSize * 0.055) * scale, outer: Math.max(1.5, fontSize * 0.045) * scale};
+        return {inner: Math.max(1.5, fontSize * 0.085), outer: 0, spaceScale: 1, shadow: false, featheredOuter: false, extraPad: 0};
+    case 'double': {
+        const inner = Math.max(2, fontSize * 0.112);
+        const outer = Math.max(1.5, fontSize * 0.036);
+        const shadowSpread = Math.ceil(Math.max(3, fontSize * 0.075) + Math.max(2, fontSize * 0.045)) + 3;
+        return {inner, outer, spaceScale: 0.85, shadow: true, featheredOuter: false, extraPad: shadowSpread};
+    }
+    case 'glow': {
+        const inner = Math.max(2, fontSize * 0.112);
+        const outer = Math.max(2, fontSize * 0.090);
+        return {inner, outer, spaceScale: 0.85, shadow: false, featheredOuter: true, extraPad: Math.ceil(outer * 0.6)};
+    }
     }
     throw new Error(`lyrics-overlay: unknown text border "${border}"`);
 }
 
+/** Automatic em-proportional backdrop padding and corner radius. */
+export function backdropMetrics(fontSize) {
+    return {
+        padX: Math.max(10, Math.round(fontSize * 0.34)),
+        padY: Math.max(6, Math.round(fontSize * 0.20)),
+        radius: Math.max(6, Math.round(fontSize * 0.22)),
+    };
+}

@@ -51,34 +51,38 @@ Firefox tab (YouTube)                         GNOME Shell
   its drags; `pitch-view.js` draws the trace). `extension.js` raises the
   window the add-on names after a click on the lyric (the song's) or a
   right press on the indicator, the lyric or the panel (the settings
-  page's). `text-layout.js` fits the line and paints it: the outer ring,
-  the inner ring, then the letters, each ring as strokes of the letters'
-  outline. Cairo leaves a hole in a stroke wider than a small closed
-  contour (the dot of an i), so each ring is several strokes stepped down
-  in width by less than a dot's diameter, only the widest antialiased
-  (`tests/text-layout-ring.test.mjs`). Fitting and painting run on the
-  Shell's main thread at every resize step, so `text-layout.js` caches the
-  balanced wrap width per text and font size and each wrapped line's two
-  rings as alpha masks; a resize step that keeps the font size costs a few
-  Pango layouts and mask copies (about 7 ms for a three-line lyric at 157
-  px, against 17 to 31 ms when every step stroked the outline), and only
-  layers that show are refitted. A move only repositions the box. Display settings live in its GSettings schema
-  (`org.gnome.shell.extensions.lyrics-overlay`), which the settings page
-  writes through the service.
+  page's). `text-layout.js` lays out the line at the constant chosen
+  `font-size` (wrapping evenly into balanced lines and reporting
+  `requiredHeight` so `overlay.js` expands the render surface vertically
+  along its anchor via `expandedRenderBox` without moving the saved box or
+  docked pitch panel) and paints it: optional backdrop plate, feathered
+  ambient drop shadow (`double`), crisp outer trim (`double`) or feathered
+  outer halo (`glow`), solid inner contrast body, then the letters. For
+  `double` and `glow`, Pango `AttrScale` tightens word-space advances to
+  `0.85x` so words fuse cleanly with organic waists. Cairo leaves a hole in
+  a stroke wider than a small closed contour (the dot of an i, a period, a
+  bold o's counter), so each solid ring is stepped down in width by less
+  than a dot's diameter, only the widest antialiased
+  (`tests/text-layout-ring.test.mjs`). `text-layout.js` caches balanced
+  wrap widths and each wrapped line's A8 border/shadow masks, and
+  `overlay.js` keeps idle pointer input on the painted ink while expanding
+  the grip on hover to reveal 8 standard edge/corner resize handles and
+  drag-to-move. A move only repositions the box. Display settings live in
+  its GSettings schema (`org.gnome.shell.extensions.lyrics-overlay`), which
+  the settings page writes through the service.
 - **Shared modules** (`shared/`): lyric parsing and display timing,
   identity derivation and candidate ranking, the request budget, overlay
   geometry (`overlay-geometry.js`: clamping, placement presets, edge
-  zones, magnetic snapping, ring widths), curated style presets
-  (`style-presets.js`), voice-wei's pitch detector, the key detector
-  (`key-detect.js`), what the pitch panel shows when (`pitch-layout.js`:
-  its clock, which lines carry names, the note the readout holds), scales
-  and note spelling (`scales.js`), the D-Bus interface
-  (`dbus-interface.js`, one definition for service and shell), the lyric
-  status wording (`lyrics-status.js`) and the letter colors with their
-  contrast rings and custom hex parsing (`text-ink.js`). The settings page
-  imports `lyrics-status.js`, `scales.js`, `text-ink.js`,
-  `overlay-geometry.js`, `pitch-layout.js` and `style-presets.js` as the
-  service serves them.
+  zones, magnetic snapping, `verticalAnchorFor`, `expandedRenderBox`,
+  `borderSpec`, `backdropMetrics`), voice-wei's pitch detector, the key
+  detector (`key-detect.js`), what the pitch panel shows when
+  (`pitch-layout.js`: its clock, which lines carry names, the note the
+  readout holds), scales and note spelling (`scales.js`), the D-Bus
+  interface (`dbus-interface.js`, one definition for service and shell),
+  the lyric status wording (`lyrics-status.js`) and the letter colors with
+  automatic WCAG contrast rings and custom hex parsing (`text-ink.js`). The
+  settings page imports `lyrics-status.js`, `scales.js`, `text-ink.js`,
+  `overlay-geometry.js` and `pitch-layout.js` as the service serves them.
   `scripts/install-gnome-extension.sh` copies a listed set of them into the
   installed extension's `shared/`; a shared module the shell imports must
   be added to that list, or the extension fails to load.

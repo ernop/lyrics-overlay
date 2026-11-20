@@ -40,89 +40,83 @@ indicator changes quietly.
 - **Timing nudges.** Too fast / Too slow move the song's lyric clock in
   0.5 s steps (voice-wei's convention: Too fast shows every line later);
   Reset returns to zero. Each video remembers its offset.
-- **Text.** Size adjusts smoothly (16-256 px, a notched slider on the
-  settings page, Ctrl+wheel over the text, or plain wheel in Adjust mode).
-  Fit mode (2026-11-19): "Fit inside box" (default, shrinks below target
-  size when the box is too tight) or "Fill box" (scales text up or down to
-  fill the box); optional maximum line count (auto, 1, 2, 3 or 4). When
-  the box clamps the text size, the settings preview shows the exact drawn
-  vs target pixel size and offers a one-click button to expand the box to
-  fit. Font: the desktop font or any installed family that can write
-  English, each name drawn in its own face, found through an expandable
-  searchable browser with category filters (All / Sans / Serif / Display /
-  Mono) and quick-pick presets; font weight (auto from Bold, or 100-900),
-  italic, all-caps and letter spacing (-2 to 12 px). More fonts (owner,
-  2026-11-10: "many more font options"): `scripts/install-fonts.sh` adds
-  about 160 of Ubuntu's font packages for the user alone (below). Color:
-  11 named presets (white, yellow, orange, red, pink, magenta, purple,
-  blue, cyan, green, black) or any custom `#rrggbb` color, plus text
-  opacity (20%-100%). Border: double (default), single or none; automatic
-  black/white contrast rings or a custom border color, 0.25 to 4 times the
-  standard width for the text size. Each ring is solid around every part
-  of every letter, dots and punctuation included, at every thickness
-  (owner, 2026-11-19: at 4 times, the dots of i and j had rings with the
-  background showing inside). Optional drop shadow (0%-100%) and optional
-  background plate ("None", "Behind text" pill, or "Full box") with
-  configurable color, opacity, corner radius and padding. Alignment: left,
-  centered (default) or right horizontally, and top, center (default) or
-  bottom vertically within the box. One-click style presets apply curated
-  combinations of border, color, backdrop and shadow.
-- **Transitions.** Instant, a short fade-in (default), or a quick or soft
-  crossfade between lines.
+- **Constant text size and balanced wrapping (owner, 2026-11-19).** The
+  chosen `font-size` (16-256 px, set with the notched slider or Ctrl+wheel)
+  never shrinks mid-song for longer lines. Long lines wrap evenly across
+  balanced lines at the exact chosen size, and the overlay expands
+  vertically away from its anchor edge (growing upward when near the bottom
+  of the screen or docked above the pitch panel, downward when near the top
+  or docked below it, symmetrically in the middle), clamped inside the
+  monitor work area while keeping the saved box and any docked pitch panel
+  steady.
+- **Typography and appearance (owner, 2026-11-19).** Eight focused lyric
+  controls live beside the live preview:
+  - **Font**: the desktop font or any installed English-covering family,
+    chosen through an inline expandable searchable list with All / Sans /
+    Serif / Display / Mono filters. More fonts (owner, 2026-11-10: "many
+    more font options"): `scripts/install-fonts.sh` adds about 160 Ubuntu
+    font packages for the user alone (below).
+  - **Size** (`16-256 px`), **Style** (`Bold` on by default, `Italic`).
+  - **Color**: 11 named presets (white, yellow, orange, red, pink, magenta,
+    purple, blue, cyan, green, black) or any custom `#rrggbb` color.
+  - **Border** (`Double` | `Glow` | `Single` | `None`): proportional to the
+    font size, with automatic WCAG black/white contrast colors and no raw
+    thickness multiplier. `Double` (default, Variant C) fuses a bold inner
+    contrast body (`0.112 em`, with `0.85x` word-space scale so adjacent
+    words join cleanly with organic rounded waists) inside a crisp thin
+    outer contrast trim (`0.036 em`) with a subtle feathered ambient drop
+    shadow. `Glow` (Variant E) wraps the same fused inner contrast body
+    (`0.112 em`, `0.85x` word spacing) in a smooth feathered outer contrast
+    halo (`0.090 em`) for clean close-up legibility on busy backgrounds.
+    `Single` draws a clean `0.085 em` contrast outline; `None` draws bare
+    letters. Each ring is solid around every small closed contour (dots of
+    i and j, periods, bold o counters) at every size (owner, 2026-11-19).
+  - **Backdrop**: `None` (default), `Behind text` pill, or `Full bar`, with
+    color and opacity controls shown only when enabled and `em`-proportional
+    padding and corner radius computed automatically.
+  - **Alignment** (`Left`, `Center`, `Right`) and **Transition**
+    (`Fade (0.15 s)` default, or `Instant`).
 - **Instant to drag and resize (owner, 2026-11-19: "super fast,
   draggable, ultra-instant").** A move repaints nothing; a resize or a
   Ctrl+scroll step repaints only the line that shows, from cached wrap
-  widths and border masks, in a few milliseconds at any border thickness.
-- **Interactive box & visual adjustment (owner, 2026-11-19).** Box
-  position and size are editable from both the desktop and the settings
-  page:
-  - **Adjust box on desktop** (`overlay-adjust-mode`): a toggle button in
-    the settings page's top bar forces the overlay visible with live
-    sample text even when no song or timed line is active, shows all 8
-    edge/corner resize handles and a live pixel/percentage dimension HUD,
-    lets the user drag anywhere inside the box to move with magnetic
-    center/edge snapping (hold `Shift` to bypass snap), drag any edge or
-    corner to resize while anchoring the opposite edge, scroll to scale
-    text size without holding `Ctrl`, and press `Escape` to finish.
-  - **Studio settings page**: a two-pane live studio sits above four
-    focused tabs (`Lyric & Style`, `Box & Position`, `Pitch Panel`,
-    `Song & Lyrics`). The left pane is a vertically resizable live lyric
-    canvas over selectable scenes (Video, Dark, Light, Grid) with sample
-    line presets and custom text; the right pane is an interactive monitor
-    placement map drawn to the real monitor aspect ratio with 8-handle
-    lyric resize/drag, magnetic center snapping, placement presets,
-    multi-monitor selection, and pitch panel docking/resizing. Precise
-    pixel/percentage sliders with `-`/`+` steppers live in `Box & Position`.
+  widths and pre-rendered A8 border/shadow masks, in a few milliseconds.
+- **Hover-reveal desktop move & resize (owner, 2026-11-19).** Moving and
+  resizing the lyric works like an ordinary desktop window without taking
+  focus or requiring a separate adjust mode or `Alt+drag`:
+  - Away from the lyric, only the painted text (or backdrop) takes pointer
+    input, so empty space stays click-through.
+  - Hovering the lyric reveals a clean frame with 8 edge/corner resize
+    handles and standard OS resize cursors (`N/S/E/W/NW/NE/SW/SE`).
+  - Dragging any edge or corner resizes while anchoring the opposite edge.
+  - Dragging anywhere inside the frame past the desktop drag threshold
+    moves the box with magnetic center/edge snapping (hold `Shift` to
+    disable snap); pressing `Escape` cancels an active drag.
+  - A quick primary click inside still focuses the YouTube song tab and
+    raises its window; a right-click opens the settings page; `Ctrl+scroll`
+    resizes text. Position and size persist as fractions of the monitor.
 - **Media keys go through Firefox (owner, 2026-11-19).** The keyboard's
   play/pause, next and previous keys reach YouTube through Firefox's own
   desktop media player (MPRIS), which GNOME's media-keys service
   addresses; the overlay adds nothing. Next acts where YouTube offers a
   next video. A service-side player that always targets the song tab was
   offered and is not built.
-- **Pointer rules (2026-11-10; extended 2026-11-19).** During normal
-  playback, on the lyric: a click goes to the song (its Firefox tab is
-  selected and its window raised); a right-click shows the settings page;
-  Ctrl+drag moves the box; Alt+drag resizes it freely about its center
-  (never aspect-locked); Ctrl+wheel sizes the text. A click is never
-  combined with a drag: a plain press that travels past the desktop's drag
-  threshold does nothing on release. Where no lyric is drawn, clicks reach
-  the windows below. In Adjust mode, the full box accepts plain drags,
-  edge/corner resizes and plain wheel resizing until Adjust mode is closed.
-  Position and size persist as fractions of the monitor.
-- **The settings page (owner, 2026-11-10; redesigned 2026-11-19).** Every
-  setting is on one page in Firefox, `http://localhost:8792/settings`: a
-  top command bar (current song, lyric status, Lyrics/Pitch switches,
-  Adjust box on desktop), the live preview and screen placement studio,
-  and four URL-hash tabs (`#lyric`, `#layout`, `#pitch`, `#song`) with
-  contextual controls that hide options when their parent feature is off
-  and a live pitch trace preview in the Pitch tab. A right press on the
-  indicator, the lyric or the pitch panel shows it. Each change applies to
-  the line and the panel as it is made, so the owner adjusts while
-  watching. There is one settings tab: a right press selects the open one
-  and raises its window rather than opening another. The page replaced the
-  right-click menus, whose submenus opened only from a small arrow and
-  were hard to use; the owner asked for a page that works like an ordinary
-  one, in Firefox.
+- **The settings page (owner, 2026-11-10; redesigned 2026-11-19/20).**
+  Every setting is on one full-width two-column page in Firefox,
+  `http://localhost:8792/settings`: a compact top bar (title, active song
+  and status pill, `Lyrics: On/Off`, `Pitch: On/Off`), a sticky left Live
+  Stage (~42%) flipping between `Preview` (live lyric preview over
+  Video/Dark/Light scenes on `Lyrics`/`Song`, live pitch trace preview on
+  `Pitch`) and an interactive `Screen map` (exact monitor aspect ratio,
+  8-handle drag/resize with magnetic snap, multi-monitor picker, placement
+  presets, pitch panel docking/resizing), beside an open borderless right
+  Inspector (~58%) with hairline dividers and three URL-hash tabs
+  (`#lyric`, `#pitch`, `#song`). A right press on the indicator, the lyric
+  or the pitch panel shows it; each change applies live. There is one
+  settings tab: a right press selects the open one and raises its window
+  rather than opening another.
+- **Queued next (owner, 2026-11-19).** Live/automatic lyric timing for
+  songs missing synced lyrics on LRCLIB, with a quiet in-overlay status
+  indicator while timing is generated.
 - **Choosing lyrics.** The settings page lists every candidate set found;
   the owner can pick one, hide a wrong one ("Wrong lyrics: hide this set"),
   search again, or look up lyrics for a video not recognized as music.

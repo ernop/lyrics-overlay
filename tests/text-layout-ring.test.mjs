@@ -1,7 +1,6 @@
 // The lyric's border rings around a small closed contour (a period, the
-// dot of an i) are solid: Cairo's stroker leaves a hole when the stroke is
-// wider than the contour, and the border at four times its thickness was
-// drawn as a ring with the background inside it.
+// dot of an i, the counter of an o) stay solid with no background punch-through,
+// font size never shrinks for long lines, and cached renders match fresh ones.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {execFile} from 'node:child_process';
@@ -14,43 +13,58 @@ import {promisify} from 'node:util';
 const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const run = promisify(execFile);
 
-test('a wide double border around a period is solid inner ring, then solid outer ring', async t => {
-    // text-layout.js imports ./shared/, which the install script copies in.
+test('a proportional double border around a period is solid inner ring, then solid outer trim', async t => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lyrics-ring-'));
     t.after(() => fs.rmSync(dir, {recursive: true, force: true}));
     fs.symlinkSync(path.join(root, 'gnome-extension/lyrics-overlay@ernop/text-layout.js'), path.join(dir, 'text-layout.js'));
     fs.symlinkSync(path.join(root, 'shared'), path.join(dir, 'shared'));
 
-    const {stdout} = await run('gjs', ['-m', path.join(root, 'tests/paint-lyric-ring.js'), dir, path.join(dir, 'ring.png'), '.']);
+    const {stdout} = await run('gjs', ['-m', path.join(root, 'tests/paint-lyric-ring.js'), dir, path.join(dir, 'ring.png'), '.', '220', 'double']);
     const {ring, samples} = JSON.parse(stdout.trim().split('\n').pop());
-    assert.ok(ring.inner > 20 && ring.outer > 20, 'the border is wide next to the period');
+    assert.ok(ring.inner > 20 && ring.outer >= 7, `expected proportional double ring, got ${JSON.stringify(ring)}`);
 
-    // Yellow letters: the inner ring is black, the outer white. One pixel
-    // of antialiasing either side of each boundary is left out.
+    // Yellow letters: the inner ring is black, the outer trim is white.
+    // Leave 2 px tolerance around each antialiased boundary.
     const misses = [];
     for (const {distance, angle, rgb} of samples) {
-        const want = distance < ring.inner - 2 ? 'black' : distance > ring.inner + 2 ? 'white' : null;
+        const want = distance < ring.inner - 2 ? 'black' : distance > ring.inner + 2 && distance < ring.inner + ring.outer - 1.5 ? 'white' : null;
         if (want === null)
             continue;
-        const got = rgb.every(channel => channel < 40) ? 'black' : rgb.every(channel => channel > 215) ? 'white' : 'other';
+        const got = rgb.every(channel => channel < 45) ? 'black' : rgb.every(channel => channel > 205) ? 'white' : 'other';
         if (got !== want)
             misses.push(`${want} wanted ${distance.toFixed(0)} px out at angle ${angle}/32, got rgb(${rgb})`);
     }
     assert.deepEqual(misses, []);
 });
 
-test('a wide border fills the middle of an o with the inner ring', async t => {
-    // The o's counter is a closed contour narrower than the stroke, like
-    // a dot; the owner saw a white hole in it (2026-11-19).
+test('double and glow borders fill the middle of an o with the solid inner body', async t => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lyrics-ring-'));
     t.after(() => fs.rmSync(dir, {recursive: true, force: true}));
     fs.symlinkSync(path.join(root, 'gnome-extension/lyrics-overlay@ernop/text-layout.js'), path.join(dir, 'text-layout.js'));
     fs.symlinkSync(path.join(root, 'shared'), path.join(dir, 'shared'));
-    for (const size of [60, 100, 160]) {
-        const {stdout} = await run('gjs', ['-m', path.join(root, 'tests/paint-lyric-ring.js'), dir, path.join(dir, 'ring.png'), 'o', String(size)]);
-        const {center} = JSON.parse(stdout.trim().split('\n').pop());
-        assert.ok(center.every(channel => channel < 40), `black wanted in the middle of an o at ${size} px, got rgb(${center})`);
+    for (const border of ['double', 'glow']) {
+        for (const size of [60, 100, 160]) {
+            const {stdout} = await run('gjs', ['-m', path.join(root, 'tests/paint-lyric-ring.js'), dir, path.join(dir, 'ring.png'), 'o', String(size), border]);
+            const {center} = JSON.parse(stdout.trim().split('\n').pop());
+            assert.ok(center.every(channel => channel < 40), `black wanted in the middle of an o (${border} at ${size} px), got rgb(${center})`);
+        }
     }
+});
+
+test('font size stays constant on long lines while requiredHeight expands naturally', async t => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lyrics-const-'));
+    t.after(() => fs.rmSync(dir, {recursive: true, force: true}));
+    fs.symlinkSync(path.join(root, 'gnome-extension/lyrics-overlay@ernop/text-layout.js'), path.join(dir, 'text-layout.js'));
+    fs.symlinkSync(path.join(root, 'shared'), path.join(dir, 'shared'));
+
+    const shortRun = await run('gjs', ['-m', path.join(root, 'tests/paint-lyric-ring.js'), dir, path.join(dir, 'short.png'), 'Hello', '64', 'double']);
+    const longRun = await run('gjs', ['-m', path.join(root, 'tests/paint-lyric-ring.js'), dir, path.join(dir, 'long.png'),
+        'This is a much longer lyric line that wraps across multiple lines without shrinking', '64', 'double']);
+    const shortRes = JSON.parse(shortRun.stdout.trim().split('\n').pop());
+    const longRes = JSON.parse(longRun.stdout.trim().split('\n').pop());
+    assert.equal(shortRes.fontSize, 64);
+    assert.equal(longRes.fontSize, 64);
+    assert.ok(longRes.requiredHeight > shortRes.requiredHeight * 1.8, `${longRes.requiredHeight} should exceed ${shortRes.requiredHeight}`);
 });
 
 test('a fit and a paint served from the caches match a fresh module with empty caches', async t => {

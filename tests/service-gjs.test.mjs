@@ -183,7 +183,7 @@ test('the gjs service looks up lyrics, serves state and accepts shell commands',
     assert.equal(page.status, 200);
     assert.match(page.body, /<title>Lyrics overlay settings<\/title>/u, 'the shell raises the window by this title');
     for (const script of ['/settings.js', '/preview.js', '/shared/scales.js', '/shared/text-ink.js',
-        '/shared/lyrics-status.js', '/shared/overlay-geometry.js', '/shared/pitch-layout.js', '/shared/style-presets.js'])
+        '/shared/lyrics-status.js', '/shared/overlay-geometry.js', '/shared/pitch-layout.js'])
         assert.match((await request(port, {urlPath: script})).headers['content-type'], /^text\/javascript/u, script);
     const icon = await request(port, {urlPath: '/favicon.svg'});
     assert.equal(icon.headers['content-type'], 'image/svg+xml');
@@ -272,8 +272,9 @@ test('the settings page reads and writes the settings the shell reads, and only 
     const {port, stored} = await startService(t);
     const {schema, values} = JSON.parse((await request(port, {urlPath: '/api/settings'})).body);
     assert.deepEqual(schema['font-size'], {type: 'd', writable: true, default: 48, min: 16, max: 256});
-    assert.deepEqual(schema['text-border'].choices, ['none', 'single', 'double']);
+    assert.deepEqual(schema['text-border'].choices, ['none', 'single', 'double', 'glow']);
     assert.deepEqual(schema['text-align'].choices, ['center', 'left', 'right']);
+    assert.deepEqual(schema.transition.choices, ['instant', 'fade-in']);
     assert.equal(schema.box.writable, true, 'the settings page can position and resize the box');
     assert.equal(schema['pitch-box'].writable, true, 'the settings page can position and resize the separate pitch panel');
     assert.equal(values['font-size'], 48);
@@ -281,19 +282,20 @@ test('the settings page reads and writes the settings the shell reads, and only 
     const written = await pagePost(port, '/api/settings', {changes: {
         'font-size': 72, 'pitch-line-color': '#ff8800', 'pitch-dock': 'left',
         'box': {cx: 0.7, cy: 0.85, width: 0.4, height: 0.16},
-        'text-align': 'right', 'text-valign': 'bottom', 'text-fit-mode': 'fill',
-        'text-backdrop': 'pill', 'text-custom-color': '#12ab34', 'overlay-adjust-mode': true,
+        'text-align': 'right', 'text-border': 'glow',
+        'text-backdrop': 'pill', 'text-custom-color': '#12ab34',
     }});
     assert.equal(written.status, 200);
     const writtenValues = JSON.parse(written.body).values;
     assert.equal(writtenValues['font-size'], 72);
     assert.deepEqual(writtenValues.box, {cx: 0.7, cy: 0.85, width: 0.4, height: 0.16});
     assert.equal(writtenValues['text-backdrop'], 'pill');
+    assert.equal(writtenValues['text-border'], 'glow');
     // dconf-service writes its database a moment after the service's call.
     await waitFor(async () => await stored('font-size') === '72.0', 'the size in dconf');
     assert.equal(await stored('pitch-dock'), "'left'");
     assert.equal(await stored('text-align'), "'right'");
-    assert.equal(await stored('overlay-adjust-mode'), 'true');
+    assert.equal(await stored('text-border'), "'glow'");
 
     const refusals = [
         [{'font-size': 999}, /font-size must be from 16 to 256/u],

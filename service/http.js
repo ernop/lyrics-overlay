@@ -290,7 +290,7 @@ export function loadStaticFiles(projectDir) {
     add('/settings.css', 'service/settings-page/settings.css', 'text/css; charset=utf-8');
     add('/settings.js', 'service/settings-page/settings.js', 'text/javascript; charset=utf-8');
     add('/preview.js', 'service/settings-page/preview.js', 'text/javascript; charset=utf-8');
-    for (const name of ['lyrics-status.js', 'overlay-geometry.js', 'pitch-layout.js', 'scales.js', 'style-presets.js', 'text-ink.js'])
+    for (const name of ['lyrics-status.js', 'overlay-geometry.js', 'pitch-layout.js', 'scales.js', 'text-ink.js'])
         add(`/shared/${name}`, `shared/${name}`, 'text/javascript; charset=utf-8');
     // The extension's icon is the product's one mark, so the favicon is that file.
     add('/favicon.svg', 'firefox/icon.svg', 'image/svg+xml');

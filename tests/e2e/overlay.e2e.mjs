@@ -164,12 +164,14 @@ const overlayFacts = `(() => {
         fill: layer.fitted?.fill.join(',') ?? null,
         ring: layer.fitted ? [layer.fitted.ring.inner > 0, layer.fitted.ring.outer > 0] : null,
         ringInner: layer.fitted?.ring.inner ?? null,
+        ringFeathered: layer.fitted?.ring.featheredOuter ?? null,
         ink: layer.fitted?.inkBox ?? null,
         layerWidth: layer.width,
         box: {x: overlay._root.x, y: overlay._root.y, width: overlay._root.width, height: overlay._root.height},
+        savedBox: overlay.box,
         grip: {visible: overlay._grip.visible, x: gx, y: gy, width: overlay._grip.width, height: overlay._grip.height},
         outlineVisible: overlay._outline.visible,
-        adjustGripVisible: overlay._adjustGrip.visible,
+        hovered: overlay._hovered,
     };
 })()`;
 
@@ -268,13 +270,20 @@ async function overlayScenario(h) {
     // below it gets its whole default height.
     assert.ok(Math.abs(line.box.x + line.box.width / 2 - MONITOR.width / 2) <= 1, JSON.stringify(line.box));
 
-    // A plain drag on the lyric does nothing.
-    await h.evalJs(drag({from: center(line.grip), by: [120, -80]}));
-    assert.deepEqual((await h.evalJs(overlayFacts)).box, line.box);
-    assert.equal(await h.gsettings.get('box-monitor'), '-1');
+    // Away from the lyric, the outline stays hidden (idle click-through).
+    assert.equal(line.outlineVisible, false);
 
-    // Ctrl+drag moves the box by the pointer's travel and stores it.
-    await h.evalJs(drag({from: center(line.grip), by: [120, -80], modifier: 'KEY_Control_L'}));
+    // Moving the pointer onto the lyric reveals the normal frame + 8 handles,
+    // and dragging inside moves the box directly (no Alt/Ctrl gymnastic needed).
+    await h.evalJs(inputScript([{move: center(line.grip), wait: 60}]));
+    const hovered = await h.waitFor(async () => {
+        const facts = await h.evalJs(overlayFacts);
+        return facts.outlineVisible && facts.grip.width >= facts.box.width - 2 && facts;
+    }, 'hovering the lyric to reveal the frame and full-box resize handles');
+    assert.equal(hovered.outlineVisible, true);
+
+    // Plain interior drag moves the box by the pointer's travel and persists it.
+    await h.evalJs(drag({from: center(hovered.box), by: [120, -80]}));
     const moved = await h.evalJs(overlayFacts);
     assert.deepEqual([moved.box.x - line.box.x, moved.box.y - line.box.y, moved.box.width, moved.box.height],
         [120, -80, line.box.width, line.box.height]);
@@ -282,38 +291,48 @@ async function overlayScenario(h) {
     assert.match(storedMove, /'cx': 0\.5[67]/u, storedMove);
 
     // A Ctrl press without movement changes nothing.
-    await h.evalJs(drag({from: center(moved.grip), by: [0, 0], modifier: 'KEY_Control_L'}));
+    await h.evalJs(drag({from: center(moved.box), by: [0, 0], modifier: 'KEY_Control_L'}));
     assert.deepEqual((await h.evalJs(overlayFacts)).box, moved.box);
 
-    // Alt+drag resizes about the center, each axis on its own.
-    const pressAt = [moved.grip.x + moved.grip.width - 4, moved.grip.y + moved.grip.height - 4];
-    await h.evalJs(drag({from: pressAt, by: [60, 20], modifier: 'KEY_Alt_L'}));
+    // Normal desktop resize: dragging the right edge anchors the left edge;
+    // dragging the bottom-right corner resizes both axes while anchoring top-left.
+    const rightEdge = [moved.box.x + moved.box.width - 4, moved.box.y + moved.box.height / 2];
+    await h.evalJs(drag({from: rightEdge, by: [-80, 0]}));
+    const narrowerBox = await h.evalJs(overlayFacts);
+    assert.ok(near(narrowerBox.box.x, moved.box.x), JSON.stringify([moved.box, narrowerBox.box]));
+    assert.ok(near(narrowerBox.box.width, moved.box.width - 80), JSON.stringify([moved.box, narrowerBox.box]));
+
+    const brCorner = [narrowerBox.box.x + narrowerBox.box.width - 4, narrowerBox.box.y + narrowerBox.box.height - 4];
+    await h.evalJs(drag({from: brCorner, by: [80, 40]}));
     const resized = await h.evalJs(overlayFacts);
-    assert.deepEqual([resized.box.width - moved.box.width, resized.box.height - moved.box.height], [120, 40]);
-    assert.ok(Math.abs((resized.box.x + resized.box.width / 2) - (moved.box.x + moved.box.width / 2)) <= 1);
+    assert.ok(near(resized.box.x, moved.box.x), JSON.stringify([narrowerBox.box, resized.box]));
+    assert.ok(near(resized.box.y, moved.box.y), JSON.stringify([narrowerBox.box, resized.box]));
+    assert.ok(near(resized.box.width, moved.box.width), JSON.stringify([moved.box, resized.box]));
+    assert.ok(near(resized.box.height, moved.box.height + 40), JSON.stringify([moved.box, resized.box]));
 
     // Ctrl+scroll on the lyric grows the text, then stores the size.
-    await h.evalJs(inputScript([{move: center(resized.grip)}, {key: 'KEY_Control_L', down: true},
+    await h.evalJs(inputScript([{move: center(resized.box)}, {key: 'KEY_Control_L', down: true},
         {scroll: 'UP'}, {scroll: 'UP'}, {key: 'KEY_Control_L', down: false}]));
     // Two notches are two steps; the emulated copy of each notch is ignored.
     await h.waitFor(async () => Math.abs(Number(await h.gsettings.get('font-size')) - 48 * 1.06 ** 2) < 0.01, 'the scrolled size to persist');
+    // Moving the pointer away hides the frame and shrinks the grip back to the ink.
+    await h.evalJs(inputScript([{move: [20, 20], wait: 80}]));
+    await h.waitFor(async () => !(await h.evalJs(overlayFacts)).outlineVisible, 'moving pointer away to hide the frame');
     await h.screenshot('overlay-moved-resized');
 
     // Centered by default; left alignment starts the line at the box's left
-    // edge, and the color and border choices reach the painted text.
+    // edge, and the proportional double border, glow border, and colors paint cleanly.
     const centered = await h.evalJs(overlayFacts);
     assert.deepEqual([centered.align, centered.fill, centered.ring], ['center', '1,1,1', [true, true]]);
     assert.ok(Math.abs(centered.ink.x + centered.ink.width / 2 - centered.layerWidth / 2) < 12, JSON.stringify(centered));
-    // The border thickness scales the rings (the double border's inner one
-    // is 5.5% of the size at 1x).
-    assert.ok(Math.abs(centered.ringInner - Math.max(1.5, centered.fontSize * 0.055)) < 0.01, JSON.stringify(centered));
-    await h.gsettings.set('text-border-scale', '2.5');
+    // Variant C double border: inner body is 11.2% of font size.
+    assert.ok(Math.abs(centered.ringInner - Math.max(2.5, centered.fontSize * 0.112)) < 0.05, JSON.stringify(centered));
+    await h.gsettings.set('text-border', "'glow'");
     await h.waitFor(async () => {
         const facts = await h.evalJs(overlayFacts);
-        return Math.abs(facts.ringInner - 2.5 * Math.max(1.5, facts.fontSize * 0.055)) < 0.01;
-    }, 'the thicker border');
-    await h.screenshot('overlay-thick-border');
-    await h.gsettings.reset('text-border-scale');
+        return facts.ring[0] && facts.ring[1] && facts.ringFeathered === true;
+    }, 'the feathered glow border');
+    await h.screenshot('overlay-glow-border');
     await h.gsettings.set('text-align', "'left'");
     await h.gsettings.set('text-color', "'yellow'");
     await h.gsettings.set('text-border', "'single'");
@@ -444,60 +463,31 @@ async function overlayScenario(h) {
     await h.gsettings.set('pitch-enabled', 'false');
     await h.waitFor(async () => !(await h.evalJs(panelFacts)).visible, 'the panel to hide when switched off');
 
-    // Interactive adjust mode: works even without active timed lyrics, shows
-    // the full-box outline with 8 handles, resizes from any edge while
-    // anchoring the opposite edge, moves by dragging anywhere, and scales
-    // text on plain scroll.
-    await h.gsettings.set('overlay-adjust-mode', 'true');
-    const adjusting = await h.waitFor(async () => {
-        const facts = await h.evalJs(overlayFacts);
-        return facts.visible && facts.outlineVisible && facts;
-    }, 'adjust mode to show the box outline');
-    const adjBefore = adjusting.box;
-    // Drag the right edge inward by 80 px: left edge stays anchored.
-    await h.evalJs(drag({from: [adjBefore.x + adjBefore.width - 6, adjBefore.y + adjBefore.height / 2], by: [-80, 0]}));
-    const adjResized = await h.waitFor(async () => {
-        const facts = await h.evalJs(overlayFacts);
-        return near(facts.box.width, adjBefore.width - 80, 12) && facts;
-    }, 'adjust mode right-edge resize');
-    assert.ok(near(adjResized.box.x, adjBefore.x, 8), JSON.stringify([adjBefore, adjResized.box]));
-    // Drag interior to move by (+40, -30).
-    await h.evalJs(drag({from: center(adjResized.box), by: [40, -30]}));
-    const adjMoved = await h.waitFor(async () => {
-        const facts = await h.evalJs(overlayFacts);
-        return near(facts.box.x, adjResized.box.x + 40, 14) && near(facts.box.y, adjResized.box.y - 30, 14) && facts;
-    }, 'adjust mode interior drag');
-    assert.ok(adjMoved.outlineVisible);
-    // Plain scroll inside adjust mode grows font-size without holding Ctrl.
-    const sizeBeforeScroll = Number(await h.gsettings.get('font-size'));
-    await h.evalJs(inputScript([{move: center(adjMoved.box)}, {scroll: 'UP', wait: 100}]));
-    await h.waitFor(async () => Number(await h.gsettings.get('font-size')) > sizeBeforeScroll, 'adjust mode scroll font-size');
-    await h.screenshot('adjust-mode');
-    await h.gsettings.set('overlay-adjust-mode', 'false');
-    await h.waitFor(async () => !(await h.evalJs(overlayFacts)).outlineVisible, 'adjust mode to close');
-
-    // New text layout features: right alignment, bottom valign, pill backdrop,
-    // custom color, drop shadow, and fill mode all paint cleanly.
-    await h.gsettings.set('font-size', '32');
+    // Text styling: right alignment, pill backdrop, custom color, and constant
+    // font size (never shrinking) even when narrowed onto multiple wrapped lines.
+    await h.gsettings.set('font-size', '48');
     await h.gsettings.set('text-align', "'right'");
-    await h.gsettings.set('text-valign', "'bottom'");
     await h.gsettings.set('text-backdrop', "'pill'");
     await h.gsettings.set('text-custom-color', "'#ffeb00'");
-    await h.gsettings.set('text-shadow', '0.6');
     const styled = await h.waitFor(async () => {
         const facts = await h.evalJs(overlayFacts);
-        return facts.grip.visible && facts.align === 'right' &&
+        return facts.grip.visible && facts.align === 'right' && facts.fontSize === 48 &&
             facts.grip.x + facts.grip.width >= facts.box.x + facts.box.width - 36 && facts;
-    }, 'right-aligned bottom pill style to paint');
-    assert.ok(styled.grip.y > styled.box.y + styled.box.height / 3, JSON.stringify([styled.box, styled.grip]));
-    await h.gsettings.set('text-fit-mode', "'fill'");
-    await h.waitFor(async () => (await h.evalJs(overlayFacts)).fontSize > 48, 'fill mode to grow text past font-size');
+    }, 'right-aligned pill style to paint at constant 48 px');
+    assert.equal(styled.fontSize, 48);
+    // Narrow the box sharply so the line wraps across multiple lines: font size
+    // stays 48 px and the render surface expands vertically instead of shrinking.
+    await h.gsettings.set('box', "{'cx': 0.5, 'cy': 0.8, 'width': 0.16, 'height': 0.08}");
+    const wrapped = await h.waitFor(async () => {
+        const facts = await h.evalJs(overlayFacts);
+        return facts.savedBox.width < 260 && facts.box.height > facts.savedBox.height + 20 && facts;
+    }, 'wrapped line to expand height at constant font size');
+    assert.equal(wrapped.fontSize, 48, 'font size never shrinks when wrapping');
+    await h.gsettings.reset('box');
     await h.gsettings.set('text-align', "'center'");
-    await h.gsettings.set('text-valign', "'center'");
-    await h.gsettings.set('text-fit-mode', "'shrink'");
     await h.gsettings.set('text-backdrop', "'none'");
     await h.gsettings.set('text-custom-color', "''");
-    await h.gsettings.set('text-shadow', '0');
+    await h.waitFor(async () => (await h.evalJs(overlayFacts)).align === 'center', 'style reset');
 
     // A click on the lyric has the browser extension select the song's tab,
     // then raises the window showing it.

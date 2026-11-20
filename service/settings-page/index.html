@@ -11,8 +11,12 @@
 <body>
 <header id="topbar"></header>
 <p id="banner" role="status" hidden></p>
-<section id="studio" aria-label="Visual studio"></section>
-<nav id="tabs" role="tablist" aria-label="Settings sections"></nav>
-<main id="workspace"></main>
+<div id="shell">
+  <aside id="stage" aria-label="Live preview"></aside>
+  <section id="inspector" aria-label="Settings">
+    <nav id="tabs" role="tablist" aria-label="Settings sections"></nav>
+    <main id="workspace"></main>
+  </section>
+</div>
 </body>
 </html>

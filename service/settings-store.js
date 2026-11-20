@@ -17,9 +17,7 @@ const HEX_COLOR = /^#[0-9a-f]{6}$/iu;
 const VALUE_CHECKS = {
     'font-family': value => (value.length <= 200 && !/[\u0000-\u001f]/u.test(value)) || 'a font family name of at most 200 characters',
     'text-custom-color': value => value === '' || HEX_COLOR.test(value) || 'empty or a color written #rrggbb',
-    'text-border-color': value => HEX_COLOR.test(value) || 'a color written #rrggbb',
     'text-backdrop-color': value => HEX_COLOR.test(value) || 'a color written #rrggbb',
-    'overlay-preview-text': value => (value.length <= 200 && !/[\u0000-\u001f]/u.test(value)) || 'preview text of at most 200 characters',
     'pitch-line-color': value => HEX_COLOR.test(value) || 'a color written #rrggbb',
     'pitch-microphone': value => /^[\w.:@+-]{0,200}$/u.test(value) || 'a PipeWire node name, or empty for the default',
     'box-monitor': value => (value >= -1 && value <= 32) || 'a monitor index (-1 for primary, or 0..32)',

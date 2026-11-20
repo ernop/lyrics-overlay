@@ -8,11 +8,10 @@ import {
 } from '../shared/budget.js';
 import {GlitchFilter, PitchDetector, freqToMidi, noteName, voiceMidi} from '../shared/pitch-mpm.js';
 import {
-    DOCK_GAP, MIN_BOX_HEIGHT, MIN_BOX_WIDTH, PLACEMENT_PRESETS, balancedWrapWidth, boxFromGeometry, boxZoneAt,
-    clampBox, clampGeometry, dockedPanelBox, edgeResizedBox, fitFontSize, geometryFromBox, movedBox, resizedBox,
-    ringWidths, snapBox, snappedDock,
+    DOCK_GAP, MIN_BOX_HEIGHT, MIN_BOX_WIDTH, PLACEMENT_PRESETS, backdropMetrics, balancedWrapWidth, borderSpec,
+    boxFromGeometry, boxZoneAt, clampBox, clampGeometry, dockedPanelBox, edgeResizedBox, expandedRenderBox,
+    geometryFromBox, movedBox, snapBox, snappedDock, verticalAnchorFor,
 } from '../shared/overlay-geometry.js';
-import {STYLE_PRESETS} from '../shared/style-presets.js';
 
 test('budget refuses past any window and names when it reopens', () => {
     const windows = [{seconds: 60, limit: 2}, {seconds: 3600, limit: 3}];
@@ -157,18 +156,24 @@ test('moves and resizes stay inside the work area', () => {
     assert.deepEqual(clampBox({x: 0, y: 0, width: 10, height: 10}, area), {x: 0, y: 0, width: 160, height: 48});
 });
 
-test('resize is free on both axes around the box center', () => {
-    const start = {x: 1000, y: 500, width: 400, height: 100};
-    const press = {x: 1300, y: 560};
-    assert.deepEqual(resizedBox(start, press, {x: 1350, y: 540}, area), {x: 950, y: 520, width: 500, height: 60});
-    const pressLeft = {x: 1100, y: 520};
-    assert.deepEqual(resizedBox(start, pressLeft, {x: 1050, y: 500}, area), {x: 950, y: 480, width: 500, height: 140});
+test('verticalAnchorFor and expandedRenderBox grow away from the screen edge or docked pitch panel', () => {
+    assert.equal(verticalAnchorFor(0.8, 'below', true), 'bottom');
+    assert.equal(verticalAnchorFor(0.5, 'below', true), 'bottom');
+    assert.equal(verticalAnchorFor(0.5, 'above', true), 'top');
+    assert.equal(verticalAnchorFor(0.2, 'separate', false), 'top');
+    assert.equal(verticalAnchorFor(0.5, 'separate', false), 'center');
+    assert.equal(verticalAnchorFor(0.85, 'separate', false), 'bottom');
+
+    const base = {x: 500, y: 860, width: 800, height: 120};
+    assert.deepEqual(expandedRenderBox(base, 90, 'bottom', area), base);
+    assert.deepEqual(expandedRenderBox(base, 220, 'bottom', area), {x: 500, y: 760, width: 800, height: 220});
+    assert.deepEqual(expandedRenderBox({x: 500, y: 100, width: 800, height: 120}, 220, 'top', area),
+        {x: 500, y: 100, width: 800, height: 220});
+    assert.deepEqual(expandedRenderBox({x: 500, y: 440, width: 800, height: 120}, 220, 'center', area),
+        {x: 500, y: 390, width: 800, height: 220});
 });
 
-test('text fitting finds the largest fitting size and a balanced wrap', () => {
-    assert.equal(fitFontSize(100, 10, () => true), 100);
-    const fitted = fitFontSize(100, 10, size => size <= 37.2);
-    assert.ok(fitted <= 37.2 && fitted > 36.6);
+test('balancedWrapWidth evens out wrapped lines without adding extra lines', () => {
     const words = 'one two three four five six seven'.split(' ');
     const lineCountAt = width => {
         let lines = 1;
@@ -216,7 +221,14 @@ test('clampGeometry keeps boxes inside [0, 1] and presets are valid', () => {
     assert.deepEqual(clampGeometry({cx: 0.5, cy: 0.5, width: 0.01, height: 0.001}), {cx: 0.5, cy: 0.5, width: 0.05, height: 0.02});
     for (const preset of PLACEMENT_PRESETS)
         assert.deepEqual(clampGeometry(preset.box), preset.box, preset.id);
-    assert.ok(STYLE_PRESETS.length >= 4);
-    assert.deepEqual(ringWidths('none', 64, 2), {inner: 0, outer: 0});
-    assert.ok(ringWidths('double', 64, 2).outer > 0);
+    assert.equal(borderSpec('none', 64).inner, 0);
+    assert.equal(borderSpec('none', 64).outer, 0);
+    assert.equal(borderSpec('single', 64).outer, 0);
+    assert.ok(borderSpec('single', 64).inner > 4);
+    const dbl = borderSpec('double', 64);
+    assert.ok(dbl.inner > dbl.outer && dbl.outer > 1.5 && dbl.shadow && dbl.spaceScale < 1);
+    const glow = borderSpec('glow', 64);
+    assert.ok(glow.inner > 4 && glow.outer > 4 && glow.featheredOuter && glow.spaceScale < 1);
+    const bp = backdropMetrics(64);
+    assert.ok(bp.padX > bp.padY && bp.radius > 0);
 });

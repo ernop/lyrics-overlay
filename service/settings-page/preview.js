@@ -1,7 +1,7 @@
-// Live HTML5 Canvas visualizers for the settings studio:
+// Live HTML5 Canvas visualizers for the settings page:
 // 1. LyricPreviewCanvas: true-to-life preview of the lyric line using the
-//    exact same fitting, wrap balancing, ring width and contrast rules as
-//    GNOME Shell's text-layout.js.
+//    exact same fixed font size, balanced wrapping, proportional fused
+//    double/glow borders, and em-scaled backdrop rules as text-layout.js.
 // 2. ScreenPlacementMap: interactive true-aspect monitor map with 8-handle
 //    edge/corner resize, drag-to-move with magnetic center snap, and live
 //    pitch-panel docking/undocking.
@@ -9,14 +9,13 @@
 //    shared pitch-layout.js and scales.js rules.
 
 import {
-    FONT_SIZE_MAX, OUTER_EDGE, balancedWrapWidth, boxFromGeometry, boxZoneAt, dockedPanelBox, edgeResizedBox,
-    fitFontSize, geometryFromBox, movedBox, ringWidths, snapBox, snappedDock,
+    OUTER_EDGE, backdropMetrics, balancedWrapWidth, borderSpec, boxFromGeometry, boxZoneAt,
+    dockedPanelBox, edgeResizedBox, geometryFromBox, movedBox, snapBox, snappedDock, verticalAnchorFor,
 } from '/shared/overlay-geometry.js';
 import {labeledLines, noteLines} from '/shared/pitch-layout.js';
 import {keyName, noteLabel, pitchClassNames, scalePitchClasses} from '/shared/scales.js';
 import {hexColor, parseHexColor, resolveTextColor, ringColors} from '/shared/text-ink.js';
 
-const SMALLEST_FITTED_SIZE = 12;
 const EDGE_PIXELS = 4;
 const DOCKED_HEIGHT_RANGE = [0.03, 0.6];
 const DOCKED_WIDTH_RANGE = [0.05, 0.6];
@@ -40,43 +39,25 @@ function roundedRectPath(ctx, x, y, width, height, radius) {
     ctx.closePath();
 }
 
-function resolvedWeight(values) {
-    return values['font-weight'] >= 100 ? values['font-weight'] : (values['font-bold'] ? 700 : 400);
-}
-
 function fontCss(values, sizePx) {
     const family = values['font-family']
         ? `"${values['font-family'].replaceAll('\\', '\\\\').replaceAll('"', '\\"')}", system-ui, sans-serif`
         : 'system-ui, sans-serif';
-    return `${values['font-italic'] ? 'italic ' : ''}${resolvedWeight(values)} ${sizePx}px ${family}`;
+    return `${values['font-italic'] ? 'italic ' : ''}${values['font-bold'] ? 700 : 400} ${sizePx}px ${family}`;
 }
 
-function measureLineWidth(ctx, line, letterSpacing) {
-    const base = ctx.measureText(line).width;
-    if (!letterSpacing || line.length <= 1)
-        return base;
-    return base + letterSpacing * (line.length - 1);
-}
-
-function drawSpacedText(ctx, text, x, y, letterSpacing, mode) {
-    if (!letterSpacing || text.length <= 1) {
-        if (mode === 'stroke')
-            ctx.strokeText(text, x, y);
-        else
-            ctx.fillText(text, x, y);
+function applyWordSpacing(ctx, fontSize, spaceScale) {
+    if (!('wordSpacing' in ctx))
+        return;
+    if (!spaceScale || spaceScale === 1) {
+        ctx.wordSpacing = '0px';
         return;
     }
-    let cursor = x;
-    for (const ch of text) {
-        if (mode === 'stroke')
-            ctx.strokeText(ch, cursor, y);
-        else
-            ctx.fillText(ch, cursor, y);
-        cursor += ctx.measureText(ch).width + letterSpacing;
-    }
+    const spaceW = ctx.measureText(' ').width;
+    ctx.wordSpacing = `${((spaceScale - 1) * spaceW).toFixed(2)}px`;
 }
 
-function wrapLines(ctx, text, maxWidth, letterSpacing) {
+function wrapLines(ctx, text, maxWidth) {
     const words = text.split(/\s+/u).filter(Boolean);
     if (!words.length)
         return [''];
@@ -84,19 +65,18 @@ function wrapLines(ctx, text, maxWidth, letterSpacing) {
     let current = '';
     for (const word of words) {
         const candidate = current ? `${current} ${word}` : word;
-        if (!current || measureLineWidth(ctx, candidate, letterSpacing) <= maxWidth) {
+        if (!current || ctx.measureText(candidate).width <= maxWidth) {
             current = candidate;
             continue;
         }
         lines.push(current);
-        if (measureLineWidth(ctx, word, letterSpacing) <= maxWidth) {
+        if (ctx.measureText(word).width <= maxWidth) {
             current = word;
         } else {
-            // Break overlong single word by character.
             let piece = '';
             for (const ch of word) {
                 const next = piece + ch;
-                if (piece && measureLineWidth(ctx, next, letterSpacing) > maxWidth) {
+                if (piece && ctx.measureText(next).width > maxWidth) {
                     lines.push(piece);
                     piece = ch;
                 } else {
@@ -111,89 +91,52 @@ function wrapLines(ctx, text, maxWidth, letterSpacing) {
     return lines;
 }
 
-function shadowOffset(shadow, fontSize) {
-    if (!(shadow > 0))
-        return {dx: 0, dy: 0};
+function edgePad(values, fontSize) {
+    const ring = borderSpec(values['text-border'], fontSize);
+    const bp = (values['text-backdrop'] ?? 'none') === 'pill' ? backdropMetrics(fontSize) : {padX: 0, padY: 0};
+    const reach = ring.inner + ring.outer + ring.extraPad;
     return {
-        dx: Math.max(2, Math.round(fontSize * 0.04 * (0.6 + shadow * 0.6))),
-        dy: Math.max(2, Math.round(fontSize * 0.06 * (0.6 + shadow * 0.6))),
+        x: Math.ceil(reach) + bp.padX + EDGE_PIXELS,
+        y: Math.ceil(reach) + bp.padY + EDGE_PIXELS,
     };
 }
 
-function edgeFor(values, fontSize) {
-    const ring = ringWidths(values['text-border'], fontSize, values['text-border-scale']);
-    const {dx, dy} = shadowOffset(values['text-shadow'] ?? 0, fontSize);
-    const backdropPad = (values['text-backdrop'] ?? 'none') !== 'none' ? (values['text-backdrop-padding'] ?? 14) : 0;
-    return Math.ceil(ring.inner + ring.outer) + Math.max(dx, dy) + backdropPad + EDGE_PIXELS;
-}
-
 /**
- * Computes exact monitor-pixel layout for `text` inside the current lyric box.
- * Also reports the minimum box height fraction needed for `font-size` to fit
- * cleanly without shrinking, powering the "Fit box height" button.
+ * Computes exact monitor-pixel layout at the constant `font-size` without
+ * ever shrinking text: long lines wrap cleanly and expand surface height.
  */
 export function computeLyricLayout(ctx, text, values, monitor) {
     const boxW = Math.max(160, Math.round(values.box.width * monitor.width));
     const boxH = Math.max(48, Math.round(values.box.height * monitor.height));
-    const displayText = values['text-uppercase'] ? text.toLocaleUpperCase() : text;
-    const fitMode = values['text-fit-mode'] ?? 'shrink';
-    const maxLines = Math.max(0, Math.round(values['text-max-lines'] ?? 0));
-    const letterSpacing = values['text-letter-spacing'] ?? 0;
-    const targetSize = values['font-size'];
-    const lineHeightRatio = 1.24;
+    const fontSize = values['font-size'];
+    const ring = borderSpec(values['text-border'], fontSize);
+    const pad = edgePad(values, fontSize);
+    const maxWidth = Math.max(1, boxW - 2 * pad.x);
+    const lineStep = fontSize * 1.24;
 
-    const room = size => {
-        const edge = edgeFor(values, size);
-        return {width: Math.max(1, boxW - 2 * edge), height: Math.max(1, boxH - 2 * edge), edge};
-    };
-    const measureAt = (size, wrapW) => {
-        ctx.font = fontCss(values, size);
-        const lines = wrapLines(ctx, displayText, wrapW, letterSpacing);
-        const maxLineW = Math.max(...lines.map(line => measureLineWidth(ctx, line, letterSpacing)));
-        return {lines, maxLineW, totalH: lines.length * size * lineHeightRatio};
-    };
-    const fits = size => {
-        const r = room(size);
-        const m = measureAt(size, r.width);
-        if (maxLines > 0 && m.lines.length > maxLines)
-            return false;
-        return m.totalH <= r.height && m.maxLineW <= r.width;
-    };
-
-    const ceiling = fitMode === 'fill' ? FONT_SIZE_MAX : targetSize;
-    const drawnSize = fitFontSize(ceiling, Math.min(ceiling, SMALLEST_FITTED_SIZE), fits);
-    const {width: maxWidth, edge} = room(drawnSize);
-    ctx.font = fontCss(values, drawnSize);
-    const lineCountAt = w => wrapLines(ctx, displayText, w, letterSpacing).length;
+    ctx.font = fontCss(values, fontSize);
+    applyWordSpacing(ctx, fontSize, ring.spaceScale);
+    const lineCountAt = w => wrapLines(ctx, text, w).length;
     const balancedW = Math.min(maxWidth, balancedWrapWidth(maxWidth, lineCountAt));
-    const lines = wrapLines(ctx, displayText, balancedW, letterSpacing);
-    const lineWidths = lines.map(line => measureLineWidth(ctx, line, letterSpacing));
+    const lines = wrapLines(ctx, text, balancedW);
+    const lineWidths = lines.map(line => ctx.measureText(line).width);
     const blockW = Math.max(...lineWidths, 1);
-    const lineStep = drawnSize * lineHeightRatio;
     const blockH = lines.length * lineStep;
-
-    // Height fraction needed so targetSize fits cleanly on its wrapped line count.
-    const targetEdge = edgeFor(values, targetSize);
-    ctx.font = fontCss(values, targetSize);
-    const targetRoomW = Math.max(1, boxW - 2 * targetEdge);
-    const targetLines = wrapLines(ctx, displayText, targetRoomW, letterSpacing);
-    const usedLines = maxLines > 0 ? Math.min(maxLines, targetLines.length) : targetLines.length;
-    const neededPx = Math.ceil(usedLines * targetSize * lineHeightRatio + 2 * targetEdge + 8);
-    const neededHeightFraction = clamp(neededPx / monitor.height, 0.04, 0.9);
+    const requiredH = Math.ceil(blockH + 2 * pad.y);
+    const renderH = Math.min(monitor.height, Math.max(boxH, requiredH));
 
     return {
         boxW,
         boxH,
-        drawnSize,
-        targetSize,
-        clamped: fitMode === 'shrink' && drawnSize < targetSize - 0.5,
+        renderH,
+        fontSize,
+        ring,
         lines,
         lineWidths,
         lineStep,
         blockW,
         blockH,
-        edge,
-        neededHeightFraction,
+        pad,
     };
 }
 
@@ -214,30 +157,29 @@ function paintSceneBackground(ctx, width, height, scene) {
         ctx.fillRect(0, 0, width, height);
         return;
     }
-    if (scene === 'grid') {
-        const tile = 18;
-        for (let y = 0; y < height; y += tile) {
-            for (let x = 0; x < width; x += tile) {
-                ctx.fillStyle = ((x / tile + y / tile) & 1) === 0 ? '#1c1c1c' : '#323232';
-                ctx.fillRect(x, y, tile, tile);
-            }
-        }
-        return;
-    }
-    // Default 'video': warm-lit stage gradient simulating a music video frame.
+    // Default 'video': warm stage-lit gradient mimicking a music video frame.
     const grad = ctx.createLinearGradient(0, 0, width, height);
-    grad.addColorStop(0, '#0f172a');
-    grad.addColorStop(0.45, '#1e293b');
+    grad.addColorStop(0, '#0c1324');
+    grad.addColorStop(0.45, '#1d293e');
     grad.addColorStop(0.8, '#3b1d36');
-    grad.addColorStop(1, '#1c1917');
+    grad.addColorStop(1, '#1c1816');
     ctx.fillStyle = grad;
     ctx.fillRect(0, 0, width, height);
-    const glow = ctx.createRadialGradient(width * 0.35, height * 0.35, 10, width * 0.35, height * 0.35, width * 0.55);
-    glow.addColorStop(0, 'rgba(251, 191, 36, 0.22)');
+    const glow = ctx.createRadialGradient(width * 0.35, height * 0.35, 10, width * 0.35, height * 0.35, width * 0.58);
+    glow.addColorStop(0, 'rgba(251, 191, 36, 0.24)');
     glow.addColorStop(1, 'rgba(251, 191, 36, 0)');
     ctx.fillStyle = glow;
     ctx.fillRect(0, 0, width, height);
 }
+
+const GLOW_CANVAS_PASSES = [
+    {frac: 1.55, alpha: 0.09},
+    {frac: 1.25, alpha: 0.16},
+    {frac: 0.95, alpha: 0.28},
+    {frac: 0.65, alpha: 0.48},
+    {frac: 0.38, alpha: 0.78},
+    {frac: 0.16, alpha: 0.96},
+];
 
 export class LyricPreviewCanvas {
     constructor(canvas, onTelemetry) {
@@ -275,89 +217,70 @@ export class LyricPreviewCanvas {
         const layout = computeLyricLayout(ctx, sampleText || 'Amazing grace, how sweet the sound', values, monitor);
         this._onTelemetry?.(layout);
 
-        // Fit the real monitor-pixel box proportionally inside the preview canvas.
-        const pad = 16;
-        const scale = Math.min((w - pad * 2) / layout.boxW, (h - pad * 2) / layout.boxH);
-        const drawBoxW = layout.boxW * scale;
-        const drawBoxH = layout.boxH * scale;
-        const bx = (w - drawBoxW) / 2;
-        const by = (h - drawBoxH) / 2;
+        // Fit the monitor-pixel surface proportionally inside the preview canvas.
+        const margin = 16;
+        const scale = Math.min((w - margin * 2) / layout.boxW, (h - margin * 2) / layout.renderH);
+        const drawW = layout.boxW * scale;
+        const drawH = layout.renderH * scale;
+        const bx = (w - drawW) / 2;
+        const by = (h - drawH) / 2;
 
-        // Dashed box boundary showing exact overlay footprint
-        ctx.save();
-        ctx.strokeStyle = scene === 'light' ? 'rgba(0, 0, 0, 0.55)' : 'rgba(255, 255, 255, 0.55)';
-        ctx.lineWidth = 1.25;
-        ctx.setLineDash([6, 4]);
-        ctx.strokeRect(bx + 0.5, by + 0.5, drawBoxW - 1, drawBoxH - 1);
-        ctx.restore();
-
-        // Paint lyric inside box coordinate space (monitor px scaled by `scale`)
         ctx.save();
         ctx.translate(bx, by);
         ctx.scale(scale, scale);
-        ctx.beginPath();
-        ctx.rect(0, 0, layout.boxW, layout.boxH);
-        ctx.clip();
 
         const fill = resolveTextColor(values['text-color'], values['text-custom-color'] ?? '');
-        const borderCustom = (values['text-border-color-mode'] ?? 'auto') === 'custom' ? (values['text-border-color'] ?? '#000000') : '';
-        const rColors = ringColors(fill, borderCustom);
-        const ring = ringWidths(values['text-border'], layout.drawnSize, values['text-border-scale']);
-        const reach = ring.inner + ring.outer;
+        const rColors = ringColors(fill);
+        const {ring, fontSize, pad} = layout;
         const align = values['text-align'] ?? 'center';
-        const valign = values['text-valign'] ?? 'center';
-        const letterSpacing = values['text-letter-spacing'] ?? 0;
+        const anchor = verticalAnchorFor(values.box.cy, values['pitch-dock'], values['pitch-enabled']);
 
         let originY;
-        if (valign === 'top')
-            originY = layout.edge;
-        else if (valign === 'bottom')
-            originY = layout.boxH - layout.edge - layout.blockH;
+        if (anchor === 'top')
+            originY = pad.y;
+        else if (anchor === 'bottom')
+            originY = Math.max(pad.y, layout.renderH - pad.y - layout.blockH);
         else
-            originY = (layout.boxH - layout.blockH) / 2;
+            originY = Math.max(pad.y, (layout.renderH - layout.blockH) / 2);
 
         const lineX = lineW => {
             if (align === 'left')
-                return layout.edge;
+                return pad.x;
             if (align === 'right')
-                return layout.boxW - layout.edge - lineW;
+                return layout.boxW - pad.x - lineW;
             return (layout.boxW - lineW) / 2;
         };
 
-        // Backdrop plate
+        // Backdrop plate (automatic em-proportional padding and corner radius)
         const backdropMode = values['text-backdrop'] ?? 'none';
         if (backdropMode !== 'none' && (values['text-backdrop-opacity'] ?? 0.65) > 0) {
             const bgRgb = parseHexColor(values['text-backdrop-color'] ?? '#000000') ?? [0, 0, 0];
-            const radius = values['text-backdrop-radius'] ?? 12;
+            const metrics = backdropMetrics(fontSize);
             ctx.fillStyle = rgba(bgRgb, values['text-backdrop-opacity'] ?? 0.65);
             if (backdropMode === 'box') {
-                roundedRectPath(ctx, 0, 0, layout.boxW, layout.boxH, radius);
+                roundedRectPath(ctx, 0, 0, layout.boxW, layout.renderH, metrics.radius);
                 ctx.fill();
             } else {
-                const padX = values['text-backdrop-padding'] ?? 14;
-                const padY = Math.round(padX * 0.7);
+                const reach = ring.inner + ring.outer;
                 const minX = Math.min(...layout.lineWidths.map(lineX));
                 const maxX = Math.max(...layout.lineWidths.map(lw => lineX(lw) + lw));
-                const px = Math.max(0, minX - reach - padX);
-                const py = Math.max(0, originY - reach - padY);
-                const pr = Math.min(layout.boxW, maxX + reach + padX);
-                const pb = Math.min(layout.boxH, originY + layout.blockH + reach + padY);
-                roundedRectPath(ctx, px, py, Math.max(1, pr - px), Math.max(1, pb - py), radius);
+                const px = Math.max(0, minX - reach - metrics.padX);
+                const py = Math.max(0, originY - reach - metrics.padY);
+                const pr = Math.min(layout.boxW, maxX + reach + metrics.padX);
+                const pb = Math.min(layout.renderH, originY + layout.blockH + reach + metrics.padY);
+                roundedRectPath(ctx, px, py, Math.max(1, pr - px), Math.max(1, pb - py), metrics.radius);
                 ctx.fill();
             }
         }
 
-        ctx.font = fontCss(values, layout.drawnSize);
+        ctx.font = fontCss(values, fontSize);
+        applyWordSpacing(ctx, fontSize, ring.spaceScale);
         ctx.textBaseline = 'middle';
         ctx.lineJoin = 'round';
         ctx.lineCap = 'round';
         ctx.miterLimit = 2;
 
-        const alpha = values['text-opacity'] ?? 1;
-        const shadow = values['text-shadow'] ?? 0;
-        const {dx: sx, dy: sy} = shadowOffset(shadow, layout.drawnSize);
-
-        const paintPass = (mode, color, lineWidth = 0, ox = 0, oy = 0) => {
+        const paintPass = (mode, color, lineWidth = 0) => {
             if (mode === 'stroke') {
                 ctx.strokeStyle = color;
                 ctx.lineWidth = lineWidth;
@@ -365,36 +288,40 @@ export class LyricPreviewCanvas {
                 ctx.fillStyle = color;
             }
             layout.lines.forEach((line, idx) => {
-                const x = lineX(layout.lineWidths[idx]) + ox;
-                const y = originY + (idx + 0.5) * layout.lineStep + oy;
-                drawSpacedText(ctx, line, x, y, letterSpacing, mode);
+                const x = lineX(layout.lineWidths[idx]);
+                const y = originY + (idx + 0.5) * layout.lineStep;
+                if (mode === 'stroke')
+                    ctx.strokeText(line, x, y);
+                else
+                    ctx.fillText(line, x, y);
             });
         };
 
-        // Drop shadow
-        if (shadow > 0) {
-            const shadowAlpha = Math.min(0.85, shadow * 0.8) * alpha;
-            if (reach > 0) {
-                paintPass('stroke', `rgba(0, 0, 0, ${shadowAlpha})`, 2 * reach, sx, sy);
-            } else {
-                ctx.save();
-                ctx.shadowColor = `rgba(0, 0, 0, ${shadowAlpha})`;
-                ctx.shadowBlur = Math.max(3, layout.drawnSize * 0.08 * shadow);
-                ctx.shadowOffsetX = sx;
-                ctx.shadowOffsetY = sy;
-                paintPass('fill', `rgba(0, 0, 0, ${shadowAlpha})`, 0, 0, 0);
-                ctx.restore();
-            }
+        // Soft ambient shadow behind Variant C double border
+        if (ring.shadow) {
+            ctx.save();
+            ctx.shadowColor = 'rgba(0, 0, 0, 0.55)';
+            ctx.shadowBlur = Math.max(5, fontSize * 0.14) * scale;
+            ctx.shadowOffsetX = 0;
+            ctx.shadowOffsetY = Math.max(2, fontSize * 0.045) * scale;
+            paintPass('stroke', rgba(rColors.outer, 1), 2 * (ring.inner + ring.outer));
+            ctx.restore();
         }
 
-        // Border rings (outer then inner)
-        if (ring.outer > 0)
-            paintPass('stroke', rgba(rColors.outer, alpha), 2 * (ring.inner + ring.outer));
-        if (ring.inner > 0)
-            paintPass('stroke', rgba(rColors.inner, alpha), 2 * ring.inner);
+        // Outer border (feathered glow for Variant E, crisp trim for Variant C)
+        if (ring.outer > 0 && ring.featheredOuter) {
+            for (const pass of GLOW_CANVAS_PASSES)
+                paintPass('stroke', rgba(rColors.outer, pass.alpha), 2 * (ring.inner + ring.outer * pass.frac));
+        } else if (ring.outer > 0) {
+            paintPass('stroke', rgba(rColors.outer, 1), 2 * (ring.inner + ring.outer));
+        }
 
-        // Letter fill
-        paintPass('fill', rgba(fill, alpha));
+        // Inner contrast body
+        if (ring.inner > 0)
+            paintPass('stroke', rgba(rColors.inner, 1), 2 * ring.inner);
+
+        // Pure opaque letter fill
+        paintPass('fill', rgba(fill, 1));
 
         ctx.restore();
         ctx.restore();
@@ -645,15 +572,14 @@ export class ScreenPlacementMap {
         const sx = w / this._monitor.width;
         const sy = h / this._monitor.height;
 
-        // Desktop wallpaper backdrop
         const bg = ctx.createLinearGradient(0, 0, w, h);
-        bg.addColorStop(0, '#0f172a');
-        bg.addColorStop(1, '#1e1b2e');
+        bg.addColorStop(0, '#0c1324');
+        bg.addColorStop(1, '#1a182b');
         ctx.fillStyle = bg;
         ctx.fillRect(0, 0, w, h);
 
         // Rule of thirds + center crosshair
-        ctx.strokeStyle = 'rgba(255, 255, 255, 0.12)';
+        ctx.strokeStyle = 'rgba(255, 255, 255, 0.1)';
         ctx.lineWidth = 1;
         for (const frac of [1 / 3, 2 / 3]) {
             ctx.beginPath();
@@ -663,7 +589,7 @@ export class ScreenPlacementMap {
             ctx.lineTo(w, Math.round(h * frac) + 0.5);
             ctx.stroke();
         }
-        ctx.strokeStyle = 'rgba(255, 255, 255, 0.25)';
+        ctx.strokeStyle = 'rgba(255, 255, 255, 0.22)';
         ctx.setLineDash([4, 4]);
         ctx.beginPath();
         ctx.moveTo(Math.round(w / 2) + 0.5, 0);
@@ -695,7 +621,6 @@ export class ScreenPlacementMap {
         const activeTarget = this._drag?.target ?? this._hover?.target ?? null;
         const activeZone = zoneKey(this._drag?.zone ?? this._hover?.zone ?? null);
 
-        // Draw pitch panel if enabled
         if (pitch) {
             const px = pitch.x * sx, py = pitch.y * sy, pw = pitch.width * sx, ph = pitch.height * sy;
             roundedRectPath(ctx, px, py, pw, ph, 4);
@@ -705,7 +630,6 @@ export class ScreenPlacementMap {
             ctx.lineWidth = 1.5;
             ctx.stroke();
 
-            // Miniature pitch wave
             ctx.save();
             ctx.beginPath();
             ctx.rect(px + 3, py + 3, Math.max(1, pw - 6), Math.max(1, ph - 6));
@@ -730,7 +654,6 @@ export class ScreenPlacementMap {
             }
         }
 
-        // Draw lyric box
         const lx = lyric.x * sx, ly = lyric.y * sy, lw = lyric.width * sx, lh = lyric.height * sy;
         ctx.fillStyle = 'rgba(37, 99, 235, 0.22)';
         ctx.fillRect(lx, ly, lw, lh);
@@ -738,7 +661,6 @@ export class ScreenPlacementMap {
         ctx.lineWidth = 2;
         ctx.strokeRect(lx + 1, ly + 1, Math.max(1, lw - 2), Math.max(1, lh - 2));
 
-        // Miniature lyric line inside the box
         const fill = resolveTextColor(this._values['text-color'], this._values['text-custom-color'] ?? '');
         ctx.save();
         ctx.beginPath();
@@ -750,9 +672,9 @@ export class ScreenPlacementMap {
         const align = this._values['text-align'] ?? 'center';
         ctx.textAlign = align === 'left' ? 'left' : align === 'right' ? 'right' : 'center';
         const tx = align === 'left' ? lx + 5 : align === 'right' ? lx + lw - 5 : lx + lw / 2;
-        const valign = this._values['text-valign'] ?? 'center';
-        const ty = valign === 'top' ? ly + miniSize * 0.65 + 2
-            : valign === 'bottom' ? ly + lh - miniSize * 0.65 - 2
+        const anchor = verticalAnchorFor(this._values.box.cy, this._values['pitch-dock'], this._values['pitch-enabled']);
+        const ty = anchor === 'top' ? ly + miniSize * 0.65 + 2
+            : anchor === 'bottom' ? ly + lh - miniSize * 0.65 - 2
                 : ly + lh / 2;
         ctx.lineWidth = 2.5;
         ctx.strokeStyle = '#000000';
@@ -761,7 +683,6 @@ export class ScreenPlacementMap {
         ctx.fillText(this._sampleText, tx, ty);
         ctx.restore();
 
-        // 8 resize handles on the lyric box
         this._drawHandles(ctx, lx, ly, lw, lh, activeTarget === 'lyric' ? activeZone : '', '#ffffff');
         ctx.restore();
     }
@@ -911,7 +832,6 @@ export class PitchPreviewCanvas {
         const windowMs = values['pitch-window-seconds'] * 1000;
         const xOf = t => plot.right - (SAMPLE_TRACE.duration - t) / windowMs * plot.width;
 
-        // Semitone lines
         const lines = noteLines(span.low, span.high, scale, key ? key.root : null).map(line => ({...line, y: yOf(line.midi)}));
         for (const line of lines) {
             const y = Math.round(line.y) + 0.5;
@@ -924,7 +844,6 @@ export class PitchPreviewCanvas {
             ctx.stroke();
         }
 
-        // Note labels
         const named = labeledLines(lines, values['pitch-labels'], labelSize * 1.15, Boolean(key));
         ctx.fillStyle = '#ffffff';
         ctx.textAlign = 'right';
@@ -937,7 +856,6 @@ export class PitchPreviewCanvas {
             ctx.fillText(noteLabel(line.midi, names), plot.left - pad / 2, line.y);
         }
 
-        // Sung pitch trace
         ctx.save();
         ctx.beginPath();
         ctx.rect(plot.left, plot.top - values['pitch-line-width'], plot.width, plot.height + 2 * values['pitch-line-width']);
@@ -965,7 +883,6 @@ export class PitchPreviewCanvas {
         ctx.fill();
         ctx.restore();
 
-        // Scale badge
         const corner = column || readout === 'off' ? null : readout;
         if (values['pitch-show-key'] && key) {
             const tag = keyName(key);
@@ -985,7 +902,6 @@ export class PitchPreviewCanvas {
             ctx.fillText(tag, tx, ty + th / 2);
         }
 
-        // Current note readout
         if (readout !== 'off') {
             const currentNote = noteLabel(62, names);
             let rx, ry, align;

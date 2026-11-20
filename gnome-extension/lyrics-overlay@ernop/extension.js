@@ -52,7 +52,6 @@ export default class LyricsOverlayExtension extends Extension {
         Main.panel.addToStatusArea(this.uuid, this._indicator, -1, 'center');
         this._settings.connectObject(
             'changed::overlay-enabled', () => this._sync(),
-            'changed::overlay-adjust-mode', () => this._sync(),
             'changed::pitch-enabled', () => this._sync(), this);
         this._client.start();
         this._sync();
@@ -89,14 +88,12 @@ export default class LyricsOverlayExtension extends Extension {
     _sync() {
         const state = this._state;
         const enabled = this._settings.get_boolean('overlay-enabled');
-        const adjustMode = this._settings.get_boolean('overlay-adjust-mode');
         const pitchEnabled = this._settings.get_boolean('pitch-enabled');
         const active = Boolean(state?.active);
-        this._overlay.setShown(adjustMode || (enabled && active && state.lyrics === 'timed'));
+        this._overlay.setShown(enabled && active && state.lyrics === 'timed');
         // The panel does not need timed lyrics: singing along to a song
-        // without them still shows the pitch. In adjust mode it also shows
-        // so both boxes can be positioned together without a song playing.
-        const pitchShown = (adjustMode && pitchEnabled) || (enabled && pitchEnabled && active);
+        // without them still shows the pitch.
+        const pitchShown = enabled && pitchEnabled && active;
         this._pitchPanel.setShown(pitchShown);
         const micWanted = enabled && pitchEnabled && active && Boolean(state?.sounding);
         if (micWanted !== this._micRequested && state) {

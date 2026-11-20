@@ -1,6 +1,6 @@
-// Letter colors for the overlay line, and the border rings that keep each
-// color readable on any background. Used by the shell extension's text
-// layout and the settings page (the install script copies this file into it).
+// Letter colors for the overlay line, and the automatic WCAG contrast border
+// rings that keep each color readable on any background. Used by the shell
+// extension's text layout and the settings page.
 
 const WHITE = Object.freeze([1, 1, 1]);
 const BLACK = Object.freeze([0, 0, 0]);
@@ -66,27 +66,16 @@ export function nearestNamedColor(rgb) {
 }
 
 /**
- * Border ring colors for a letter color: the inner ring is whichever of
- * black and white contrasts more with the letters (WCAG contrast ratio),
- * the outer ring the other, so the line reads on any background.
- * When `customBorderHex` is provided, it becomes the inner ring and the
- * higher-contrast of black/white against it becomes the outer ring.
+ * Automatic WCAG contrast ring colors for a letter color: the inner ring is
+ * whichever of black and white contrasts more with the letters, and the
+ * outer ring is the other, so the line reads on dark and bright video alike.
  */
-export function ringColors(fill, customBorderHex = '') {
-    const contrastInk = rgb => {
-        const linear = channel => (channel <= 0.04045 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4);
-        const luminance = 0.2126 * linear(rgb[0]) + 0.7152 * linear(rgb[1]) + 0.0722 * linear(rgb[2]);
-        // Contrast with black, (L + 0.05) / 0.05, beats contrast with white,
-        // 1.05 / (L + 0.05), exactly when (L + 0.05)^2 > 0.0525.
-        return (luminance + 0.05) ** 2 > 0.0525 ? BLACK : WHITE;
-    };
-    if (customBorderHex) {
-        const inner = parseHexColor(customBorderHex);
-        if (!inner)
-            throw new Error(`lyrics-overlay: invalid border color "${customBorderHex}"`);
-        return {inner, outer: contrastInk(inner)};
-    }
-    const inner = contrastInk(fill);
+export function ringColors(fill) {
+    const linear = channel => (channel <= 0.04045 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4);
+    const luminance = 0.2126 * linear(fill[0]) + 0.7152 * linear(fill[1]) + 0.0722 * linear(fill[2]);
+    // Contrast with black, (L + 0.05) / 0.05, beats contrast with white,
+    // 1.05 / (L + 0.05), exactly when (L + 0.05)^2 > 0.0525.
+    const inner = (luminance + 0.05) ** 2 > 0.0525 ? BLACK : WHITE;
     return {inner, outer: inner === BLACK ? WHITE : BLACK};
 }
 

@@ -41,6 +41,6 @@ test('custom hex colors parse, resolve, find nearest preset, and compute contras
     assert.throws(() => resolveTextColor('yellow', 'bad'), /invalid custom color/u);
     assert.equal(nearestNamedColor([0.98, 0.9, 0.05]), 'yellow');
     assert.equal(nearestNamedColor([0.05, 0.05, 0.05]), 'black');
-    assert.deepEqual(ringColors(TEXT_COLORS.white, '#000000'), {inner: BLACK, outer: WHITE});
-    assert.deepEqual(ringColors(TEXT_COLORS.black, '#ffffff'), {inner: WHITE, outer: BLACK});
+    assert.deepEqual(ringColors(TEXT_COLORS.white), {inner: BLACK, outer: WHITE});
+    assert.deepEqual(ringColors(TEXT_COLORS.black), {inner: WHITE, outer: BLACK});
 });

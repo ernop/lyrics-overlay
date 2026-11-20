@@ -84,12 +84,12 @@ The indicator shows while YouTube plays sound and for two minutes after.
 |---|---|---|
 | Indicator | press | lyric line on or off |
 | Indicator | right-press | the settings page |
-| Lyric | click | goes to the song's Firefox tab and raises its window |
+| Lyric | hover | reveals the box frame and 8 edge/corner resize handles |
+| Lyric | drag edge or corner | resizes from that edge, anchoring the opposite edge |
+| Lyric | drag interior | moves the box with magnetic center/edge snap (hold Shift to bypass snap; Esc cancels) |
+| Lyric | quick click | goes to the song's Firefox tab and raises its window |
 | Lyric | right-click | the settings page |
-| Lyric | Ctrl+drag | moves the box |
-| Lyric | Alt+drag | resizes the box about its center |
 | Lyric | Ctrl+scroll | changes the text size |
-| Adjust mode | drag / 8 handles / scroll / Esc | move with magnetic snap, resize any edge or corner, scale text without Ctrl, press Esc to finish |
 | Pitch panel | drag an edge | resizes it |
 | Pitch panel | drag a separate one | moves it; dropped against a side of the lyric, it docks there |
 | Pitch panel | drag a docked one away | makes it separate |
@@ -109,15 +109,14 @@ each change shows on the line and the pitch panel as you make it. A right
 press on the indicator, the lyric or the pitch panel selects that tab, or
 opens it, and raises its window; there is only ever one.
 
-![The settings page: live lyric preview, interactive screen placement map, and tabbed controls](docs/settings.png)
+![The settings page: live stage on the left, clean three-tab inspector on the right](docs/settings.png)
 
 | Area | What it holds |
 |---|---|
-| Studio (always visible) | live lyric preview over Video/Dark/Light/Grid scenes (resizable, sample lines, clamped-size warning with one-click box expand) beside an interactive screen placement map (exact monitor ratio, 8-handle lyric resize & drag with center snap, pitch panel docking/resizing, placement presets) and **Adjust box on desktop** |
-| Lyric & Style | one-click style presets; searchable font browser with category filters, weight, italic, all-caps, letter spacing; size (16-256 px), fit mode (fit inside or fill box), max lines, horizontal & vertical alignment; 11 named colors or custom hex, text opacity; border style/thickness/color, drop shadow, pill or full-box backdrop plate, line transition |
-| Box & Position | exact pixel/percentage sliders for X, Y, width and height (for both lyric and separate pitch panel), reset position, desktop Adjust Mode toggle and mouse/keyboard reference |
-| Pitch Panel | on/off, live pitch trace preview, docking/size, fixed or voice-following range (or fit to last 30 s), window duration, scroll in silence, trace thickness/color/background, note names, scale highlighting (detected from song, fixed or none), current-note readout, analysis rate, PipeWire microphone picker and echo cancelling |
-| Song & Lyrics | what is playing, lyric status, timing nudges (Too fast / Too slow in 0.5 s steps, Reset), full-width lyric sets with Timed/Untimed pills (Wrong lyrics, Search again, Look up), microphone & detected scale readout, and Firefox add-on version with install button when outdated |
+| Live stage (left, sticky) | flips between **Preview** (live lyric preview over Video/Dark/Light scenes on Lyrics/Song, or live pitch trace preview on Pitch, with inline sample text) and **Screen map** (exact monitor aspect ratio, 8-handle lyric resize and drag with center snap, pitch panel docking/resizing, multi-monitor picker, placement presets) |
+| Lyrics | eight focused controls beside the preview: searchable font picker, constant size (`16-256 px`, long lines wrap naturally without shrinking), Bold/Italic, 11 colors or custom hex, proportional borders (`Double` fused body + crisp trim + soft shadow, `Glow` fused body + feathered halo, `Single`, `None`), optional `Behind text` or `Full bar` backdrop, alignment, and transition |
+| Pitch | docking/size, fixed or voice-following range (or fit to last 30 s), window duration, scroll in silence, trace thickness/color/background, note names, scale highlighting (detected from song, fixed or none), current-note readout, analysis rate, PipeWire microphone picker and echo cancelling |
+| Song | what is playing, lyric status, timing nudges (Too fast / Too slow in 0.5 s steps, Reset), single-line lyric sets with Timed/Untimed pills (Wrong lyrics, Search again, Look up), microphone and detected scale readout, and Firefox add-on version with install button when outdated |
 
 White with a double border (the default), then yellow with a single border,
 left-aligned:
