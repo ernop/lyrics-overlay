@@ -11,6 +11,17 @@ import {TEXT_COLORS, ringColors} from './shared/text-ink.js';
 
 const SMALLEST_FITTED_SIZE = 12;
 const EDGE_PIXELS = 4;
+// Cairo's stroker leaves a hole in a stroke whose half-width exceeds the
+// radius of a closed contour: a wide border around the dot of an i, j or
+// ï, a period or a colon drew as a ring with the background showing
+// inside it. A stroke of half-width h is drawn correctly from h down to
+// about h minus the contour's diameter, so strokes stepped down by less
+// than the smallest contour's diameter cover every distance. A period or
+// the dot of an i is about 0.12 of the font size across in common fonts.
+// Only the widest stroke's outer edge shows, so the narrower strokes are
+// drawn without antialiasing: two half-covered edges stacked inside the
+// ring would leave a pale speck where the next color shows through.
+const RING_STEP_OF_FONT_SIZE = 0.06;
 
 const ALIGNMENTS = Object.freeze({
     'center': Pango.Alignment.CENTER,
@@ -105,6 +116,23 @@ export function fitLyric(context, text, params) {
     };
 }
 
+/**
+ * Strokes the current path so that everything within `reach` pixels of it
+ * down to `floor` pixels is covered: stepped strokes, see
+ * RING_STEP_OF_FONT_SIZE. Keeps the path.
+ */
+function strokeBand(cr, reach, floor, step) {
+    const antialias = cr.getAntialias();
+    for (let halfWidth = reach; ; halfWidth -= step) {
+        cr.setLineWidth(2 * halfWidth);
+        cr.strokePreserve();
+        cr.setAntialias(Cairo.Antialias.NONE);
+        if (halfWidth - step <= floor)
+            break;
+    }
+    cr.setAntialias(antialias);
+}
+
 /** Paints a fitted lyric with its region's top-left at the cairo origin. */
 export function paintLyric(cr, fitted) {
     const layout = PangoCairo.create_layout(cr);
@@ -120,14 +148,15 @@ export function paintLyric(cr, fitted) {
     PangoCairo.layout_path(cr, layout);
     cr.setLineJoin(Cairo.LineJoin.ROUND);
     cr.setLineCap(Cairo.LineCap.ROUND);
+    const step = Math.max(1, fitted.spec.fontSize * RING_STEP_OF_FONT_SIZE);
+    // The inner ring covers everything within `inner`, so the outer ring
+    // needs its band only down to there.
     if (outer > 0) {
         cr.setSourceRGBA(...rings.outer, 1);
-        cr.setLineWidth(2 * (inner + outer));
-        cr.strokePreserve();
+        strokeBand(cr, inner + outer, inner, step);
     }
     cr.setSourceRGBA(...rings.inner, 1);
-    cr.setLineWidth(2 * inner);
-    cr.strokePreserve();
+    strokeBand(cr, inner, 0, step);
     cr.setSourceRGBA(...fitted.fill, 1);
     cr.fill();
 }

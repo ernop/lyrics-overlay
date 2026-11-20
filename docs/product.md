@@ -52,6 +52,9 @@ indicator changes quietly.
   outer ring is the other, so the line reads on any background. Border
   thickness (owner, 2026-11-10: "thicker border options at all types"):
   0.25 to 4 times the standard width for the text size, for either border.
+  Each ring is solid around every part of every letter, dots and
+  punctuation included, at every thickness (owner, 2026-11-19: at 4 times,
+  the dots of i and j had rings with the background showing inside).
   Alignment: centered (default) or left within the box.
 - **Transitions.** Instant, a short fade-in (default), or a quick or soft
   crossfade between lines.

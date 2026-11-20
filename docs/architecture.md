@@ -51,7 +51,12 @@ Firefox tab (YouTube)                         GNOME Shell
   its drags; `pitch-view.js` draws the trace). `extension.js` raises the
   window the add-on names after a click on the lyric (the song's) or a
   right press on the indicator, the lyric or the panel (the settings
-  page's). Display settings live in its GSettings schema
+  page's). `text-layout.js` fits the line and paints it: the outer ring,
+  the inner ring, then the letters, each ring as strokes of the letters'
+  outline. Cairo leaves a hole in a stroke wider than a small closed
+  contour (the dot of an i), so each ring is several strokes stepped down
+  in width by less than a dot's diameter, only the widest antialiased
+  (`tests/text-layout-ring.test.mjs`). Display settings live in its GSettings schema
   (`org.gnome.shell.extensions.lyrics-overlay`), which the settings page
   writes through the service.
 - **Shared modules** (`shared/`): lyric parsing and display timing,
