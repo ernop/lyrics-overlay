@@ -96,6 +96,11 @@ The indicator shows while YouTube plays sound and for two minutes after.
 
 Where no lyric is drawn, clicks reach the windows below.
 
+The keyboard's media keys (play/pause, next, previous) reach YouTube through
+Firefox itself, which offers each playing tab to the desktop as a media
+player; this needs Firefox's `media.hardwaremediakeys.enabled` (on by
+default). The keys go to the tab that played media last.
+
 ## The settings page
 
 Everything is set on one page in Firefox, http://localhost:8792/settings, and

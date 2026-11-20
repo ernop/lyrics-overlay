@@ -62,6 +62,12 @@ indicator changes quietly.
   draggable, ultra-instant").** A move repaints nothing; a resize or a
   Ctrl+scroll step repaints only the line that shows, from cached wrap
   widths and border masks, in a few milliseconds at any border thickness.
+- **Media keys go through Firefox (owner, 2026-11-19).** The keyboard's
+  play/pause, next and previous keys reach YouTube through Firefox's own
+  desktop media player (MPRIS), which GNOME's media-keys service
+  addresses; the overlay adds nothing. Next acts where YouTube offers a
+  next video. A service-side player that always targets the song tab was
+  offered and is not built.
 - **Pointer rules (2026-11-10).** On the lyric: a click goes to the song
   (its Firefox tab is selected and its window raised); a right-click shows
   the settings page; Ctrl+drag moves the box; Alt+drag resizes it freely
