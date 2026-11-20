@@ -18,6 +18,16 @@ overlay, and the testing lessons behind the rules. What it is for:
   `settings.json` to the Host it forwards, then restart the service.
   Add-on 1.0 reached the service that way; 1.1 and later use port 8792
   directly.
+- **Automatic lyric timing** (optional): `scripts/install-generator.sh`
+  creates a gitignored `.venv` in the repo root with `faster-whisper` and
+  NVIDIA CUDA runtime libraries (`nvidia-cublas-cu12`, `nvidia-cudnn-cu12`).
+  Configure `lyricsGenerator` in `settings.json` and restart
+  `lyrics-overlay.service`. Both `service/lyric-generator.js` and
+  `service/generate-lyrics.py` prepend `~/.local/bin` to `PATH` because
+  `systemd --user` omits it (where `yt-dlp`, `deno`, `uv`, and optional
+  local GPU gate scripts often live). `generate-lyrics.py` decodes audio
+  with `ffmpeg` directly so it does not break on `av >= 19` (which removed
+  `metadata_errors` expected by `faster-whisper.decode_audio`).
 - **More fonts** (optional): `scripts/install-fonts.sh` downloads about
   160 of Ubuntu's font packages and unpacks their TrueType and OpenType
   files into `~/.local/share/fonts/`, for this user alone; safe to rerun
@@ -225,3 +235,13 @@ asks for every site but holds only the one origin granted by hand.
 - **A probe ends its processes in `finally`, and never exits inside the
   `try` (2026-11-10).** A scratch probe's `process.exit` skipped that
   cleanup and left a bus, a service and Firefox running.
+- **GNOME Shell 50 can unwind `disable()`/`enable()` twice when another
+  extension changes state (2026-11-20).** Disabling another extension
+  triggered duplicate `disable()` and `enable()` calls on the running
+  extension: `disable()` threw on null `this._settings`, then `enable()`
+  threw on a duplicate `Main.panel.statusArea` role before starting its
+  `ServiceClient`, leaving lyrics visible from a stale proxy while every
+  click logged "the lyrics service is not running". `disable()` is now
+  idempotent, `enable()` clears stale state and rolls back on failure,
+  and `tests/e2e/overlay.e2e.mjs` explicitly exercises duplicate
+  `disable()`/`enable()` calls followed by clicking the lyric.

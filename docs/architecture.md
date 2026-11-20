@@ -18,6 +18,7 @@ Firefox tab (YouTube)                         GNOME Shell
   service/ (gjs, systemd user unit lyrics-overlay.service)       |
     http.js -> report-schema.js -> core.js -> dbus.js            |
           |                        |  lrclib.js (LRCLIB, budgeted, cached)
+          |                        |  lyric-generator.js -> generate-lyrics.py (optional local Whisper timing)
           |                        |  store.js (~/.local/state/lyrics-overlay)
           |                        |  pitch-capture.js (PipeWire, on request; echo-cancel.js, microphones.js)
           |                        |  song-key.js (what the computer plays, while a detected scale shows)
@@ -49,9 +50,17 @@ Firefox tab (YouTube)                         GNOME Shell
   50). Renders what the service says: the indicator, the line, and the
   pitch panel (`pitch-panel.js` places it, docked or separate, and handles
   its drags; `pitch-view.js` draws the trace). `extension.js` raises the
-  window the add-on names after a click on the lyric (the song's) or a
-  right press on the indicator, the lyric or the panel (the settings
-  page's). `text-layout.js` lays out the line at the constant chosen
+  window the add-on names after a click on the lyric or timing status pill
+  (the song's) or a right press on the indicator, lyric, status pill, or
+  panel (the settings page's). Its `disable()` is idempotent, `enable()`
+  clears any stale status-area role and rolls back on throw, and
+  `ServiceClient` callbacks check `this._client === client`, preventing
+  GNOME Shell 50 extension-unwind collisions from leaving a disconnected
+  client behind. `overlay.js` also renders a quiet `StatusPill` while
+  `state.lyrics === 'generating'`, and treats edge presses as
+  `'pending-resize'` until pointer movement exceeds
+  `St.Settings.get().drag_threshold` so quick clicks near the box edge
+  still focus the song. `text-layout.js` lays out the line at the constant chosen
   `font-size` (wrapping evenly into balanced lines and reporting
   `requiredHeight` so `overlay.js` expands the render surface vertically
   along its anchor via `expandedRenderBox` without moving the saved box or
@@ -81,21 +90,23 @@ Firefox tab (YouTube)                         GNOME Shell
   (`org.gnome.shell.extensions.lyrics-overlay`), which the settings page
   writes through the service.
 - **Shared modules** (`shared/`): lyric parsing and display timing,
-  identity derivation and candidate ranking, the request budget, overlay
-  geometry (`overlay-geometry.js`: clamping, placement presets, edge
-  zones, magnetic snapping, `verticalAnchorFor`, `expandedRenderBox`,
-  `borderSpec`, `backdropMetrics`), voice-wei's pitch detector, the key
-  detector (`key-detect.js`), what the pitch panel shows when
-  (`pitch-layout.js`: its clock, which lines carry names, the note the
-  readout holds), scales and note spelling (`scales.js`), the D-Bus
-  interface (`dbus-interface.js`, one definition for service and shell),
-  the lyric status wording (`lyrics-status.js`) and the letter colors with
-  automatic WCAG contrast rings and custom hex parsing (`text-ink.js`). The
-  settings page imports `lyrics-status.js`, `scales.js`, `text-ink.js`,
-  `overlay-geometry.js` and `pitch-layout.js` as the service serves them.
-  `scripts/install-gnome-extension.sh` copies a listed set of them into the
-  installed extension's `shared/`; a shared module the shell imports must
-  be added to that list, or the extension fails to load.
+  monotone word-to-lyric alignment and hallucination-filtered transcription
+  LRC building (`lyric-align.js`), identity derivation and candidate
+  ranking, the request budget, overlay geometry (`overlay-geometry.js`:
+  clamping, placement presets, edge zones, magnetic snapping,
+  `verticalAnchorFor`, `expandedRenderBox`, `borderSpec`,
+  `backdropMetrics`), voice-wei's pitch detector, the key detector
+  (`key-detect.js`), what the pitch panel shows when (`pitch-layout.js`:
+  its clock, which lines carry names, the note the readout holds), scales
+  and note spelling (`scales.js`), the D-Bus interface (`dbus-interface.js`,
+  one definition for service and shell), the lyric status wording
+  (`lyrics-status.js`) and the letter colors with automatic WCAG contrast
+  rings and custom hex parsing (`text-ink.js`). The settings page imports
+  `lyrics-status.js`, `scales.js`, `text-ink.js`, `overlay-geometry.js`
+  and `pitch-layout.js` as the service serves them.
+  `scripts/install-gnome-extension.sh` scans `gnome-extension/*.js` for
+  `from './shared/...'` imports and copies every referenced shared module
+  into the installed extension's `shared/` directory.
 
 ## The report contract
 
@@ -293,14 +304,49 @@ GSettings too, and the page shows them at its next poll (each second).
   when it changes; timers wake the core exactly when the next line starts
   or a tab next lapses, never by polling.
 
+## Automatic lyric timing (optional)
+
+Active only when `lyricsGenerator` is configured in `settings.json`
+(`service/lyric-generator.js`, `service/generate-lyrics.py`,
+`shared/lyric-align.js`):
+
+- **Trigger**: when the active sounding song's LRCLIB lookup settles as
+  `plain` or `none` (skipping instrumentals, `next` preloads, videos
+  longer than `maxDurationSeconds`, and videos that already have a
+  generated candidate or were marked skipped/no-vocals), or on demand via
+  `Command {op: 'generate'}`. Switching songs or stopping playback sends
+  `SIGTERM` to the child process and discards its result.
+- **Audio & transcription**: `generate-lyrics.py` first tries
+  `<ytarchiveUrl>/media/<videoId>/_condensed/soundtrack.mp3` when
+  `ytarchiveUrl` is configured, and otherwise fetches audio with anonymous
+  `yt-dlp --no-playlist --ignore-config` into a `TemporaryDirectory` that
+  is always deleted on exit. It decodes audio to 16 kHz mono float32 via
+  `ffmpeg` (bypassing PyAV `av>=19` compatibility breakage in
+  `faster-whisper`), and emits `stage:audio`, `stage:gpu-wait`, and
+  `stage:transcribe` lines on stderr (streamed live into `state.generation`
+  and the overlay's quiet `StatusPill`). When `gpuGate` is configured, only
+  the child `--transcribe-audio` step runs under the external GPU gate
+  command so audio download never holds GPU memory; exit code 75 maps to
+  `{ok: false, busy: true}`.
+- **Alignment & persistence**: `shared/lyric-align.js` aligns LRCLIB's
+  `plainLyrics` onto Whisper's word timestamps with monotone semi-global
+  DP (`mode: 'aligned'`, falling back to hallucination-filtered
+  `mode: 'transcribed'` when no plain lyrics exist or coverage < 0.18),
+  adding blank LRC markers for instrumental gaps >= 4.5 s. The resulting
+  candidate (`id: 'gen:<mode>:<seq>'`, `generatedMode: 'aligned' |
+  'transcribed'`) is persisted in `videos/<id>.json`, immediately replaces
+  the status pill on screen, and is handed to ytarchive by `ArchiveSync`
+  through the same `lyricsKey` flow as LRCLIB lyrics.
+
 ## D-Bus interface
 
 Name `net.fuseki.LyricsOverlay`, path `/net/fuseki/LyricsOverlay`,
 interface `net.fuseki.LyricsOverlay1` (`shared/dbus-interface.js`):
 `GetState() -> s`, `GetLine() -> s`, `Command(s) -> s` (JSON ops: tooFast,
-tooSlow, resetOffset, choose, reject, searchAgain, lookUp, pitch),
-`FocusSong() -> s`, `OpenSettings() -> s`, signals `StateChanged`,
-`LineChanged`, `PitchFrames`. All payloads are JSON strings.
+tooSlow, resetOffset, choose, reject, searchAgain, lookUp, generate,
+pitch), `FocusSong() -> s`, `OpenSettings() -> s`, signals `StateChanged`,
+`LineChanged`, `PitchFrames`. All payloads are JSON strings. `state`
+includes `generation: {available, status, mode, stage, message}`.
 
 ## GJS lifetime rules (learned 2026-11-09)
 

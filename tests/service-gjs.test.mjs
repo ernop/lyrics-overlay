@@ -87,7 +87,7 @@ const report = (port, payload, headers = {}) => request(port, {
 });
 
 /** The real service on a private bus; stopped and removed when the test ends. */
-async function startService(t) {
+async function startService(t, extraSettings = {}) {
     const stub = await startStubLrclib();
     const realDconfBefore = await realDconf(WRITTEN_DCONF);
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lyrics-overlay-test-'));
@@ -99,6 +99,7 @@ async function startService(t) {
     fs.writeFileSync(settingsPath, JSON.stringify({
         port, hostname: 'lyrics.localhost', lrclibBaseUrl: `http://127.0.0.1:${stub.port}`,
         ytarchiveUrl: `http://127.0.0.1:${stub.port}`, stateDir: path.join(dir, 'service-state'),
+        ...extraSettings,
     }));
     serviceLog = '';
     const service = spawn('gjs', ['-m', path.join(root, 'tests/service-under-gc.js'), '--settings', settingsPath], {env, stdio: ['ignore', 'inherit', 'pipe']});
@@ -376,4 +377,67 @@ test('a video that starts sounding is handed to ytarchive once, then the lyrics 
     assert.equal((await request(port, {method: 'POST', urlPath: '/api/archive', body: '{}', headers: EXTENSION_HEADERS})).status, 404);
     assert.match(serviceLog, /ytarchive: added handoffvid1/u);
     assert.doesNotMatch(serviceLog, /CRITICAL|WARNING|failed|unreachable/u, serviceLog);
+});
+
+test('the gjs service runs the configured lyric generator when LRCLIB has no synced lyrics and hands the LRC to ytarchive', async t => {
+    const genDir = fs.mkdtempSync(path.join(os.tmpdir(), 'lyrics-gen-stub-'));
+    t.after(() => fs.rmSync(genDir, {recursive: true, force: true}));
+    const stubScript = path.join(genDir, 'stub-gen.mjs');
+    fs.writeFileSync(stubScript, `
+process.stderr.write('stage:audio\\n');
+setTimeout(() => {
+    process.stderr.write('stage:transcribe\\n');
+    setTimeout(() => {
+        process.stdout.write(JSON.stringify({
+            ok: true,
+            language: 'en',
+            duration: 60,
+            segments: [
+                {start: 2.0, end: 4.0, text: 'Generated opening line', no_speech_prob: 0.02, words: [
+                    {start: 2.0, end: 2.6, word: 'Generated', probability: 0.95},
+                    {start: 2.7, end: 3.3, word: 'opening', probability: 0.94},
+                    {start: 3.4, end: 4.0, word: 'line', probability: 0.96},
+                ]},
+                {start: 6.0, end: 8.0, text: 'Second generated line', no_speech_prob: 0.02, words: [
+                    {start: 6.0, end: 6.6, word: 'Second', probability: 0.95},
+                    {start: 6.7, end: 7.3, word: 'generated', probability: 0.94},
+                    {start: 7.4, end: 8.0, word: 'line', probability: 0.96},
+                ]},
+            ],
+        }) + '\\n');
+    }, 150);
+}, 150);
+`);
+    const {stub, port} = await startService(t, {
+        lyricsGenerator: {
+            command: [process.execPath, stubScript],
+            model: 'large-v3',
+            device: 'cpu',
+            computeType: 'int8',
+            maxDurationSeconds: 900,
+            gpuGate: null,
+        },
+    });
+    const media = {videoId: 'genvid12345', currentTime: 2.2, duration: 60, paused: false, ended: false, stalled: false, playbackRate: 1, muted: false, volume: 1, adShowing: false};
+    const metadata = {host: 'www.youtube.com', videoId: 'genvid12345', title: 'Rare Song', author: 'Indie Band - Topic', lengthSeconds: 60,
+        category: 'Music', musicVideoType: '', description: 'Provided to YouTube by Label\n\nRare Song \u00b7 Indie Band\n\nIndie Album\n\n\u2117 2026 Label',
+        musicCards: [], mediaSession: null, ytmByline: ''};
+    assert.equal((await report(port, {tabId: 9, sampledAt: Date.now(), heartbeatMs: 5000, media, metadata, next: null})).status, 204);
+
+    const timed = await waitFor(async () => {
+        const answer = JSON.parse((await request(port)).body);
+        return answer.state.lyrics === 'timed' ? answer : null;
+    }, 'generated timed lyrics');
+    assert.equal(timed.state.generation.available, true);
+    assert.equal(timed.state.generation.status, 'ready');
+    assert.equal(timed.state.generation.mode, 'transcribed');
+    assert.equal(timed.line.text, 'Generated opening line');
+    assert.ok(timed.state.candidates.some(c => c.generated === 'transcribed' && c.current && c.timed));
+    // ArchiveSync automatically sends the newly generated LRC to ytarchive.
+    await waitFor(() => stub.archived.some(req => req.path === '/api/lyrics' && req.body.video_id === 'genvid12345' &&
+        req.body.lrc?.includes('[00:02.00] Generated opening line')), 'generated LRC sent to ytarchive');
+    // Manual regenerate works through /api/command.
+    assert.deepEqual(JSON.parse((await pagePost(port, '/api/command', {op: 'generate'})).body), {ok: true});
+    assert.doesNotMatch(serviceLog, /Generated opening line/u, 'service logs must never print lyric text');
+    assert.doesNotMatch(serviceLog, /CRITICAL|WARNING|Error/u, serviceLog);
 });

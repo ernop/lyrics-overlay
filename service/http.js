@@ -20,7 +20,7 @@ const MAX_BODY_BYTES = 64 * 1024;
 const EXTENSION_PATHS = new Set(['/api/report', '/api/gone', '/api/commands', '/api/command-result']);
 const PAGE_PATHS = new Set(['/api/settings', '/api/settings/reset', '/api/command', '/api/pitch/fit']);
 // The song controls the settings page offers (LyricsCore.command).
-const PAGE_COMMANDS = new Set(['tooFast', 'tooSlow', 'resetOffset', 'choose', 'reject', 'searchAgain', 'lookUp']);
+const PAGE_COMMANDS = new Set(['tooFast', 'tooSlow', 'resetOffset', 'choose', 'reject', 'searchAgain', 'lookUp', 'generate']);
 // "Fit to my singing" leaves this much room around what was sung.
 const FIT_MARGIN = 1;
 const FIT_MIN_SPAN = 12;

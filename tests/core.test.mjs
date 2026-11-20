@@ -36,7 +36,7 @@ function record(id, overrides = {}) {
  *          budgetWindows?: ReadonlyArray<{seconds: number, limit: number}>}} options
  *        LRCLIB answers by "artist|title"; a function answers each search itself
  */
-function harness({answers = {}, budgetWindows} = {}) {
+function harness({answers = {}, budgetWindows, generate, maxGenerateDurationSeconds} = {}) {
     let now = 1_700_000_000_000;
     const pending = [];
     const searches = [];
@@ -83,6 +83,8 @@ function harness({answers = {}, budgetWindows} = {}) {
         emit: {state: state => states.push(state), line: line => lines.push(line)},
         log: message => logs.push(message),
         budgetWindows,
+        generate,
+        maxGenerateDurationSeconds,
     });
     const flush = () => new Promise(resolve => setImmediate(resolve));
     return {
@@ -446,4 +448,113 @@ test('ads hide the line', async () => {
     h.report(7, {sampledAt: h.now, media: media('v1', {currentTime: 3, adShowing: true})});
     assert.equal(h.lastLine().text, '');
     assert.equal(h.lastState().active, true);
+});
+
+test('auto-generates timed lyrics when LRCLIB returns only plain text, updates stages, and persists', async () => {
+    const calls = [];
+    let finish;
+    const h = harness({
+        answers: {'Band|Song One': [record(10, {syncedLyrics: null, plainLyrics: 'First line\nSecond line'})]},
+        generate: req => {
+            calls.push(req);
+            let cancelled = false;
+            return {
+                promise: new Promise(resolve => { finish = resolve; }),
+                cancel: () => { cancelled = true; req.cancelled = cancelled; },
+            };
+        },
+    });
+    h.report(7, {sampledAt: h.now, media: media('v1', {currentTime: 10.5}), metadata: metadata('v1')});
+    await h.flush();
+
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].plainLyrics, 'First line\nSecond line');
+    assert.equal(h.lastState().lyrics, 'generating');
+    assert.equal(h.lastState().generation.available, true);
+    assert.equal(h.lastState().generation.status, 'running');
+    assert.equal(h.lastState().generation.mode, 'aligned');
+    assert.equal(h.lastState().generation.message, 'Aligning lyrics \u00b7 loading audio');
+
+    calls[0].onStage('gpu-wait');
+    assert.equal(h.lastState().generation.message, 'Aligning lyrics \u00b7 waiting for GPU');
+    calls[0].onStage('transcribe');
+    assert.equal(h.lastState().generation.message, 'Aligning lyrics\u2026');
+
+    finish({
+        ok: true,
+        mode: 'aligned',
+        lrc: '[00:10.00] First line\n[00:15.00] Second line\n',
+        plainText: 'First line\nSecond line',
+        duration: 200,
+        coverage: 0.92,
+        lineCount: 2,
+    });
+    await h.flush();
+
+    assert.equal(h.lastState().lyrics, 'timed');
+    assert.equal(h.lastState().generation.status, 'ready');
+    assert.equal(h.lastState().generation.mode, 'aligned');
+    assert.equal(h.lastLine().text, 'First line');
+    assert.ok(h.lastState().candidates.some(c => c.generated === 'aligned' && c.current && c.timed));
+    // Rejecting the generated set does not trigger an automatic regeneration loop.
+    assert.deepEqual(h.core.command({op: 'reject'}), {ok: true});
+    await h.flush();
+    assert.equal(calls.length, 1);
+    // Manual regenerate forces a fresh run and selects the new candidate.
+    assert.deepEqual(h.core.command({op: 'generate'}), {ok: true});
+    assert.equal(calls.length, 2);
+    assert.equal(h.lastState().lyrics, 'generating');
+});
+
+test('auto-generation cancels when switching songs, skips instrumentals and long videos, and ignores next preloads', async () => {
+    const calls = [];
+    const h = harness({
+        answers: {
+            'Band|Song One': [],
+            'Band|Song Two': [record(2, {trackName: 'Song Two', instrumental: true, syncedLyrics: null, plainLyrics: ''})],
+            'Band|Song Three': [],
+        },
+        maxGenerateDurationSeconds: 600,
+        generate: req => {
+            const entry = {videoId: req.videoId, cancelled: false, resolve: null};
+            calls.push(entry);
+            return {
+                promise: new Promise(resolve => { entry.resolve = resolve; }),
+                cancel: () => {
+                    entry.cancelled = true;
+                    entry.resolve?.({ok: false, cancelled: true});
+                },
+            };
+        },
+    });
+
+    // Song One has no lyrics on LRCLIB -> starts generating; next preload (Song Three) is NOT generated.
+    h.report(7, {
+        sampledAt: h.now,
+        media: media('v1'),
+        metadata: metadata('v1'),
+        next: {videoId: 'v3', title: 'Band - Song Three', artist: 'Band', durationSeconds: 200},
+    });
+    await h.flush();
+    assert.deepEqual(calls.map(c => c.videoId), ['v1']);
+    assert.equal(h.lastState().lyrics, 'generating');
+    assert.equal(h.lastState().generation.message, 'Timing lyrics \u00b7 loading audio');
+
+    // Switching to Song Two cancels v1 immediately and does not generate for instrumental Song Two.
+    h.report(7, {sampledAt: h.now, media: media('v2'), metadata: SONG_TWO});
+    await h.flush();
+    assert.equal(calls[0].cancelled, true);
+    assert.deepEqual(calls.map(c => c.videoId), ['v1']);
+
+    // A 30-minute video is skipped cleanly without calling the generator.
+    const longSong = metadata('vlong', {
+        title: 'Long Mix',
+        lengthSeconds: 1800,
+        description: 'Provided to YouTube by Label\n\nLong Mix \u00b7 Band\n\nAlbum\n\n\u2117 2003 Label',
+    });
+    h.report(7, {sampledAt: h.now, media: media('vlong', {duration: 1800}), metadata: longSong});
+    await h.flush();
+    assert.deepEqual(calls.map(c => c.videoId), ['v1']);
+    assert.equal(h.lastState().generation.status, 'skipped');
+    assert.match(h.lastState().generation.message, /10 minutes/u);
 });

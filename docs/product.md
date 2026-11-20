@@ -126,21 +126,54 @@ indicator changes quietly.
   or the pitch panel shows it; each change applies live. There is one
   settings tab: a right press selects the open one and raises its window
   rather than opening another.
-- **Queued next (owner, 2026-11-19).** Live/automatic lyric timing for
-  songs missing synced lyrics on LRCLIB, with a quiet in-overlay status
-  indicator while timing is generated.
+- **Automatic local lyric timing with quiet in-overlay status (owner,
+  2026-11-20).** When `lyricsGenerator` is configured in `settings.json`
+  (off by default in `settings.example.json`) and a playing song's LRCLIB
+  lookup settles as `plain` (untimed lyrics only) or `none` (no match),
+  the service automatically generates timed LRC lyrics locally using
+  `faster-whisper` (`large-v3` on CUDA when available, or CPU):
+  - **Mode A (plain-lyric alignment)** when LRCLIB has plain lyrics: runs
+    Whisper with word timestamps and aligns LRCLIB's exact lines onto the
+    spoken/sung words via monotone semi-global DP (skipping section headers
+    like `[Chorus]`, ignoring spoken intros/outros, interpolating missed
+    lines, and inserting blank LRC markers for instrumental gaps >= 4.5 s
+    so countdowns work).
+  - **Mode B (direct transcription)** when LRCLIB has no plain lyrics or
+    plain-lyric alignment coverage falls below 18% (wrong song): cleans
+    Whisper's segments (filtering silence/caption hallucinations and
+    degenerate loops, splitting long segments on pauses or punctuation, and
+    inserting instrumental-gap blanks).
+  - **Quiet in-overlay status pill**: while generation runs (`lyrics ===
+    'generating'`), the overlay shows a single compact translucent pill
+    (`Timing lyrics · loading audio`, `Timing lyrics · waiting for GPU`,
+    `Timing lyrics…`, or `Aligning lyrics …` when LRCLIB has plain lyrics)
+    in crisp white bold text with no animation or flashing, hiding
+    immediately once timed lyrics arrive. Clicking the pill still raises
+    the YouTube tab; right-clicking opens the settings page.
+  - **Discipline and persistence**: only runs for the active sounding song
+    (never for `next` preloads, instrumentals, or videos longer than
+    `maxDurationSeconds`, default 900 s), cancels immediately via `SIGTERM`
+    if the user skips songs or stops, persists the generated candidate per
+    video (`gen:aligned:*` / `gen:transcribed:*`) so replays are instant,
+    automatically forwards the generated LRC to ytarchive when
+    `ytarchiveUrl` is set, and offers manual `Generate timed lyrics` /
+    `Retry timing` / `Regenerate timed lyrics` in the settings page's Song
+    tab.
 - **Choosing lyrics.** The settings page lists every candidate set found;
   the owner can pick one, hide a wrong one ("Wrong lyrics: hide this set"),
-  search again, or look up lyrics for a video not recognized as music.
-  Choices and rejections are remembered per video.
+  search again, generate or regenerate timed lyrics (when enabled), or look
+  up lyrics for a video not recognized as music. Choices and rejections are
+  remembered per video.
 - **The icon says the state quietly.** A note beside three text lines: a
   filled note with bold lines while the overlay is on, a hollow note with
   thin lines while it is off. Only these two (owner, 2026-11-10: "just
   on/off is enough"); the no-lyrics variants were dropped. Nothing pops up
   unasked: the one notification answers a right press whose settings page
   could not be shown, with the reason and the page's address.
-- **Lookup from metadata only.** Song, artist, album and year come from
-  YouTube's own metadata; no audio is transcribed.
+- **Lookup from metadata first.** Song, artist, album and year always come
+  from YouTube's own metadata for LRCLIB lookups; audio is downloaded and
+  transcribed locally only when `lyricsGenerator` is configured and LRCLIB
+  lacks synced lyrics.
 - **Next song preloaded.** The upcoming video's lyrics are fetched while the
   current one plays, when the upcoming listing names an artist.
 - **Efficient and cached.** Every answer is cached server-side and reused;
@@ -222,14 +255,22 @@ indicator changes quietly.
   a failure. Each lookup logs its outcome and timings. Before this, every
   open YouTube tab queued lookups and 429s read as failures, so a song
   could show "Looking up lyrics" for minutes.
-- **Going to the song (2026-11-10).** The browser extension selects the
-  tab but never focuses the browser window itself: Firefox's focus request
-  makes GNOME show a "... is ready" notification instead of raising the
-  window. The shell raises the one window whose title is exactly the one
-  the extension reports, waiting up to 1 s for the browser to retitle it,
-  and does nothing when two windows share that title rather than guess. A
-  tab switch answered more than 3 s after the click is dropped, so a slow
-  browser never pulls a window forward unasked.
+- **Going to the song (2026-11-10; lifecycle hardened 2026-11-20).** The
+  browser extension selects the tab but never focuses the browser window
+  itself: Firefox's focus request makes GNOME show a "... is ready"
+  notification instead of raising the window. The shell raises the one
+  window whose title is exactly the one the extension reports, waiting up
+  to 1 s for the browser to retitle it, and does nothing when two windows
+  share that title rather than guess. A tab switch answered more than 3 s
+  after the click is dropped, so a slow browser never pulls a window
+  forward unasked. On 2026-11-20, another GNOME extension disabling caused
+  GNOME Shell 50 to unwind `disable()`/`enable()` twice; the older
+  extension threw inside `disable()` and left `this._client` unstarted
+  while a stale proxy still drew lyrics, breaking every click. `disable()`
+  is now idempotent, `enable()` clears stale status-area actors and rolls
+  back on error, callbacks verify `this._client === client`, and clicks
+  inside the edge resize zone only start resizing once pointer movement
+  passes the desktop drag threshold.
 - **A paused song stays clickable.** A paused video keeps the extension's
   background page alive for the two minutes its song stays on screen;
   otherwise Firefox stops that page after 30 s and a click on the lyric

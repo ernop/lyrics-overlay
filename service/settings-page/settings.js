@@ -324,11 +324,14 @@ function buildTopBar() {
 
     model.stateViews.push(state => {
         songTitle.textContent = state.active ? (state.identityText || state.videoId) : 'No song playing';
-        statusPill.textContent = LYRICS_STATUS_TEXT[state.lyrics] ?? state.lyrics;
+        const statusText = state.lyrics === 'generating' && state.generation?.message
+            ? state.generation.message
+            : (LYRICS_STATUS_TEXT[state.lyrics] ?? state.lyrics);
+        statusPill.textContent = statusText;
         statusPill.className = 'pill';
         if (state.lyrics === 'timed')
             statusPill.classList.add('pill-good');
-        else if (state.lyrics === 'searching' || state.lyrics === 'waiting' || state.lyrics === 'plain')
+        else if (state.lyrics === 'searching' || state.lyrics === 'waiting' || state.lyrics === 'plain' || state.lyrics === 'generating')
             statusPill.classList.add('pill-warn');
         else if (state.lyrics === 'error')
             statusPill.classList.add('pill-alert');
@@ -875,6 +878,7 @@ function buildSongTab() {
     const wrong = pressButton('Wrong lyrics: hide this set', () => command({op: 'reject'}));
     const again = pressButton('Search again', () => command({op: 'searchAgain'}));
     const lookUp = pressButton('Look up lyrics for this video', () => command({op: 'lookUp'}));
+    const generate = pressButton('Generate timed lyrics', () => command({op: 'generate'}), {hidden: 'hidden'});
     const timingButtons = [
         pressButton('Too fast (\u22120.5 s)', () => command({op: 'tooFast'})),
         pressButton('Too slow (+0.5 s)', () => command({op: 'tooSlow'})),
@@ -887,13 +891,31 @@ function buildSongTab() {
         install.hidden = addon.status !== 'unnamed' && addon.status !== 'older';
         updateService.hidden = addon.status !== 'newer';
         playing.textContent = state.active ? state.identityText || state.videoId : 'Nothing on YouTube';
-        lyrics.textContent = LYRICS_STATUS_TEXT[state.lyrics];
+        const gen = state.generation;
+        if (state.lyrics === 'generating' && gen?.message) {
+            lyrics.textContent = gen.message;
+        } else if ((gen?.status === 'error' || gen?.status === 'skipped') && gen.message && state.lyrics !== 'timed') {
+            lyrics.textContent = `${LYRICS_STATUS_TEXT[state.lyrics]} (${gen.message})`;
+        } else {
+            lyrics.textContent = LYRICS_STATUS_TEXT[state.lyrics] ?? state.lyrics;
+        }
         timing.textContent = `${state.offsetSeconds > 0 ? '+' : ''}${state.offsetSeconds.toFixed(1)} s`;
         for (const button of timingButtons)
             button.disabled = !state.active;
         wrong.disabled = !state.chosen;
         again.disabled = !state.active;
         lookUp.disabled = !state.active;
+        const canGenerate = Boolean(gen?.available);
+        generate.hidden = !canGenerate;
+        generate.disabled = !state.active || state.lyrics === 'generating';
+        if (state.lyrics === 'generating')
+            generate.textContent = 'Timing lyrics\u2026';
+        else if (gen?.status === 'error')
+            generate.textContent = 'Retry timing';
+        else if (state.candidates.some(c => c.generated))
+            generate.textContent = 'Regenerate timed lyrics';
+        else
+            generate.textContent = 'Generate timed lyrics';
         microphone.textContent = state.pitch.error ? `Stopped: ${state.pitch.error}`
             : state.pitch.capturing ? state.pitch.microphone || 'On' : 'Off';
         const scale = model.values['pitch-scale'];
@@ -909,6 +931,7 @@ function buildSongTab() {
         sets.replaceChildren(...state.candidates.map(candidate => {
             const tags = [
                 el('span', {class: candidate.timed ? 'pill pill-good' : 'pill pill-warn'}, candidate.timed ? 'Timed' : 'Untimed'),
+                ...(candidate.generated ? [el('span', {class: 'pill'}, candidate.generated === 'aligned' ? 'Aligned' : 'Transcribed')] : []),
                 ...(!candidate.matches ? [el('span', {class: 'pill pill-warn'}, 'Weak match')] : []),
                 ...(candidate.rejected ? [el('span', {class: 'pill pill-alert'}, 'Hidden')] : []),
             ];
@@ -927,7 +950,7 @@ function buildSongTab() {
         row('Playing', playing),
         row('Lyrics', lyrics),
         row('Timing offset', timing, ...timingButtons),
-        row('Actions', wrong, again, lookUp),
+        row('Actions', wrong, again, lookUp, generate),
         row('Microphone', microphone),
         row('Detected scale', heardKey),
         row('Firefox add-on', addonVersion, install, updateService),

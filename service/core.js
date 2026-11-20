@@ -15,6 +15,7 @@ import {
 import {deriveIdentity, deriveNextIdentity, describeIdentity} from '../shared/song-identity.js';
 
 export const SEARCH_VERSION = 1;
+export const GENERATE_VERSION = 1;
 // The indicator stays this long after YouTube stops sounding.
 export const SOUNDING_GRACE_MS = 120_000;
 // A tab that promised a heartbeat (report heartbeatMs) and misses this many
@@ -24,6 +25,11 @@ export const MISSED_HEARTBEATS = 3;
 export const SEARCH_CACHE_MS = 7 * 24 * 3600 * 1000;
 export const MISS_RECHECK_MS = 7 * 24 * 3600 * 1000;
 export const ERROR_RECHECK_MS = 10 * 60 * 1000;
+export const GENERATE_ERROR_RECHECK_MS = 10 * 60 * 1000;
+export const DEFAULT_MAX_GENERATE_DURATION_SECONDS = 900;
+// Above MIN_ACCEPT_SCORE (0.58) so an auto-timed set wins over untimed LRCLIB
+// text, below strong LRCLIB timed matches so a later LRCLIB timed match wins.
+export const GENERATED_CANDIDATE_SCORE = 0.62;
 export const MAX_STORED_CANDIDATES = 10;
 
 function storedCandidate(entry) {
@@ -55,7 +61,20 @@ export function candidateLabel(candidate) {
 }
 
 function newVideoRecord(videoId) {
-    return {version: 1, videoId, identity: null, lookup: null, candidates: [], chosenId: null, rejectedIds: [], offsetSeconds: 0, userRequested: false};
+    return {version: 1, videoId, identity: null, lookup: null, generated: null, candidates: [], chosenId: null, rejectedIds: [], offsetSeconds: 0, userRequested: false};
+}
+
+function generationStageMessage(hasPlain, stage) {
+    const verb = hasPlain ? 'Aligning lyrics' : 'Timing lyrics';
+    switch (stage) {
+    case 'audio':
+        return `${verb} \u00b7 loading audio`;
+    case 'gpu-wait':
+        return `${verb} \u00b7 waiting for GPU`;
+    case 'transcribe':
+    default:
+        return `${verb}\u2026`;
+    }
 }
 
 export class LyricsCore {
@@ -66,6 +85,9 @@ export class LyricsCore {
      *           saveSearch(key: string, entry: {at: number, records: object[]}): void,
      *           loadBudget(): object|null, saveBudget(state: object): void},
      *   search: (candidate: {artist: string, title: string}) => Promise<object[]>,
+     *   generate?: (request: {videoId: string, identity: object, plainLyrics: string,
+     *                         onStage: (stage: string) => void}) => {promise: Promise<object>, cancel: () => void},
+     *   maxGenerateDurationSeconds?: number,
      *   clock: {now(): number},
      *   timers: {set(callback: () => void, delayMs: number): unknown, clear(handle: unknown): void},
      *   emit: {state(state: object): void, line(line: {text: string, key: string}): void},
@@ -80,12 +102,15 @@ export class LyricsCore {
         }
         this._deps = deps;
         this._budgetWindows = deps.budgetWindows ?? LRCLIB_WINDOWS;
+        this._maxGenerateDurationSeconds = deps.maxGenerateDurationSeconds ?? DEFAULT_MAX_GENERATE_DURATION_SECONDS;
         this._budget = loadedBudgetState(deps.store.loadBudget());
         this._sessions = new Map();
         this._videos = new Map();
         this._lines = new Map();
         this._queue = [];
         this._running = null;
+        this._generating = null;
+        this._generateSeq = 0;
         this._waitingUntil = 0;
         this._timers = {line: null, activity: null, budget: null};
         this._lastState = '';
@@ -93,6 +118,11 @@ export class LyricsCore {
         this._pitch = {capturing: false, error: '', microphone: ''};
         /** @type {{videoId: string, root: number, type: 'major'|'minor'}|null} */
         this._songKey = null;
+    }
+
+    /** Stops any active lyric generation subprocess cleanly on service shutdown. */
+    shutdown() {
+        this._cancelGeneration('service stopping');
     }
 
     // ----- browser reports
@@ -185,6 +215,20 @@ export class LyricsCore {
             record.userRequested = true;
             this._deps.store.saveVideo(record);
             this._enqueue({videoId: session.videoId, identity: session.identity, force: command.op === 'searchAgain', current: true});
+            this._refresh();
+            return {ok: true};
+        case 'generate':
+            if (!this._deps.generate)
+                return {ok: false, error: 'automatic lyric timing is not configured'};
+            if (!record || !session.identity)
+                return {ok: false};
+            if (this._generating?.videoId === session.videoId)
+                return {ok: true};
+            if (this._generating)
+                this._cancelGeneration('replaced by user request');
+            record.userRequested = true;
+            this._deps.store.saveVideo(record);
+            this._startGeneration(session.videoId, session.identity, record, {force: true});
             this._refresh();
             return {ok: true};
         default:
@@ -453,15 +497,176 @@ export class LyricsCore {
         }
         const ranked = rankRecords(answered, duration);
         const kept = ranked.slice(0, MAX_STORED_CANDIDATES).map(storedCandidate);
-        const chosen = record.candidates.find(candidate => candidate.id === record.chosenId);
-        if (chosen && !kept.some(candidate => candidate.id === chosen.id))
-            kept.push(chosen);
+        for (const extra of record.candidates.filter(candidate => candidate.id === record.chosenId || candidate.generated)) {
+            if (!kept.some(candidate => candidate.id === extra.id))
+                kept.push(extra);
+        }
         record.candidates = kept;
         const autoId = chooseAutomatic(ranked, []);
         const auto = kept.find(candidate => candidate.id === autoId);
         record.lookup = {status: auto ? (auto.timed ? 'timed' : 'plain') : 'none', at: clock.now(), queries, version: SEARCH_VERSION};
         store.saveVideo(record);
         return {outcome: record.lookup.status, searched, cached: cachedCount};
+    }
+
+    // ----- automatic lyric timing / generation
+
+    _cancelGeneration(reason) {
+        const active = this._generating;
+        if (!active)
+            return;
+        this._generating = null;
+        this._deps.log(`generate ${active.videoId}: cancelled (${reason})`);
+        active.handle.cancel();
+    }
+
+    _plainCandidateFor(record) {
+        const effective = this._effective(record);
+        if (effective && !effective.timed && !effective.instrumental && effective.plainLyrics)
+            return effective;
+        const rejected = new Set(record.rejectedIds);
+        return record.candidates.find(candidate =>
+            !candidate.generated && !candidate.timed && !candidate.instrumental &&
+            candidate.plainLyrics && candidate.matches && !rejected.has(candidate.id)) ?? null;
+    }
+
+    _generationWanted(session, record, now) {
+        if (!this._deps.generate || !session.identity || !this._sounding(session))
+            return false;
+        if (!session.identity.musical && !record.userRequested)
+            return false;
+        if (this._running?.videoId === session.videoId || this._queue.some(job => job.videoId === session.videoId))
+            return false;
+        if (!record.lookup || record.lookup.status === 'error')
+            return false;
+        const effective = this._effective(record);
+        if (effective?.timed || effective?.instrumental)
+            return false;
+        const gen = record.generated;
+        if (gen && gen.version === GENERATE_VERSION) {
+            if (gen.status === 'ready' || gen.status === 'skipped')
+                return false;
+            if (gen.status === 'error' && now - gen.at <= GENERATE_ERROR_RECHECK_MS)
+                return false;
+        }
+        return true;
+    }
+
+    _syncGeneration(session, now) {
+        if (!this._deps.generate)
+            return;
+        if (this._generating && (!session || session.videoId !== this._generating.videoId))
+            this._cancelGeneration(session ? 'switched to another video' : 'playback ended');
+        if (this._generating || !session)
+            return;
+        const record = this._video(session.videoId);
+        if (!this._generationWanted(session, record, now))
+            return;
+        const duration = Number(session.identity.durationSeconds) || Number(session.media?.duration) || 0;
+        if (this._maxGenerateDurationSeconds > 0 && duration > this._maxGenerateDurationSeconds) {
+            const mins = Math.round(this._maxGenerateDurationSeconds / 60);
+            record.generated = {
+                version: GENERATE_VERSION,
+                status: 'skipped',
+                mode: null,
+                at: now,
+                error: `Video is longer than ${mins} minutes`,
+                candidateId: null,
+            };
+            this._deps.store.saveVideo(record);
+            this._deps.log(`generate ${session.videoId}: skipped (${record.generated.error})`);
+            return;
+        }
+        this._startGeneration(session.videoId, session.identity, record, {force: false});
+    }
+
+    _startGeneration(videoId, identity, record, {force}) {
+        const plainCandidate = this._plainCandidateFor(record);
+        const plainLyrics = plainCandidate?.plainLyrics ?? '';
+        const startedAt = this._deps.clock.now();
+        const job = {
+            videoId,
+            force,
+            hasPlain: Boolean(plainLyrics),
+            stage: 'audio',
+            handle: null,
+        };
+        this._generating = job;
+        const handle = this._deps.generate({
+            videoId,
+            identity,
+            plainLyrics,
+            onStage: stage => {
+                if (this._generating !== job || job.stage === stage)
+                    return;
+                job.stage = stage;
+                this._refresh();
+            },
+        });
+        job.handle = handle;
+        handle.promise.then(result => {
+            if (this._generating !== job)
+                return;
+            this._generating = null;
+            this._finishGeneration(videoId, identity, plainCandidate, result, {force, elapsedMs: this._deps.clock.now() - startedAt});
+        }).catch(error => {
+            if (this._generating !== job)
+                return;
+            this._generating = null;
+            this._finishGeneration(videoId, identity, plainCandidate, {ok: false, error: error.message},
+                {force, elapsedMs: this._deps.clock.now() - startedAt});
+        });
+    }
+
+    _finishGeneration(videoId, identity, plainCandidate, result, {force, elapsedMs}) {
+        const {store, clock, log} = this._deps;
+        const now = clock.now();
+        const record = this._video(videoId);
+        if (result?.cancelled)
+            return;
+        if (!result?.ok || !result.lrc) {
+            const status = result?.skip ? 'skipped' : 'error';
+            const error = String(result?.error || 'Could not generate timed lyrics');
+            record.generated = {version: GENERATE_VERSION, status, mode: null, at: now, error, candidateId: null};
+            store.saveVideo(record);
+            log(`generate ${videoId}: ${status} (${error}), ${elapsedMs} ms`);
+            this._refresh();
+            return;
+        }
+
+        const seq = `${now}-${++this._generateSeq}`;
+        const candidateId = `gen:${result.mode}:${seq}`;
+        const candidate = {
+            id: candidateId,
+            trackName: plainCandidate?.trackName || identity.title || identity.videoTitle || '',
+            artistName: plainCandidate?.artistName || identity.artist || identity.channel || '',
+            albumName: result.mode === 'aligned' ? 'Auto-timed from lyrics' : 'Auto-transcribed from audio',
+            duration: Math.round(Number(result.duration) || Number(identity.durationSeconds) || 0),
+            instrumental: false,
+            plainLyrics: String(result.plainText ?? '').trim(),
+            syncedLyrics: result.lrc,
+            score: GENERATED_CANDIDATE_SCORE,
+            matches: true,
+            timed: true,
+            generated: result.mode,
+        };
+        const previousGeneratedIds = new Set(record.candidates.filter(c => c.generated).map(c => c.id));
+        record.candidates = [...record.candidates.filter(c => !c.generated), candidate];
+        record.rejectedIds = record.rejectedIds.filter(id => !previousGeneratedIds.has(id) && id !== candidateId);
+        if (force || previousGeneratedIds.has(record.chosenId))
+            record.chosenId = candidateId;
+        record.generated = {
+            version: GENERATE_VERSION,
+            status: 'ready',
+            mode: result.mode,
+            at: now,
+            error: '',
+            candidateId,
+        };
+        store.saveVideo(record);
+        const alignedNote = result.coverage !== undefined ? `, ${Math.round(result.coverage * 100)}% aligned` : '';
+        log(`generate ${videoId}: ${result.mode}, ${result.lineCount} lines${alignedNote}, ${elapsedMs} ms`);
+        this._refresh();
     }
 
     _waitFor(retryAtMs, job, reason) {
@@ -488,6 +693,8 @@ export class LyricsCore {
             return 'searching';
         if (this._queue.some(job => job.videoId === session.videoId))
             return this._waitingUntil ? 'waiting' : 'searching';
+        if (this._generating?.videoId === session.videoId)
+            return 'generating';
         if (effective)
             return effective.timed ? 'timed' : 'plain';
         if (!record.lookup)
@@ -495,11 +702,37 @@ export class LyricsCore {
         return record.lookup.status === 'error' ? 'error' : 'none';
     }
 
+    _generationState(session, record) {
+        const available = Boolean(this._deps.generate);
+        if (!session || !record)
+            return {available, status: 'idle', mode: null, stage: null, message: ''};
+        if (this._generating?.videoId === session.videoId) {
+            return {
+                available,
+                status: 'running',
+                mode: this._generating.hasPlain ? 'aligned' : 'transcribed',
+                stage: this._generating.stage,
+                message: generationStageMessage(this._generating.hasPlain, this._generating.stage),
+            };
+        }
+        const gen = record.generated;
+        if (!gen)
+            return {available, status: 'idle', mode: null, stage: null, message: ''};
+        return {
+            available,
+            status: gen.status,
+            mode: gen.mode ?? null,
+            stage: null,
+            message: gen.error ?? '',
+        };
+    }
+
     _stateJson(now) {
         const session = this._activeSession();
         if (!session) {
             return JSON.stringify({active: false, sounding: false, videoId: null, identityText: '', musical: false,
-                lyrics: 'idle', chosen: null, userChose: false, offsetSeconds: 0, candidates: [], pitch: this._pitch, key: null});
+                lyrics: 'idle', chosen: null, userChose: false, offsetSeconds: 0, candidates: [],
+                generation: this._generationState(null, null), pitch: this._pitch, key: null});
         }
         const record = this._video(session.videoId);
         const effective = this._effective(record);
@@ -521,7 +754,9 @@ export class LyricsCore {
                 matches: candidate.matches,
                 rejected: rejected.has(candidate.id),
                 current: effective?.id === candidate.id,
+                ...(candidate.generated ? {generated: candidate.generated} : {}),
             })),
+            generation: this._generationState(session, record),
             pitch: this._pitch,
             key: this._songKey?.videoId === session.videoId ? {root: this._songKey.root, type: this._songKey.type} : null,
         });
@@ -541,6 +776,7 @@ export class LyricsCore {
         this._pruneSessions(now);
         this._dropUnwantedJobs();
         const session = this._activeSession();
+        this._syncGeneration(session, now);
 
         const state = this._stateJson(now);
         if (state !== this._lastState) {

@@ -13,6 +13,7 @@ import {LyricsCore} from './core.js';
 import {exportService} from './dbus.js';
 import {loadStaticFiles, startHttp} from './http.js';
 import {createLrclibSearch} from './lrclib.js';
+import {createLyricGenerator, validateGeneratorConfig} from './lyric-generator.js';
 import {PitchCapture} from './pitch-capture.js';
 import {SettingsStore} from './settings-store.js';
 import {SongKey} from './song-key.js';
@@ -36,6 +37,7 @@ function readSettings(path) {
     }
     if (settings.ytarchiveUrl !== null && typeof settings.ytarchiveUrl !== 'string')
         throw new Error(`${path}: "ytarchiveUrl" must be an address or null`);
+    settings.lyricsGenerator = validateGeneratorConfig(settings.lyricsGenerator, path);
     return settings;
 }
 
@@ -75,9 +77,18 @@ const syncSongKey = state => {
     const listening = state.pitch.capturing && state.active && state.sounding && look.get('pitch-scale') === 'detect';
     songKey?.listen(listening ? state.videoId : null);
 };
+const generator = createLyricGenerator({
+    config: settings.lyricsGenerator,
+    projectDir,
+    runtimeDir,
+    ytarchiveUrl: settings.ytarchiveUrl,
+    log,
+});
 const core = new LyricsCore({
     store,
     search: createLrclibSearch(settings.lrclibBaseUrl),
+    generate: generator ?? undefined,
+    maxGenerateDurationSeconds: settings.lyricsGenerator?.maxDurationSeconds,
     clock: {now: () => Date.now()},
     timers,
     emit: {
@@ -145,6 +156,7 @@ for (const signal of [2, 15]) {
 
 loop.run();
 http.disconnect();
+core.shutdown();
 songKey.shutdown();
 pitch.shutdown();
 bus.close();

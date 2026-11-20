@@ -172,6 +172,8 @@ const overlayFacts = `(() => {
         grip: {visible: overlay._grip.visible, x: gx, y: gy, width: overlay._grip.width, height: overlay._grip.height},
         outlineVisible: overlay._outline.visible,
         hovered: overlay._hovered,
+        statusVisible: overlay._statusPill.visible,
+        statusText: overlay._statusText,
     };
 })()`;
 
@@ -217,9 +219,52 @@ const focusedTitle = 'global.display.focus_window?.get_title() ?? null';
 const center = rect => [rect.x + rect.width / 2, rect.y + rect.height / 2];
 
 test('the overlay shows timed lyrics and follows the pointer rules', {timeout: 120000}, async t => {
-    const h = await startHarness({answers: ANSWERS});
+    const genDir = fs.mkdtempSync(path.join(os.tmpdir(), 'lyrics-shell-gen-'));
+    t.after(() => fs.rmSync(genDir, {recursive: true, force: true}));
+    const releaseFile = path.join(genDir, 'release');
+    const stubGen = path.join(genDir, 'stub-gen.mjs');
+    fs.writeFileSync(stubGen, `
+import fs from 'node:fs';
+process.stderr.write('stage:transcribe\\n');
+const timer = setInterval(() => {
+    if (!fs.existsSync(${JSON.stringify(releaseFile)}))
+        return;
+    clearInterval(timer);
+    process.stdout.write(JSON.stringify({
+        ok: true,
+        language: 'en',
+        duration: 180,
+        segments: [
+            {start: 0.5, end: 3.0, text: 'Generated lyric arrives live', no_speech_prob: 0.02, words: [
+                {start: 0.5, end: 1.0, word: 'Generated', probability: 0.95},
+                {start: 1.1, end: 1.6, word: 'lyric', probability: 0.95},
+                {start: 1.7, end: 2.3, word: 'arrives', probability: 0.95},
+                {start: 2.4, end: 3.0, word: 'live', probability: 0.95},
+            ]},
+            {start: 40.0, end: 43.0, text: 'Later generated line', no_speech_prob: 0.02, words: [
+                {start: 40.0, end: 41.0, word: 'Later', probability: 0.95},
+                {start: 41.1, end: 42.0, word: 'generated', probability: 0.95},
+                {start: 42.1, end: 43.0, word: 'line', probability: 0.95},
+            ]},
+        ],
+    }) + '\\n');
+}, 50);
+`);
+    const h = await startHarness({
+        answers: ANSWERS,
+        extraSettings: {
+            lyricsGenerator: {
+                command: [process.execPath, stubGen],
+                model: 'large-v3',
+                device: 'cpu',
+                computeType: 'int8',
+                maxDurationSeconds: 900,
+                gpuGate: null,
+            },
+        },
+    });
     t.after(() => h.close());
-    await overlayScenario(h).catch(error => {
+    await overlayScenario(h, releaseFile).catch(error => {
         const shellLines = h.shellLog.split('\n').filter(line => /lyrics|JS ERROR|Error/u.test(line));
         error.message += `\n--- shell log, lyrics and error lines:\n${shellLines.slice(-40).join('\n')}` +
             `\n--- service log, last lines:\n${h.serviceLog.split('\n').slice(-40).join('\n')}`;
@@ -227,7 +272,7 @@ test('the overlay shows timed lyrics and follows the pointer rules', {timeout: 1
     });
 });
 
-async function overlayScenario(h) {
+async function overlayScenario(h, releaseFile) {
     await h.evalJs('Main.overview.hide(); true');
     await h.waitFor(async () => !(await h.evalJs('Main.overview.visible')), 'the overview to close');
     const extension = await h.evalJs(`(() => { const e = ${EXTENSION}; return {state: e.state, error: e.error ?? ''}; })()`);
@@ -489,8 +534,9 @@ async function overlayScenario(h) {
     await h.gsettings.set('text-custom-color', "''");
     await h.waitFor(async () => (await h.evalJs(overlayFacts)).align === 'center', 'style reset');
 
-    // A click on the lyric has the browser extension select the song's tab,
-    // then raises the window showing it.
+    // A click on the lyric (even right near the top edge resize zone, without
+    // dragging) has the browser extension select the song's tab, then raises
+    // the window showing it.
     await focusAnotherWindow();
     const beforeClick = await lyricShowing();
     const commandAnswered = h.answerNextCommand(() => ({ok: true, windowTitle: songWindow}));
@@ -500,18 +546,58 @@ async function overlayScenario(h) {
     await h.waitFor(async () => (await h.evalJs(focusedTitle)) === songWindow, 'the song window to be raised');
     await h.screenshot('lyric-click-raised-song-window');
 
-    // Disable and enable leave exactly one overlay, pitch panel and indicator.
+    // Quick click inside the top edge resize zone without moving still raises the song.
+    await focusAnotherWindow();
+    const nearTopEdge = [beforeClick.box.x + beforeClick.box.width / 2, beforeClick.box.y + 4];
+    const edgeClickCmd = h.answerNextCommand(() => ({ok: true, windowTitle: songWindow}));
+    await h.evalJs(inputScript([{move: center(beforeClick.grip)}, {move: nearTopEdge}, {button: 1, down: true}, {button: 1, down: false, wait: 100}]));
+    assert.deepEqual([(await edgeClickCmd).op, (await edgeClickCmd).tabId], ['focusTab', 4]);
+    await h.waitFor(async () => (await h.evalJs(focusedTitle)) === songWindow, 'edge quick-click to raise the song window');
+
+    // Disable and enable leave exactly one overlay, pitch panel and indicator,
+    // even if GNOME Shell unwinds disable() or enable() twice in a row.
     const chromeCounts = `['lyricsOverlay', 'lyricsPitchPanel'].map(name =>
         Main.layoutManager.uiGroup.get_children().filter(child => child.name === name).length)`;
     await h.evalJs(`Main.extensionManager.disableExtension('lyrics-overlay@ernop')`);
+    await h.evalJs(`${EXTENSION}.stateObj.disable(); true`);
     assert.deepEqual(await h.evalJs(chromeCounts), [0, 0]);
     assert.equal(await h.evalJs(`Main.panel.statusArea['lyrics-overlay@ernop'] ?? null`), null);
     await h.evalJs(`Main.extensionManager.enableExtension('lyrics-overlay@ernop')`);
+    await h.evalJs(`${EXTENSION}.stateObj.enable(); true`);
     await h.waitFor(async () => (await h.evalJs(`${EXTENSION}.stateObj?._state?.lyrics`)) === 'timed', 'state after re-enable');
     assert.deepEqual(await h.evalJs(chromeCounts), [1, 1]);
+    // Clicking the lyric STILL focuses the song after duplicate disable/enable unwinds.
+    await focusAnotherWindow();
+    const afterUnwind = await lyricShowing();
+    const unwindClickCmd = h.answerNextCommand(() => ({ok: true, windowTitle: songWindow}));
+    await h.evalJs(inputScript([{move: center(afterUnwind.grip)}, {button: 1, down: true}, {button: 1, down: false, wait: 100}]));
+    assert.deepEqual([(await unwindClickCmd).op, (await unwindClickCmd).tabId], ['focusTab', 4]);
+    await h.waitFor(async () => (await h.evalJs(focusedTitle)) === songWindow, 'click after unwind to raise the song window');
+
+    // A song without synced LRCLIB lyrics shows the quiet in-overlay status
+    // pill while timing runs, then smoothly switches to the generated lyric line.
+    playing.stop();
+    const genVideo = 'genoverlay1';
+    const genMeta = {host: 'www.youtube.com', videoId: genVideo, title: 'Unsynced Track', author: 'Indie Band - Topic',
+        lengthSeconds: 180, category: 'Music', musicVideoType: '',
+        description: 'Provided to YouTube by Label\n\nUnsynced Track \u00b7 Indie Band\n\nIndie Album\n\n\u2117 2026 Label',
+        musicCards: [], mediaSession: null, ytmByline: ''};
+    const genPlaying = await h.play({tabId: 4, heartbeatMs: 5000, media: media(0.5, {videoId: genVideo}), metadata: genMeta, next: null});
+    const generatingFacts = await h.waitFor(async () => {
+        const facts = await h.evalJs(overlayFacts);
+        return facts.visible && facts.statusVisible && facts.statusText === 'Timing lyrics\u2026' && facts;
+    }, 'the quiet in-overlay generating status pill');
+    assert.equal(generatingFacts.text, '');
+    await h.screenshot('overlay-generating-status');
+    fs.writeFileSync(releaseFile, 'go');
+    const generatedLine = await h.waitFor(async () => {
+        const facts = await h.evalJs(overlayFacts);
+        return facts.visible && !facts.statusVisible && facts.text === 'Generated lyric arrives live' && facts;
+    }, 'generated timed lyric to replace the status pill');
+    assert.equal(generatedLine.statusVisible, false);
 
     // The indicator leaves with the service and returns with it.
-    playing.stop();
+    genPlaying.stop();
     await h.stopService();
     await h.waitFor(async () => !(await h.evalJs(indicatorFacts)).visible, 'the indicator to hide without the service');
     await h.restartService();

@@ -53,9 +53,9 @@ function startStubLrclib(answers) {
 }
 
 /**
- * @param {{answers: Record<string, object[]>}} options LRCLIB answers by "artist|title"
+ * @param {{answers: Record<string, object[]>, extraSettings?: object}} options LRCLIB answers by "artist|title"
  */
-export async function startHarness({answers}) {
+export async function startHarness({answers, extraSettings = {}}) {
     const realDconfBefore = await realDconf(FIRST_WRITTEN);
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'lyrics-overlay-shell-'));
     const env = isolatedEnv(tmp);
@@ -111,6 +111,7 @@ export default class UnsafeForTests extends Extension {
         fs.writeFileSync(settingsPath, JSON.stringify({
             port, hostname: 'lyrics.localhost', lrclibBaseUrl: `http://127.0.0.1:${stub.port}`,
             ytarchiveUrl: null, stateDir: path.join(tmp, 'state', 'lyrics'),
+            ...extraSettings,
         }));
         let serviceLog = '';
         let service = null;

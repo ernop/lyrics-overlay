@@ -6,6 +6,7 @@ export const LYRICS_STATUS_TEXT = Object.freeze({
     'not-music': 'Not a music video; no lookup made',
     'searching': 'Looking up lyrics',
     'waiting': 'Lookups paused for LRCLIB’s request limits',
+    'generating': 'Timing lyrics from audio',
     'timed': 'Timed lyrics',
     'plain': 'Only untimed lyrics found',
     'none': 'No lyrics found',

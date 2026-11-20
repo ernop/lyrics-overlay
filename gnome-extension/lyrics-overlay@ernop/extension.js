@@ -22,50 +22,71 @@ const RETITLE_WAIT_MS = 1000;
 
 export default class LyricsOverlayExtension extends Extension {
     enable() {
-        this._settings = this.getSettings();
-        this._state = null;
-        this._micRequested = false;
-        this._cancelRaise = null;
-        this._pitchPanel = null;
-        this._overlay = new LyricsOverlay({
-            settings: this._settings,
-            onClick: () => this._focusSong(),
-            onContextMenu: () => this._openSettings(),
-            onBoxChanged: (box, monitorIndex) => this._pitchPanel?.setLyricBox(box, monitorIndex),
-        });
-        this._pitchPanel = new PitchPanel({settings: this._settings, onContextMenu: () => this._openSettings()});
-        this._pitchPanel.setLyricBox(this._overlay.box, this._overlay.monitorIndex);
-        this._client = new ServiceClient({
-            onState: state => this._onState(state),
-            onLine: line => this._overlay.setLine(line),
-            onPitch: frames => this._pitchPanel.pushFrames(frames),
-        });
-        this._indicator = new LyricsIndicator({
-            path: this.path, settings: this._settings, openSettings: () => this._openSettings(),
-        });
-        // The owner's Dash to Panel hides the right box and shows the center
-        // box at the bottom right, just left of the system menu: that is the
-        // tray (Resource Monitor is placed there too). Appending puts the
-        // indicator beside the system menu; on a stock panel it follows the
-        // clock. Where Dash to Panel is installed, the shell e2e test fails
-        // if its live layout stops showing this box there.
-        Main.panel.addToStatusArea(this.uuid, this._indicator, -1, 'center');
-        this._settings.connectObject(
-            'changed::overlay-enabled', () => this._sync(),
-            'changed::pitch-enabled', () => this._sync(), this);
-        this._client.start();
-        this._sync();
+        if (this._settings || this._overlay || this._client || this._indicator || this._pitchPanel)
+            this.disable();
+        if (Main.panel.statusArea[this.uuid])
+            Main.panel.statusArea[this.uuid].destroy();
+        try {
+            this._settings = this.getSettings();
+            this._state = null;
+            this._micRequested = false;
+            this._cancelRaise = null;
+            this._pitchPanel = null;
+            this._overlay = new LyricsOverlay({
+                settings: this._settings,
+                onClick: () => this._focusSong(),
+                onContextMenu: () => this._openSettings(),
+                onBoxChanged: (box, monitorIndex) => this._pitchPanel?.setLyricBox(box, monitorIndex),
+            });
+            this._pitchPanel = new PitchPanel({settings: this._settings, onContextMenu: () => this._openSettings()});
+            this._pitchPanel.setLyricBox(this._overlay.box, this._overlay.monitorIndex);
+            const client = new ServiceClient({
+                onState: state => {
+                    if (this._client === client)
+                        this._onState(state);
+                },
+                onLine: line => {
+                    if (this._client === client)
+                        this._overlay?.setLine(line);
+                },
+                onPitch: frames => {
+                    if (this._client === client)
+                        this._pitchPanel?.pushFrames(frames);
+                },
+            });
+            this._client = client;
+            this._indicator = new LyricsIndicator({
+                path: this.path, settings: this._settings, openSettings: () => this._openSettings(),
+            });
+            // The owner's Dash to Panel hides the right box and shows the center
+            // box at the bottom right, just left of the system menu: that is the
+            // tray (Resource Monitor is placed there too). Appending puts the
+            // indicator beside the system menu; on a stock panel it follows the
+            // clock. Where Dash to Panel is installed, the shell e2e test fails
+            // if its live layout stops showing this box there.
+            Main.panel.addToStatusArea(this.uuid, this._indicator, -1, 'center');
+            this._settings.connectObject(
+                'changed::overlay-enabled', () => this._sync(),
+                'changed::pitch-enabled', () => this._sync(), this);
+            this._client.start();
+            this._sync();
+        } catch (error) {
+            this.disable();
+            throw error;
+        }
     }
 
     disable() {
-        this._settings.disconnectObject(this);
+        this._settings?.disconnectObject(this);
         this._cancelRaise?.();
-        if (this._micRequested)
+        this._cancelRaise = null;
+        if (this._micRequested && this._client)
             this._client.command({op: 'pitch', wanted: false, immediate: true});
-        this._client.stop();
-        this._indicator.destroy();
-        this._pitchPanel.destroy();
-        this._overlay.destroy();
+        this._micRequested = false;
+        this._client?.stop();
+        this._indicator?.destroy();
+        this._pitchPanel?.destroy();
+        this._overlay?.destroy();
         this._indicator = null;
         this._pitchPanel = null;
         this._overlay = null;
@@ -75,6 +96,8 @@ export default class LyricsOverlayExtension extends Extension {
     }
 
     _onState(state) {
+        if (!this._indicator || !this._pitchPanel || !this._overlay)
+            return;
         this._state = state;
         // A restarted service has forgotten the microphone request.
         if (state === null)
@@ -86,11 +109,15 @@ export default class LyricsOverlayExtension extends Extension {
     }
 
     _sync() {
+        if (!this._settings || !this._overlay || !this._pitchPanel)
+            return;
         const state = this._state;
         const enabled = this._settings.get_boolean('overlay-enabled');
         const pitchEnabled = this._settings.get_boolean('pitch-enabled');
         const active = Boolean(state?.active);
-        this._overlay.setShown(enabled && active && state.lyrics === 'timed');
+        const generating = state?.lyrics === 'generating';
+        this._overlay.setStatus(generating ? (state.generation?.message || 'Timing lyrics\u2026') : '');
+        this._overlay.setShown(enabled && active && (state.lyrics === 'timed' || generating));
         // The panel does not need timed lyrics: singing along to a song
         // without them still shows the pitch.
         const pitchShown = enabled && pitchEnabled && active;

@@ -118,6 +118,95 @@ class TextLayer extends St.DrawingArea {
     }
 });
 
+// Quiet, non-intrusive status pill drawn while automatic lyric timing runs
+// for a song without synced LRCLIB lyrics. Steady pure-white text on a dark
+// translucent pill; no animation or flashing.
+const StatusPill = GObject.registerClass(
+class StatusPill extends St.DrawingArea {
+    _init() {
+        super._init({reactive: false, visible: false});
+        this._text = '';
+        this._align = 'center';
+        this._anchor = 'bottom';
+        this.pillBox = null;
+    }
+
+    _fontDescription() {
+        const desc = new Pango.FontDescription();
+        desc.set_family('Sans');
+        desc.set_weight(Pango.Weight.BOLD);
+        desc.set_absolute_size(15 * Pango.SCALE);
+        return desc;
+    }
+
+    configure(context, {text, align, anchor, width, height}) {
+        this._text = text;
+        this._align = align;
+        this._anchor = anchor;
+        if (!text || width < 40 || height < 24) {
+            this.pillBox = null;
+            this.visible = false;
+            return;
+        }
+        const layout = Pango.Layout.new(context);
+        layout.set_font_description(this._fontDescription());
+        layout.set_text(text, -1);
+        const [, logical] = layout.get_pixel_extents();
+        const padX = 14;
+        const padY = 6;
+        const margin = 6;
+        const pillW = Math.min(Math.max(40, width - margin * 2), logical.width + padX * 2);
+        const pillH = Math.min(Math.max(24, height - margin * 2), logical.height + padY * 2);
+        let px;
+        if (align === 'left')
+            px = margin;
+        else if (align === 'right')
+            px = Math.max(margin, width - margin - pillW);
+        else
+            px = Math.round((width - pillW) / 2);
+        let py;
+        if (anchor === 'top')
+            py = margin;
+        else if (anchor === 'bottom')
+            py = Math.max(margin, height - margin - pillH);
+        else
+            py = Math.round((height - pillH) / 2);
+        this.pillBox = {x: px, y: py, width: pillW, height: pillH, padX, padY};
+        this.visible = true;
+        this.queue_repaint();
+    }
+
+    vfunc_repaint() {
+        const cr = this.get_context();
+        if (!this._text || !this.pillBox) {
+            cr.$dispose();
+            return;
+        }
+        const {x, y, width, height, padX, padY} = this.pillBox;
+        roundedRect(cr, x + 0.5, y + 0.5, width - 1, height - 1, Math.min(10, height / 2));
+        cr.setSourceRGBA(0, 0, 0, 0.78);
+        cr.fillPreserve();
+        cr.setSourceRGBA(1, 1, 1, 0.38);
+        cr.setLineWidth(1);
+        cr.stroke();
+
+        const layout = PangoCairo.create_layout(cr);
+        layout.set_font_description(this._fontDescription());
+        layout.set_text(this._text, -1);
+        const [, logical] = layout.get_pixel_extents();
+        const tx = x + Math.max(padX, Math.round((width - logical.width) / 2));
+        const ty = y + Math.max(padY, Math.round((height - logical.height) / 2));
+        cr.save();
+        cr.rectangle(x + padX / 2, y, Math.max(1, width - padX), height);
+        cr.clip();
+        cr.setSourceRGBA(1, 1, 1, 1);
+        cr.moveTo(tx, ty);
+        PangoCairo.show_layout(cr, layout);
+        cr.restore();
+        cr.$dispose();
+    }
+});
+
 const BoxOutline = GObject.registerClass(
 class BoxOutline extends St.DrawingArea {
     _init() {
@@ -299,12 +388,12 @@ class OverlayGrip extends St.Widget {
             return Clutter.EVENT_PROPAGATE;
         }
         const noSnap = Boolean(event.get_state() & Clutter.ModifierType.SHIFT_MASK);
-        if (this._mode === 'pending-move') {
+        if (this._mode === 'pending-move' || this._mode === 'pending-resize') {
             const threshold = St.Settings.get().drag_threshold;
             if (Math.abs(x - this._press.x) > threshold || Math.abs(y - this._press.y) > threshold) {
-                this._mode = 'move';
-                this.set_cursor_type(Clutter.CursorType.GRABBING);
-                this._handlers.begin('move', this._press);
+                this._mode = this._mode === 'pending-move' ? 'move' : 'resize';
+                this.set_cursor_type(cursorForZone(this._zone, true));
+                this._handlers.begin(this._zone, this._press);
                 this._handlers.motion({x, y}, {noSnap});
             }
             return Clutter.EVENT_STOP;
@@ -326,26 +415,22 @@ class OverlayGrip extends St.Widget {
             return Clutter.EVENT_STOP;
 
         const ctrl = Boolean(event.get_state() & Clutter.ModifierType.CONTROL_MASK);
-        // Ctrl+drag always moves even near an edge; otherwise edges/corners resize.
+        // Ctrl+drag always moves even near an edge; otherwise edges/corners resize
+        // once dragged past the desktop threshold (so quick clicks near an edge
+        // still focus the playing song tab).
         const zone = ctrl ? 'move' : this._handlers.zoneAt({x, y});
         this._press = {x, y};
         this._zone = zone;
         this._ctrlOnPress = ctrl;
         this._grab = global.stage.grab(this);
-        if (zone === 'move') {
-            this._mode = 'pending-move';
-        } else {
-            this._mode = 'resize';
-            this.set_cursor_type(cursorForZone(zone, true));
-            this._handlers.begin(zone, {x, y});
-        }
+        this._mode = zone === 'move' ? 'pending-move' : 'pending-resize';
         return Clutter.EVENT_STOP;
     }
 
     vfunc_button_release_event(event) {
         if (!this._grab || event.get_button() !== Clutter.BUTTON_PRIMARY)
             return Clutter.EVENT_STOP;
-        const wasClick = this._mode === 'pending-move' && !this._ctrlOnPress;
+        const wasClick = (this._mode === 'pending-move' || this._mode === 'pending-resize') && !this._ctrlOnPress;
         const [x, y] = event.get_coords();
         this._finish(true);
         if (wasClick)
@@ -447,6 +532,7 @@ export class LyricsOverlay {
         this._fontSizePreview = null;
         this._scrollCommitId = 0;
         this._line = {text: '', key: 'none'};
+        this._statusText = '';
         this._shown = false;
         this._drag = null;
         this._hovered = false;
@@ -466,9 +552,14 @@ export class LyricsOverlay {
         this._current = 0;
         for (const layer of this._layers)
             this._textArea.add_child(layer);
+        this._statusPill = new StatusPill();
         this._outline = new BoxOutline();
         this._grip = new OverlayGrip({
-            zoneAt: point => boxZoneAt(point, this._renderBox ?? this._box, RESIZE_EDGE_ZONE),
+            zoneAt: point => {
+                if (!this._layers[this._current].fitted)
+                    return 'move';
+                return boxZoneAt(point, this._renderBox ?? this._box, RESIZE_EDGE_ZONE);
+            },
             containsPoint: point => {
                 const b = this._renderBox ?? this._box;
                 return Boolean(b) && point.x >= b.x && point.x <= b.x + b.width &&
@@ -494,7 +585,7 @@ export class LyricsOverlay {
             click: () => onClick(),
             menu: () => onContextMenu(),
         });
-        for (const child of [this._textArea, this._outline, this._grip])
+        for (const child of [this._textArea, this._statusPill, this._outline, this._grip])
             this._content.add_child(child);
         Main.layoutManager.addChrome(this._root, {trackFullscreen: true});
 
@@ -545,6 +636,18 @@ export class LyricsOverlay {
             this._crossTo(line.text);
         else if (line.text !== this._layers[this._current].text)
             this._fitAndResize(this._layers[this._current], line.text);
+        this._syncStatusPill();
+        this._placeGrip();
+        this._updateOutline();
+    }
+
+    /** Quiet in-overlay status text shown while automatic lyric timing runs. */
+    setStatus(text) {
+        const next = String(text ?? '');
+        if (next === this._statusText)
+            return;
+        this._statusText = next;
+        this._syncStatusPill();
         this._placeGrip();
         this._updateOutline();
     }
@@ -620,9 +723,26 @@ export class LyricsOverlay {
         const height = Math.round(renderBox.height);
         this._root.set_position(Math.round(renderBox.x), Math.round(renderBox.y));
         if (width !== this._root.width || height !== this._root.height) {
-            for (const actor of [this._root, this._content, this._outline, this._textArea, ...this._layers])
+            for (const actor of [this._root, this._content, this._statusPill, this._outline, this._textArea, ...this._layers])
                 actor.set_size(width, height);
         }
+        this._syncStatusPill();
+    }
+
+    _syncStatusPill() {
+        const hasLine = Boolean(this._layers[this._current].fitted);
+        const box = this._renderBox ?? this._box;
+        if (!this._statusText || hasLine || !box) {
+            this._statusPill.configure(this._measure, {text: '', align: 'center', anchor: 'bottom', width: 0, height: 0});
+            return;
+        }
+        this._statusPill.configure(this._measure, {
+            text: this._statusText,
+            align: this._settings.get_string('text-align'),
+            anchor: this._anchor(),
+            width: Math.round(box.width),
+            height: Math.round(box.height),
+        });
     }
 
     _textParams(width, height) {
@@ -674,6 +794,7 @@ export class LyricsOverlay {
             const h = Math.round(this._renderBox.height);
             other.setFitted(other.text, fitLyric(this._measure, other.text, this._textParams(w, h)));
         }
+        this._syncStatusPill();
         this._placeGrip();
         this._updateOutline();
     }
@@ -702,8 +823,19 @@ export class LyricsOverlay {
             return;
         const fitted = this._layers[this._current].fitted;
         if (!fitted) {
-            this._grip.clearHover();
-            this._grip.visible = false;
+            const pill = this._statusPill.visible ? this._statusPill.pillBox : null;
+            if (!pill) {
+                this._grip.clearHover();
+                this._grip.visible = false;
+                return;
+            }
+            const left = Math.max(0, Math.floor(pill.x - GRIP_MARGIN));
+            const top = Math.max(0, Math.floor(pill.y - GRIP_MARGIN));
+            const right = Math.min(this._root.width, Math.ceil(pill.x + pill.width + GRIP_MARGIN));
+            const bottom = Math.min(this._root.height, Math.ceil(pill.y + pill.height + GRIP_MARGIN));
+            this._grip.set_position(left, top);
+            this._grip.set_size(Math.max(1, right - left), Math.max(1, bottom - top));
+            this._grip.visible = true;
             return;
         }
         if (this._hovered) {
