@@ -1,0 +1,16 @@
+[Unit]
+Description=Lyrics overlay desktop frontend (XWayland transparent lyric overlay, pitch panel and tray indicator)
+PartOf=graphical-session.target
+After=graphical-session.target lyrics-overlay.service
+
+[Service]
+# TEMPLATE: rendered by scripts/install.sh. Do not install directly.
+Type=simple
+WorkingDirectory=__WORKDIR__
+ExecStart=/usr/bin/gjs -m __WORKDIR__/desktop/main.js
+Restart=on-failure
+RestartSec=2
+UMask=0077
+
+[Install]
+WantedBy=graphical-session.target

@@ -8,15 +8,15 @@ why: [product.md](product.md). Install, test and release:
 ## Parts and data flow
 
 ```
-Firefox tab (YouTube)                         GNOME Shell
-  firefox/content.js                            gnome-extension/lyrics-overlay@ernop
-    reads the player, page data        D-Bus      indicator, overlay, pitch panel
-  firefox/background.js            <---------->       ^          ^
-    POST http://lyrics.localhost:8792  net.fuseki.    |          | GSettings
-          |                          LyricsOverlay    |          | (look, pitch panel)
-          v                                           |          |
-  service/ (gjs, systemd user unit lyrics-overlay.service)       |
-    http.js -> report-schema.js -> core.js -> dbus.js            |
+Firefox tab (YouTube)                         Standalone desktop frontend
+  firefox/content.js                            desktop/ (gjs GTK3/XWayland,
+    reads the player, page data        D-Bus      lyrics-overlay-desktop.service)
+  firefox/background.js            <---------->   lyric-window, pitch-window,
+    POST http://lyrics.localhost:8792  net.fuseki.  tray-sni, tray-button
+          |                          LyricsOverlay      ^          ^
+          v                                             |          | GSettings
+  service/ (gjs, systemd user unit lyrics-overlay.service)         | (look, pitch panel)
+    http.js -> report-schema.js -> core.js -> dbus.js              |
           |                        |  lrclib.js (LRCLIB, budgeted, cached)
           |                        |  lyric-generator.js -> generate-lyrics.py (optional local Whisper timing)
           |                        |  store.js (~/.local/state/lyrics-overlay)
@@ -46,69 +46,79 @@ Firefox tab (YouTube)                         GNOME Shell
   lookup, choice, timing, and which line shows when. It also serves the
   settings page, follows the sung pitch and hears the song's key. `core.js`
   is free of GNOME and network code and runs under node in tests.
-- **GNOME Shell extension** (`gnome-extension/lyrics-overlay@ernop`, GNOME
-  50). Renders what the service says: the indicator, the line, and the
-  pitch panel (`pitch-panel.js` places it, docked or separate, and handles
-  its drags; `pitch-view.js` draws the trace). `extension.js` raises the
-  window the add-on names after a click on the lyric or timing status pill
-  (the song's) or a right press on the indicator, lyric, status pill, or
-  panel (the settings page's). Its `disable()` is idempotent, `enable()`
-  clears any stale status-area role and rolls back on throw, and
-  `ServiceClient` callbacks check `this._client === client`, preventing
-  GNOME Shell 50 extension-unwind collisions from leaving a disconnected
-  client behind. `overlay.js` also renders a quiet `StatusPill` while
-  `state.lyrics === 'generating'`. Following the owner's click-vs-drag rule,
-  plain mouseover does nothing (no frame, no cursor change, grip stays tight
-  to the painted ink or pill), a plain primary press fires `FocusSong`
-  immediately on press without ever starting a drag, and moving requires
-  `Ctrl+drag` (`BoxOutline` and snap guides show only while actively
-  dragging; `Ctrl+press` without movement does nothing). `pitch-panel.js`
-  likewise requires `Ctrl+drag` to move, dock, detach or resize.
-  `text-layout.js` lays out the line at the constant chosen
-  `font-size` (wrapping evenly into balanced lines and reporting
-  `requiredHeight` so `overlay.js` expands the render surface vertically
-  along its anchor via `expandedRenderBox` without moving the saved box or
-  docked pitch panel) and paints it layer by layer across all wrapped
-  lines: optional backdrop plate, smooth dark backing cloud (`double` and
-  `glow`), crisp outer trim (`double`) or feathered outer halo (`glow`),
-  solid inner contrast body, then the letters. `text-layout.js` measures
-  each font's natural space advance and lowercase `x` ink height (cached
-  per font/size), scales spaces via `normalizedSpaceScale` so wide
-  monospace fonts tighten down to `0.22 em` (`double`/`glow`) or `0.26 em`
-  (`single`/`none`), and merges an x-height rounded word bridge into
-  multi-character line silhouettes so background never leaks between words.
-  The dark backing cloud is built from a downscaled silhouette via a
-  3-pass separable 5-tap A8 box blur (Gaussian approximation, ~1–3 ms per
-  line at any font size) and cached alongside the line's A8 border masks;
-  pointer hit-testing (`inkBox`) stays tight to the solid outer trim
-  so soft cloud tails remain click-through. Cairo leaves a hole in a
-  stroke wider than a small closed contour (the dot of an i, a period, a
-  bold o's counter), so each solid ring is stepped down in width by less
-  than a dot's diameter, only the widest antialiased
-  (`tests/text-layout-ring.test.mjs`). `text-layout.js` caches font
-  metrics, balanced wrap widths and each wrapped line's A8 border/cloud
-  masks; a move only repositions the box. Display
-  settings live in its GSettings schema
-  (`org.gnome.shell.extensions.lyrics-overlay`), which the settings page
-  writes through the service.
+- **Standalone desktop frontend** (`desktop/`, gjs + GTK3 on XWayland,
+  systemd user unit `lyrics-overlay-desktop.service`). The primary
+  frontend; forces `Gdk.set_allowed_backends('x11')` before `Gtk.init(null)`
+  so every window has a composited 32-bit ARGB visual, exact multi-monitor
+  coordinates, and `input_shape_combine_region` per-pixel click-through:
+  - `lyric-window.js` (`Gtk.WindowType.TOPLEVEL`,
+    `Gdk.WindowTypeHint.NOTIFICATION`, `accept_focus=true`,
+    `focus_on_map=false`, `skip_taskbar`, `skip_pager`, `keep_above`,
+    `stick`): renders the lyric line with `shared/text-layout.js`, fades in
+    composited via `cr.pushGroup()`/`cr.paintWithAlpha()`, renders the quiet
+    generating status pill, and clips the X11 input shape tightly to the
+    painted ink or pill (+6 px margin) so transparent space passes clicks
+    through. Because `NOTIFICATION` receives focus before `button-press-event`,
+    `Ctrl+drag` receives synchronous `CONTROL_MASK`, `Shift`, and `Escape`
+    even when a native Wayland window previously held focus. Rapid double
+    clicks ignore `Gdk.EventType.TWO_BUTTON_PRESS`.
+  - `pitch-window.js` (same `TOPLEVEL` + `NOTIFICATION` window): paints the
+    sung-pitch trace with `shared/pitch-painter.js`, docks against any side
+    of the lyric or stands separate, and supports `Ctrl+drag` edge resize,
+    move, dock, detach, and `Escape` cancel.
+  - `tray-sni.js`: exports `org.kde.StatusNotifierItem` over session D-Bus
+    (SVG icon name plus ARGB32 `IconPixmap`), registering whenever
+    `org.kde.StatusNotifierWatcher` is present.
+  - `tray-button.js`: standalone `Gtk.WindowType.POPUP` (`override_redirect`)
+    rendered directly inside the primary monitor's panel strip (above
+    `Main.panel`), activated automatically when `tray-mode` is `panel-button`
+    or `both`, or in `auto` mode when `StatusNotifierWatcher` is absent or
+    Dash to Panel hides `rightBox`. Uses synchronous repaint
+    (`invalidate_rect` + `process_updates` + `Gdk.flush`) because
+    `override_redirect` windows do not receive `_NET_WM_FRAME_DRAWN` ticks.
+    Primary press toggles `overlay-enabled`; secondary press opens settings;
+    middle-drag slides horizontally along the panel and persists
+    `tray-button-right-offset`.
+  - `desktop-actions.js`: raises Firefox through its MPRIS
+    `org.mpris.MediaPlayer2.firefox*.Raise()` method after `FocusSong` or
+    `OpenSettings`, sends failures to `org.freedesktop.Notifications`,
+    checks Dash to Panel's `rightBox` visibility, and compiles the GSettings
+    schema from the checkout.
+  - `main.js`: single-instance session D-Bus owner
+    (`net.fuseki.LyricsOverlayDesktop`, `/net/fuseki/LyricsOverlayDesktop`,
+    `net.fuseki.LyricsOverlayDesktop1.GetStatus() -> s` returning read-only
+    geometry/visibility metadata with no lyric text).
+- **Legacy GNOME Shell extension** (`gnome-extension/lyrics-overlay@ernop`,
+  GNOME 50). Optional in-shell frontend sharing `shared/text-layout.js`,
+  `shared/service-client.js`, and `shared/pitch-painter.js`; `extension.js`
+  and `overlay.js`/`pitch-panel.js`/`pitch-view.js` wrap those shared
+  modules in Clutter/St actors (`disable()` is idempotent, `enable()` rolls
+  back on error). Display settings live in its GSettings schema
+  (`org.gnome.shell.extensions.lyrics-overlay`), compiled and shared by
+  both frontends and the service.
 - **Shared modules** (`shared/`): lyric parsing and display timing,
   monotone word-to-lyric alignment and hallucination-filtered transcription
   LRC building (`lyric-align.js`), identity derivation and candidate
   ranking, the request budget, overlay geometry (`overlay-geometry.js`:
   clamping, placement presets, edge zones, magnetic snapping,
   `verticalAnchorFor`, `expandedRenderBox`, `borderSpec`,
-  `backdropMetrics`), voice-wei's pitch detector, the key detector
-  (`key-detect.js`), what the pitch panel shows when (`pitch-layout.js`:
-  its clock, which lines carry names, the note the readout holds), scales
-  and note spelling (`scales.js`), the D-Bus interface (`dbus-interface.js`,
-  one definition for service and shell), the lyric status wording
-  (`lyrics-status.js`) and the letter colors with automatic WCAG contrast
-  rings and custom hex parsing (`text-ink.js`). The settings page imports
-  `lyrics-status.js`, `scales.js`, `text-ink.js`, `overlay-geometry.js`
-  and `pitch-layout.js` as the service serves them.
-  `scripts/install-gnome-extension.sh` scans `gnome-extension/*.js` for
-  `from './shared/...'` imports and copies every referenced shared module
-  into the installed extension's `shared/` directory.
+  `backdropMetrics`), Cairo/Pango lyric fitting and multi-layer border/cloud
+  painting (`text-layout.js`: constant font size, font-normalized word
+  spaces via `normalizedSpaceScale`, x-height word bridge, stepped solid
+  rings, 3-pass separable A8 Gaussian backing cloud, cached masks and
+  metrics), Cairo/Pango pitch panel painting (`pitch-painter.js`),
+  session D-Bus client (`service-client.js`), voice-wei's pitch detector,
+  the key detector (`key-detect.js`), what the pitch panel shows when
+  (`pitch-layout.js`: its clock, which lines carry names, the note the
+  readout holds), scales and note spelling (`scales.js`), the D-Bus
+  interface (`dbus-interface.js`, one definition for service and frontends),
+  the lyric status wording (`lyrics-status.js`) and the letter colors with
+  automatic WCAG contrast rings and custom hex parsing (`text-ink.js`). The
+  settings page imports `lyrics-status.js`, `scales.js`, `text-ink.js`,
+  `overlay-geometry.js` and `pitch-layout.js` as the service serves them.
+  `scripts/install-gnome-extension.sh` scans `gnome-extension/*.js` and
+  transitive `./*.js` imports inside `shared/` when installing the legacy
+  extension.
 
 ## The report contract
 

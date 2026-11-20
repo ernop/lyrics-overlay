@@ -7,12 +7,15 @@ overlay, and the testing lessons behind the rules. What it is for:
 
 ## Install and restart
 
-- **Service**: `scripts/install.sh`. It checks the requirements (gjs,
-  libglib2.0-bin, gir1.2-soup-3.0, pipewire, pipewire-bin, GNOME Shell 50),
-  copies `settings.example.json` to the gitignored `settings.json` if
-  missing, renders the systemd user unit `lyrics-overlay.service`
-  (`Restart=always`) for this checkout, enables and restarts it, and
-  installs the GNOME Shell extension (below). Safe to rerun.
+- **Service and desktop frontend**: `scripts/install.sh`. It checks the
+  requirements (`gjs`, `libglib2.0-bin`, `gir1.2-soup-3.0`,
+  `gir1.2-gtk-3.0`, `pipewire`, `pipewire-bin`), copies
+  `settings.example.json` to the gitignored `settings.json` if missing,
+  disables the legacy `lyrics-overlay@ernop` GNOME Shell extension if
+  enabled, renders both `lyrics-overlay.service` and
+  `lyrics-overlay-desktop.service` (`PartOf=graphical-session.target`) for
+  this checkout, and enables and restarts both immediately — no logout
+  needed. Safe to rerun.
 - **A proxy name** (optional): a local reverse proxy may give the service
   a name of its own, such as `http://lyrics.localhost/`; set `hostname` in
   `settings.json` to the Host it forwards, then restart the service.
@@ -31,28 +34,25 @@ overlay, and the testing lessons behind the rules. What it is for:
 - **More fonts** (optional): `scripts/install-fonts.sh` downloads about
   160 of Ubuntu's font packages and unpacks their TrueType and OpenType
   files into `~/.local/share/fonts/`, for this user alone; safe to rerun
-  (product.md, "Fonts").
-- **Restart after a service change**:
-  `systemctl --user restart lyrics-overlay.service`. The unit runs the
-  repository's `service/` directly, so a restart picks up committed code.
-- **GNOME Shell extension**: `scripts/install-gnome-extension.sh` copies
-  the extension into `~/.local/share/gnome-shell/extensions/` and enables
-  it; GNOME Shell loads extension code once per login. Over an installed
-  copy it leaves the update pending in
-  `~/.local/share/gnome-shell/.lyrics-overlay@ernop.pending` and enables
-  `lyrics-overlay-extension-update.service`, which puts it in place at the
-  next login, before the shell starts. Overwriting the running copy is
-  unsafe: the shell re-reads the extension's schema each time it enables
-  the old code again (after every screen unlock), and the
-  old code throws on a schema that lacks its keys. GNOME's own
-  `extension-updates/` works the same way only while its update machinery
-  runs, which the owner's desktop blocks on purpose. `--apply-pending` is
-  the login unit's step and refuses while GNOME Shell runs.
+  (product.md, "Fonts"). Restart `lyrics-overlay-desktop.service` to pick
+  up newly added fonts immediately.
+- **Restart after a change**:
+  - Service: `systemctl --user restart lyrics-overlay.service`.
+  - Desktop frontend: `systemctl --user restart lyrics-overlay-desktop.service`
+    (picks up `desktop/` and `shared/` edits in milliseconds, no logout).
+- **Legacy GNOME Shell extension** (optional):
+  `scripts/install-gnome-extension.sh` still installs the in-shell GNOME
+  50 extension into `~/.local/share/gnome-shell/extensions/` (staging
+  updates into `.lyrics-overlay@ernop.pending` for next login via
+  `lyrics-overlay-extension-update.service`). Do not run it alongside
+  `lyrics-overlay-desktop.service`.
 - **Firefox extension**: release Firefox installs only signed extensions;
   see Release below.
 
 ## Verify
 
+- `systemctl --user status lyrics-overlay.service lyrics-overlay-desktop.service`
+  shows both `active (running)`.
 - `curl -s http://127.0.0.1:8792/api/state` answers 200 with
   `{state, line, addon}`; `http://localhost:8792/settings` is the settings
   page, which also shows the song, its lyric status, timing and lyric
@@ -69,25 +69,29 @@ overlay, and the testing lessons behind the rules. What it is for:
 - With `ytarchiveUrl` set, the service log
   (`journalctl --user -u lyrics-overlay.service`) says "ytarchive: added
   <id>" when a new video sounds and names the lyrics it sent.
-- **On the live desktop**, after the login that loads a new extension
-  build and with a song playing: `python3 scripts/check-live-desktop.py`
-  reports whether the tray indicator and the lyric line are drawn, and
-  where, from GNOME Shell's accessibility tree (read-only; no lyric text).
-  It exits 1 when the service has a song but the indicator is drawn
-  nowhere. Run it before telling the owner the extension is ready: the
-  hermetic shell test runs the stock panel, not the owner's.
+- **On the live desktop**, with a song playing:
+  `python3 scripts/check-live-desktop.py` queries
+  `net.fuseki.LyricsOverlayDesktop1.GetStatus()` (read-only; no lyric text)
+  and prints tray button, StatusNotifierItem, lyric window, ink hit-box,
+  and pitch panel status (falling back to GNOME Shell's accessibility tree
+  if the legacy extension is active). It exits 1 when the service has a
+  song but no tray indicator is active.
 
 ## Tests
 
 - `npm test`: every unit suite plus the real gjs service against a stub
   LRCLIB, about 4 s. `npm run lint`: `web-ext lint` on the extension.
-- `npm run test:shell`: a headless GNOME Shell with the real extension and
-  service, driving the indicator, the overlay and the pitch panel (docking,
-  resizing, separating) with virtual input, about 11 s. It stands in for
-  the browser extension when a click on the lyric or a right press sends
-  its command, and opens plain GTK windows (`tests/e2e/titled-window.js`)
-  to check the right one is raised. A failure prints the shell's and the
-  service's log lines. Screenshots land in `build/e2e-artifacts/`.
+- `npm run test:desktop`: a hermetic headless GNOME Shell 50 **with
+  XWayland**, running the real `service/` and standalone `desktop/` under
+  constant GC (~16 s). Tests tray button toggle, per-pixel click-through,
+  immediate focus on plain press, `Ctrl+drag` from a focused native Wayland
+  window (using real Linux evdev keycodes), `Escape` cancel, right-click
+  settings + `org.freedesktop.Notifications` error notice, pitch panel
+  docking/resizing/detaching with `Ctrl+drag`, quiet generating status
+  pill, service stop/restart, and desktop restart persistence. Screenshots
+  land in `build/e2e-artifacts/`.
+- `npm run test:shell`: a headless GNOME Shell 50 with the legacy
+  extension and service (~11 s). Screenshots land in `build/e2e-artifacts/`.
 - Both service-level suites run in an isolated session
   (`tests/isolated-session.mjs`): a temporary HOME and XDG dirs, and
   private D-Bus daemons started inside them that activate only what the
@@ -245,3 +249,26 @@ asks for every site but holds only the one origin granted by hand.
   idempotent, `enable()` clears stale state and rolls back on failure,
   and `tests/e2e/overlay.e2e.mjs` explicitly exercises duplicate
   `disable()`/`enable()` calls followed by clicking the lyric.
+- **XWayland modifier delivery, double-clicks, and override-redirect
+  repaints (2026-11-20).** Four subtle Wayland+XWayland rules verified in
+  headless GNOME Shell 50 (`tests/e2e/desktop.e2e.mjs`):
+  - Wayland only sends `wl_keyboard.modifiers` to the keyboard-focused
+    client; an unfocused XWayland `POPUP` (`override_redirect`) receives
+    `button-press-event` with stale `state = 0`, breaking `Ctrl+drag` when
+    a native Wayland window has focus. `TOPLEVEL` with
+    `Gdk.WindowTypeHint.NOTIFICATION` and `accept_focus=true` focuses
+    synchronously before `button-press-event` (delivering `CONTROL_MASK`,
+    `Shift`, and `Escape`), while staying out of Alt+Tab and taskbars and
+    never stealing focus on map.
+  - Clutter's virtual `notify_keyval()` does not update XKB modifier state
+    for Wayland/XWayland clients; e2e tests must send real Linux evdev
+    keycodes via `notify_key()` (`29` Left Ctrl, `42` Left Shift, `1` Esc).
+  - GTK3 emits `Gdk.EventType.TWO_BUTTON_PRESS` in addition to
+    `BUTTON_PRESS` on rapid clicks; handlers must filter
+    `ev.get_event_type() !== Gdk.EventType.BUTTON_PRESS`.
+  - Override-redirect `POPUP` windows (needed for `TrayButton` to sit
+    above GNOME Shell's `panelBox`, since managed `DOCK` windows sit below
+    it) do not receive `_NET_WM_FRAME_DRAWN` ticks from Mutter, so
+    `queue_draw()` alone can leave pixels stale until pointer motion;
+    calling `invalidate_rect(null, true)`, `process_updates(true)`, and
+    `Gdk.flush()` repaints synchronously every time.

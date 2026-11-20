@@ -5,16 +5,16 @@ sing along to YouTube and YouTube Music videos from any workspace.
 
 ![A desktop with a song's video in a window; at the bottom of the screen, the line being sung and the pitch meter's trace of the singer's voice](docs/desktop.png)
 
-It runs on a GNOME Shell 50 desktop with YouTube in Firefox. When a YouTube
-or YouTube Music tab plays a song, the line about to be sung appears above
-normal windows, timed to the video, and the pitch meter draws the pitch you
-sing into the microphone. Lyrics come from [LRCLIB](https://lrclib.net),
-matched from the video's title and YouTube's song details. With optional local
-automatic lyric timing enabled, songs missing synced lyrics on LRCLIB are
-timed directly from their audio using local
-[faster-whisper](https://github.com/SYSTRAN/faster-whisper) (aligning LRCLIB's
-plain lyrics onto word timestamps when available, or transcribing sung lines
-otherwise), while a quiet pill in the overlay reports progress.
+It runs on Linux desktops (Wayland with XWayland, or X11) with YouTube in
+Firefox. When a YouTube or YouTube Music tab plays a song, the line about
+to be sung appears above normal windows, timed to the video, and the pitch
+meter draws the pitch you sing into the microphone. Lyrics come from
+[LRCLIB](https://lrclib.net), matched from the video's title and YouTube's
+song details. With optional local automatic lyric timing enabled, songs
+missing synced lyrics on LRCLIB are timed directly from their audio using
+local [faster-whisper](https://github.com/SYSTRAN/faster-whisper) (aligning
+LRCLIB's plain lyrics onto word timestamps when available, or transcribing
+sung lines otherwise), while a quiet pill in the overlay reports progress.
 
 It has three parts:
 
@@ -25,15 +25,17 @@ It has three parts:
   your choices and timing for each video, decides which line shows when,
   follows the pitch you sing, detects the song's key, and serves the settings
   page;
-- a GNOME Shell extension (`gnome-extension/lyrics-overlay@ernop`) that draws
-  the indicator, the lyric line, the quiet timing status pill, and the pitch
-  panel.
+- a standalone desktop overlay (`desktop/`, a gjs GTK3/XWayland process run as
+  `lyrics-overlay-desktop.service`) that draws the tray indicator, the lyric
+  line, the quiet timing status pill, and the pitch panel — and restarts in
+  milliseconds with no logout required. (An optional GNOME Shell 50 extension
+  also remains in `gnome-extension/lyrics-overlay@ernop`.)
 
 ## Requirements
 
-- GNOME Shell 50 (Ubuntu 26.04 or another distribution with it)
+- Linux desktop with XWayland or X11 (tested on GNOME Shell 50 / Ubuntu 26.04)
 - Firefox 142 or later
-- `sudo apt install gjs gir1.2-soup-3.0 libglib2.0-bin pipewire pipewire-bin`
+- `sudo apt install gjs gir1.2-soup-3.0 gir1.2-gtk-3.0 libglib2.0-bin pipewire pipewire-bin`
 - Optional, for local automatic lyric timing: `ffmpeg`, `yt-dlp`, and `uv` (or
   Python 3.10+ with `venv`); a CUDA GPU speeds timing to roughly 20x real-time
   with `large-v3`, or it can run on CPU (`device: "cpu"`, `computeType: "int8"`).
@@ -48,11 +50,10 @@ scripts/install.sh
 ```
 
 `scripts/install.sh` checks the requirements, creates `settings.json` from
-`settings.example.json`, installs and starts `lyrics-overlay.service`, and
-installs the GNOME Shell extension. Then:
+`settings.example.json`, and installs and starts both `lyrics-overlay.service`
+and `lyrics-overlay-desktop.service` immediately (no logout required). Then:
 
-1. Log out and back in; GNOME Shell loads extension code at login.
-2. Download
+1. Download
    [lyrics-overlay.xpi](https://github.com/ernop/lyrics-overlay/releases/latest/download/lyrics-overlay.xpi)
    and open it in Firefox (drag it onto a Firefox window); press Add.
 
@@ -77,7 +78,8 @@ systemctl --user restart lyrics-overlay.service
 
 `scripts/install-fonts.sh` adds about 160 of Ubuntu's font packages into
 `~/.local/share/fonts/` for your user alone (no root). The settings page lists
-them at once; GNOME Shell draws them after the next login.
+them at once; restart `lyrics-overlay-desktop.service` to draw them
+immediately.
 
 ### Update
 
@@ -85,24 +87,22 @@ them at once; GNOME Shell draws them after the next login.
 git pull && scripts/install.sh
 ```
 
-The service restarts at once; the shell extension update is staged and applied
-automatically at the next login before GNOME Shell starts. From 1.3.0 Firefox
+Both `lyrics-overlay.service` and `lyrics-overlay-desktop.service` restart at
+once with no logout needed. From 1.3.0 Firefox
 updates the add-on by itself (checking the newest GitHub release once a day),
 and the settings page's Song tab shows the running version with an install
 button whenever Firefox runs an older one. Versions 1.0.0 to 1.2.0 have no
 update address, so install the newest
 [lyrics-overlay.xpi](https://github.com/ernop/lyrics-overlay/releases/latest/download/lyrics-overlay.xpi)
-once by hand as in step 2 above. An add-on updated from 1.0 or 1.1 opens a page
+once by hand as in step 1 above. An add-on updated from 1.0 or 1.1 opens a page
 asking for access to `localhost`, which it needs to find the open settings tab;
 press Allow there once (clicking lyrics to raise the song works without it).
 
 ### Remove
 
 ```
-systemctl --user disable --now lyrics-overlay.service
-systemctl --user disable lyrics-overlay-extension-update.service   # present after an update
+systemctl --user disable --now lyrics-overlay.service lyrics-overlay-desktop.service
 rm -f ~/.config/systemd/user/lyrics-overlay*.service
-gnome-extensions uninstall lyrics-overlay@ernop
 rm -rf ~/.local/state/lyrics-overlay   # remembered choices, timing and caches
 rm -rf .venv                           # if automatic lyric timing was installed
 ```
@@ -119,6 +119,7 @@ The indicator shows while YouTube plays sound and for two minutes after.
 |---|---|---|
 | Indicator | press | lyric line on or off |
 | Indicator | right-press | opens or raises the settings page |
+| Panel indicator button | middle-drag | slides the standalone panel button horizontally along the panel |
 | Lyric or timing pill | press | selects the song's Firefox tab and raises its window (acts immediately on press; never drags) |
 | Lyric or timing pill | `Ctrl+drag` | moves the box with magnetic center/edge snap (hold `Shift` to bypass snap; `Esc` cancels; `Ctrl+press` without movement does nothing) |
 | Lyric or timing pill | right-press | opens or raises the settings page |
@@ -197,10 +198,9 @@ With a song playing:
 
 | Check | Expect |
 |---|---|
-| `systemctl --user status lyrics-overlay.service` | `active (running)` |
+| `systemctl --user status lyrics-overlay.service lyrics-overlay-desktop.service` | both `active (running)` |
 | `curl -s http://127.0.0.1:8792/api/state` | `state.lyrics` is `timed` (or `generating` while automatic timing runs); `addon.status` is `current`, not `older`, `unnamed`, or `unheard`; `state.generation.available` is `true` when `lyricsGenerator` is configured |
-| `gnome-extensions info lyrics-overlay@ernop` | `State: ACTIVE` |
-| `python3 scripts/check-live-desktop.py` | the indicator and the lyric line are drawn, and where |
+| `python3 scripts/check-live-desktop.py` | tray indicator and lyric line are drawn, and where |
 | `journalctl --user -u lyrics-overlay.service` | one `lookup <video>` line per video (`timed`, `plain`, or `none`), plus `generate <video>` when automatic timing runs |
 
 If no line shows:
@@ -217,9 +217,9 @@ If no line shows:
   the YouTube tab plays sound.
 - `addon.status` is `older` or `unnamed`: Firefox runs an old add-on; use the
   settings page's install button, or install the `.xpi` as in Install.
-- The extension is not `ACTIVE` (or clicks stop working after another extension
-  toggles): log out and back in once after `scripts/install.sh`; GNOME Shell
-  loads extension code only at login.
+- `lyrics-overlay-desktop.service` is not running: run `scripts/install.sh`
+  or `systemctl --user restart lyrics-overlay-desktop.service` and check
+  `journalctl --user -u lyrics-overlay-desktop.service`.
 
 ## Network and privacy
 
@@ -244,9 +244,10 @@ If no line shows:
 
 ```
 npm install
-npm test            # unit suites and the real gjs service against stand-ins
-npm run lint        # web-ext lint on the Firefox add-on
-npm run test:shell  # headless GNOME Shell with the real extension and service
+npm test             # unit suites and the real gjs service against stand-ins
+npm run lint         # web-ext lint on the Firefox add-on
+npm run test:desktop # headless GNOME Shell + XWayland with standalone desktop frontend and service
+npm run test:shell   # headless GNOME Shell with the legacy extension and service
 ```
 
 [docs/product.md](docs/product.md) holds the requirements and decisions,

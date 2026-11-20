@@ -48,19 +48,20 @@ Lessons from the retrospective of the first build (2026-11-10).
 
 ## Test, ship, restart
 
-1. `npm test && npm run lint` (about 4 s). When the GNOME Shell extension,
-   the shell harness or the service's D-Bus side changes, also
-   `npm run test:shell` (about 11 s).
+1. `npm test && npm run lint` (about 4 s). When `desktop/`, `shared/`
+   rendering, the shell harness, or the service's D-Bus side changes, also
+   run `npm run test:desktop` (about 16 s). When the legacy GNOME Shell
+   extension changes, also run `npm run test:shell` (about 11 s).
 2. Commit each coherent change on its own.
 3. Service change: `systemctl --user restart lyrics-overlay.service`, then
-   `curl -s http://127.0.0.1:8792/api/state`. Install change:
-   `scripts/install.sh`.
-4. GNOME Shell extension change: `scripts/install-gnome-extension.sh`; it
-   takes effect at the next login (an update waits as a pending copy until
-   then; docs/operations.md, "Install and restart"). After that login, with
-   a song playing, `python3 scripts/check-live-desktop.py` must report the
-   tray indicator drawn before the change counts as live.
-5. Firefox extension change: check it in real Firefox first
+   `curl -s http://127.0.0.1:8792/api/state`.
+4. Standalone desktop frontend change (`desktop/` or `shared/`):
+   `systemctl --user restart lyrics-overlay-desktop.service` (takes effect
+   immediately, no logout), then verify with
+   `python3 scripts/check-live-desktop.py`. Install change: `scripts/install.sh`.
+5. Legacy GNOME Shell extension change (optional):
+   `scripts/install-gnome-extension.sh` (takes effect at the next login).
+6. Firefox extension change: check it in real Firefox first
    (`scripts/probe-firefox-commands.mjs` for command handling,
    `scripts/probe-real-firefox.mjs` for page reading; docs/operations.md,
    "Tests"). Then bump `firefox/manifest.json`'s version and run
@@ -72,7 +73,7 @@ Lessons from the retrospective of the first build (2026-11-10).
    signed file and `dist/updates.json` as a GitHub release with the
    command the script prints: installed add-ons update from it, and the
    README's download link serves it.
-6. A change to what the lyric, the pitch panel or the settings page looks
+7. A change to what the lyric, the pitch panel or the settings page looks
    like: refresh the README's pictures with
    `scripts/update-readme-pictures.sh`, and look at each one.
 

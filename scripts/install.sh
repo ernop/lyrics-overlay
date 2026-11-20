@@ -1,29 +1,31 @@
 #!/usr/bin/env bash
 # Installs or updates lyrics-overlay for this user, and is safe to rerun:
 #   - settings.json from settings.example.json, if there is none yet;
-#   - the service's systemd user unit, restarted so it runs this checkout;
-#   - the GNOME Shell extension (scripts/install-gnome-extension.sh).
+#   - the service systemd user unit (lyrics-overlay.service), restarted;
+#   - the standalone XWayland desktop frontend (lyrics-overlay-desktop.service),
+#     enabled and restarted immediately with no logout required;
+#   - disables the legacy GNOME Shell extension (lyrics-overlay@ernop) if it
+#     is still enabled, so two overlays never draw at once.
 # The Firefox add-on is installed from the signed file (README.md, "Setup").
 #
 #   scripts/install.sh
 set -euo pipefail
 
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-unit="lyrics-overlay.service"
+service_unit="lyrics-overlay.service"
+desktop_unit="lyrics-overlay-desktop.service"
+legacy_uuid="lyrics-overlay@ernop"
+legacy_update_unit="lyrics-overlay-extension-update.service"
 
 missing=()
 command -v gjs >/dev/null || missing+=("gjs")
 command -v glib-compile-schemas >/dev/null || missing+=("libglib2.0-bin")
 gjs -c "imports.gi.versions.Soup = '3.0'; imports.gi.Soup;" 2>/dev/null || missing+=("gir1.2-soup-3.0")
+gjs -c "imports.gi.versions.Gtk = '3.0'; imports.gi.Gtk;" 2>/dev/null || missing+=("gir1.2-gtk-3.0")
 command -v pipewire >/dev/null || missing+=("pipewire")
 command -v pw-record >/dev/null || missing+=("pipewire-bin")
 if [ "${#missing[@]}" -gt 0 ]; then
     echo "Missing: ${missing[*]}. Install with: sudo apt install ${missing[*]}" >&2
-    exit 1
-fi
-shell_version="$(gnome-shell --version 2>/dev/null | grep -oE '[0-9]+' | head -1 || true)"
-if [ "$shell_version" != "50" ]; then
-    echo "The desktop extension is written for GNOME Shell 50; this is GNOME Shell ${shell_version:-not found}." >&2
     exit 1
 fi
 
@@ -32,12 +34,22 @@ if [ ! -f "$repo/settings.json" ]; then
     echo "Created settings.json from settings.example.json."
 fi
 
+# Disable the legacy GNOME Shell extension if active so two overlays never collide.
+if command -v gnome-extensions >/dev/null && gnome-extensions info "$legacy_uuid" >/dev/null 2>&1; then
+    gnome-extensions disable "$legacy_uuid" >/dev/null 2>&1 || true
+fi
+if systemctl --user is-enabled "$legacy_update_unit" >/dev/null 2>&1; then
+    systemctl --user disable "$legacy_update_unit" >/dev/null 2>&1 || true
+fi
+rm -rf "$HOME/.local/share/gnome-shell/.$legacy_uuid.pending"
+
 units="$HOME/.config/systemd/user"
 mkdir -p "$units"
-sed "s|__WORKDIR__|$repo|g" "$repo/scripts/$unit.template" > "$units/$unit"
+sed "s|__WORKDIR__|$repo|g" "$repo/scripts/$service_unit.template" > "$units/$service_unit"
+sed "s|__WORKDIR__|$repo|g" "$repo/scripts/$desktop_unit.template" > "$units/$desktop_unit"
 systemctl --user daemon-reload
-systemctl --user enable --quiet "$unit"
-systemctl --user restart "$unit"
-echo "Started $unit; its settings page is http://localhost:8792/settings"
-
-"$repo/scripts/install-gnome-extension.sh"
+systemctl --user enable --quiet "$service_unit"
+systemctl --user enable --quiet "$desktop_unit"
+systemctl --user restart "$service_unit"
+systemctl --user restart "$desktop_unit"
+echo "Started $service_unit and $desktop_unit; settings at http://localhost:8792/settings"

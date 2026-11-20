@@ -259,5 +259,20 @@
       <default>-1</default>
       <summary>Monitor index of the box; -1 follows the primary monitor</summary>
     </key>
+    <key name="tray-mode" type="s">
+      <choices>
+        <choice value="auto"/>
+        <choice value="sni"/>
+        <choice value="panel-button"/>
+        <choice value="both"/>
+      </choices>
+      <default>'auto'</default>
+      <summary>How the standalone desktop overlay exposes its status indicator: auto (system tray, adding a panel button when the panel hides AppIndicators), sni only, panel-button only, or both</summary>
+    </key>
+    <key name="tray-button-right-offset" type="i">
+      <range min="-1" max="8000"/>
+      <default>-1</default>
+      <summary>Distance in pixels from the right edge of the primary monitor to the standalone panel status button; -1 places it automatically</summary>
+    </key>
   </schema>
 </schemalist>

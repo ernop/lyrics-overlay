@@ -11,7 +11,7 @@ import {Extension} from 'resource:///org/gnome/shell/extensions/extension.js';
 import {LyricsIndicator} from './indicator.js';
 import {LyricsOverlay} from './overlay.js';
 import {PitchPanel} from './pitch-panel.js';
-import {ServiceClient} from './service-client.js';
+import {ServiceClient} from './shared/service-client.js';
 
 // The page the browser extension opens, on the service's port in
 // settings.example.json (tests/firefox-service-url.test.mjs).

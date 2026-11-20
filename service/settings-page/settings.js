@@ -434,7 +434,7 @@ function buildStage() {
         el('div', {class: 'pitch-stage-frame'}, pitchCanvas),
         el('div', {class: 'stage-meta'},
             pitchMeta,
-            el('span', {class: 'hint-line'}, 'Drag pitch panel edges on desktop to resize or dock'),
+            el('span', {class: 'hint-line'}, 'Ctrl+drag pitch panel edges on desktop to resize or dock'),
         ),
     );
 

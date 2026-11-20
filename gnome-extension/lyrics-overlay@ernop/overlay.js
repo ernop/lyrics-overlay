@@ -28,7 +28,7 @@ import {
     boxFromGeometry, clampFontSize, expandedRenderBox,
     geometryFromBox, movedBox, snapBox, verticalAnchorFor,
 } from './shared/overlay-geometry.js';
-import {fitLyric, paintLyric} from './text-layout.js';
+import {fitLyric, paintLyric} from './shared/text-layout.js';
 
 const GRIP_MARGIN = 6;
 const SNAP_THRESHOLD = 12;

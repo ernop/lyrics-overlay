@@ -53,9 +53,10 @@ function startStubLrclib(answers) {
 }
 
 /**
- * @param {{answers: Record<string, object[]>, extraSettings?: object}} options LRCLIB answers by "artist|title"
+ * @param {{answers: Record<string, object[]>, extraSettings?: object,
+ *          xwayland?: boolean, enableExtension?: boolean}} options LRCLIB answers by "artist|title"
  */
-export async function startHarness({answers, extraSettings = {}}) {
+export async function startHarness({answers, extraSettings = {}, xwayland = false, enableExtension = true}) {
     const realDconfBefore = await realDconf(FIRST_WRITTEN);
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'lyrics-overlay-shell-'));
     const env = isolatedEnv(tmp);
@@ -81,7 +82,8 @@ export async function startHarness({answers, extraSettings = {}}) {
         env.DBUS_SYSTEM_BUS_ADDRESS = systemBus.address;
 
         const gsettings = (...args) => run('gsettings', args, {env});
-        await gsettings('set', 'org.gnome.shell', 'enabled-extensions', `['${UUID}', '${HELPER_UUID}']`);
+        const enabledList = enableExtension ? `['${UUID}', '${HELPER_UUID}']` : `['${HELPER_UUID}']`;
+        await gsettings('set', 'org.gnome.shell', 'enabled-extensions', enabledList);
         if (!fs.existsSync(path.join(tmp, 'config', 'dconf', 'user')))
             throw new Error('dconf did not write the temporary database; refusing to continue');
         if (await realDconf(FIRST_WRITTEN) !== realDconfBefore)
@@ -91,7 +93,16 @@ export async function startHarness({answers, extraSettings = {}}) {
         await gsettings('set', 'org.gnome.desktop.screensaver', 'lock-enabled', 'false');
         await gsettings('set', 'org.gnome.desktop.session', 'idle-delay', '0');
 
-        await run(path.join(root, 'scripts', 'install-gnome-extension.sh'), ['--data-home', env.XDG_DATA_HOME, '--no-enable'], {env});
+        let schemaDir;
+        if (enableExtension) {
+            await run(path.join(root, 'scripts', 'install-gnome-extension.sh'), ['--data-home', env.XDG_DATA_HOME, '--no-enable'], {env});
+            schemaDir = path.join(env.XDG_DATA_HOME, 'gnome-shell', 'extensions', UUID, 'schemas');
+        } else {
+            schemaDir = path.join(tmp, 'compiled-schemas');
+            fs.mkdirSync(schemaDir, {recursive: true});
+            await run('glib-compile-schemas', ['--strict', `--targetdir=${schemaDir}`,
+                path.join(root, 'gnome-extension', UUID, 'schemas')], {env});
+        }
         const helperDir = path.join(env.XDG_DATA_HOME, 'gnome-shell', 'extensions', HELPER_UUID);
         fs.mkdirSync(helperDir, {recursive: true});
         fs.writeFileSync(path.join(helperDir, 'metadata.json'), JSON.stringify({
@@ -103,7 +114,6 @@ export default class UnsafeForTests extends Extension {
     disable() { global.context.unsafe_mode = false; }
 }
 `);
-        const schemaDir = path.join(env.XDG_DATA_HOME, 'gnome-shell', 'extensions', UUID, 'schemas');
 
         const stub = await startStubLrclib(answers);
         const port = 20000 + Math.floor(Math.random() * 20000);
@@ -153,7 +163,8 @@ export default class UnsafeForTests extends Extension {
         };
 
         let shellLog = '';
-        const shell = spawn('gnome-shell', ['--headless', '--wayland', '--no-x11', '--virtual-monitor', `${MONITOR.width}x${MONITOR.height}`],
+        const shellArgs = ['--headless', '--wayland', ...(xwayland ? [] : ['--no-x11']), '--virtual-monitor', `${MONITOR.width}x${MONITOR.height}`];
+        const shell = spawn('gnome-shell', shellArgs,
             {env, stdio: ['ignore', 'pipe', 'pipe']});
         shell.stdout.on('data', data => { shellLog += data; });
         shell.stderr.on('data', data => { shellLog += data; });
@@ -171,6 +182,54 @@ export default class UnsafeForTests extends Extension {
         // only by a dropped JavaScript reference dies within the test.
         await evalJs('imports.gi.GLib.timeout_add(imports.gi.GLib.PRIORITY_DEFAULT, 250, () => { imports.system.gc(); return true; }) > 0');
 
+        let desktopLog = '';
+        let desktop = null;
+        const startDesktop = async () => {
+            const x11 = await waitFor(async () => {
+                const vars = await evalJs('({DISPLAY: imports.gi.GLib.getenv("DISPLAY"), XAUTHORITY: imports.gi.GLib.getenv("XAUTHORITY")})');
+                return vars?.DISPLAY ? vars : null;
+            }, 'XWayland DISPLAY from gnome-shell');
+            const desktopEnv = {...env, DISPLAY: x11.DISPLAY};
+            if (x11.XAUTHORITY)
+                desktopEnv.XAUTHORITY = x11.XAUTHORITY;
+            const socket = fs.readdirSync(env.XDG_RUNTIME_DIR).find(name => /^wayland-\d+$/u.test(name));
+            if (socket)
+                desktopEnv.WAYLAND_DISPLAY = socket;
+            await new Promise((resolve, reject) => {
+                const started = spawn('gjs', ['-m', path.join(root, 'tests', 'desktop-under-gc.js')],
+                    {env: desktopEnv, stdio: ['ignore', 'pipe', 'pipe']});
+                processes.push(started);
+                desktop = started;
+                let output = '';
+                const onData = data => {
+                    desktopLog += data;
+                    output += data;
+                    if (output.includes('ready on '))
+                        resolve();
+                };
+                started.stdout.on('data', onData);
+                started.stderr.on('data', onData);
+                started.once('exit', code => reject(new Error(`desktop exited (${code}) before ready:\n${output}`)));
+            });
+        };
+        const stopDesktop = async () => {
+            if (!desktop || desktop.exitCode !== null || desktop.signalCode !== null)
+                return;
+            const exited = new Promise(resolve => desktop.once('exit', resolve));
+            desktop.kill('SIGTERM');
+            await exited;
+        };
+        const desktopStatus = async () => {
+            const {stdout: json} = await run('gjs', ['-c', `
+                const Gio = imports.gi.Gio;
+                const res = Gio.DBus.session.call_sync(
+                    'net.fuseki.LyricsOverlayDesktop', '/net/fuseki/LyricsOverlayDesktop',
+                    'net.fuseki.LyricsOverlayDesktop1', 'GetStatus', null, null, 0, 2000, null);
+                print(res.deepUnpack()[0]);
+            `], {env});
+            return JSON.parse(json.trim());
+        };
+
         return {
             tmp,
             env,
@@ -184,6 +243,12 @@ export default class UnsafeForTests extends Extension {
             get serviceLog() {
                 return serviceLog;
             },
+            get desktopLog() {
+                return desktopLog;
+            },
+            startDesktop,
+            stopDesktop,
+            desktopStatus,
             gsettings: {
                 get: async key => (await run('gsettings', ['--schemadir', schemaDir, 'get', SCHEMA, key], {env})).stdout.trim(),
                 set: (key, value) => run('gsettings', ['--schemadir', schemaDir, 'set', SCHEMA, key, value], {env}),

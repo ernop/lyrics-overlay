@@ -60,9 +60,20 @@ mkdir -p "$staging/icons" "$staging/schemas" "$staging/shared"
 install -m 0644 "$source_dir/metadata.json" "$source_dir"/*.js "$staging/"
 install -m 0644 "$source_dir"/icons/*.svg "$staging/icons/"
 install -m 0644 "$source_dir"/schemas/*.gschema.xml "$staging/schemas/"
-# The shared modules the shell code imports; they import nothing local themselves.
+# Copy shared modules imported by the shell code, plus their transitive ./ imports inside shared/.
+pending_shared=()
 for file in $(grep -ohE "from '\./shared/[a-z0-9-]+\.js'" "$source_dir"/*.js | sed -E "s#from '\./shared/##; s#'##" | sort -u); do
+    pending_shared+=("$file")
+done
+idx=0
+while [ "$idx" -lt "${#pending_shared[@]}" ]; do
+    file="${pending_shared[$idx]}"
+    idx=$((idx + 1))
+    [ -f "$staging/shared/$file" ] && continue
     install -m 0644 "$repo/shared/$file" "$staging/shared/$file"
+    for dep in $(grep -ohE "from '\./[a-z0-9-]+\.js'" "$repo/shared/$file" | sed -E "s#from '\./##; s#'##" | sort -u); do
+        pending_shared+=("$dep")
+    done
 done
 glib-compile-schemas --strict "$staging/schemas"
 chmod 0755 "$staging"

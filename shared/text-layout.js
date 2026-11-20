@@ -5,15 +5,15 @@
 //
 // Fitting runs on a shared measuring context; painting rebuilds the same
 // layout on the cairo context, so measured and painted text agree to within
-// hinting. Both run on GNOME Shell's main thread on resize steps, so wrap
-// widths and pre-rendered border/shadow alpha masks are cached per line.
+// hinting. Wrap widths and pre-rendered border/shadow alpha masks are cached
+// per line so resize and scroll steps paint in a few milliseconds.
 
 import Cairo from 'cairo';
 import Pango from 'gi://Pango';
 import PangoCairo from 'gi://PangoCairo';
 
-import {backdropMetrics, balancedWrapWidth, borderSpec, normalizedSpaceScale} from './shared/overlay-geometry.js';
-import {parseHexColor, resolveTextColor, ringColors} from './shared/text-ink.js';
+import {backdropMetrics, balancedWrapWidth, borderSpec, normalizedSpaceScale} from './overlay-geometry.js';
+import {parseHexColor, resolveTextColor, ringColors} from './text-ink.js';
 
 export {borderSpec};
 

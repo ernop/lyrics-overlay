@@ -15,13 +15,16 @@ indicator changes quietly.
 
 ## Requirements (owner, 2026-11-09; extended 2026-11-10)
 
-- **Tray indicator.** A small indicator sits in the owner's lower-right
-  tray. On this desktop, Dash to Panel hides the panel's right box and
-  shows the center box at the bottom right, just left of the system menu
-  (Resource Monitor is placed there for the same reason), so the indicator
-  is appended to the center box; on a stock GNOME panel that puts it just
-  after the clock. Where Dash to Panel is installed, the shell e2e test
-  reads its live layout and fails if that box stops being shown there.
+- **Tray indicator.** A small indicator sits in the lower-right tray.
+  The standalone desktop frontend exports a standard
+  `org.kde.StatusNotifierItem` indicator (`TraySni`) and automatically
+  shows a standalone panel-strip button (`TrayButton`) when no
+  `StatusNotifierWatcher` is present or when Dash to Panel hides the
+  panel's `rightBox` (`tray-mode` setting: `auto`, `sni`, `panel-button`,
+  or `both`; horizontal position adjustable by middle-dragging the button
+  along the panel, saved in `tray-button-right-offset`). The legacy GNOME
+  Shell extension appends its indicator to the center box (which Dash to
+  Panel shows at bottom right beside the system menu).
   The indicator shows
   while a YouTube tab (youtube.com or music.youtube.com) plays sound, and
   disappears after it stops. It never flashes, animates or notifies. What
@@ -383,9 +386,30 @@ indicator changes quietly.
   the HTTP link and its held request, but adds a helper program and is
   untested in Ubuntu's snap Firefox, which reaches helpers only through a
   desktop portal.
+- **Standalone XWayland desktop frontend (owner, 2026-11-20).** The
+  primary desktop frontend is a standalone GJS GTK3/XWayland process
+  (`desktop/`, systemd user unit `lyrics-overlay-desktop.service`),
+  replacing the in-shell GNOME extension as the default install. It
+  restarts in milliseconds with zero logout, is unaffected by GNOME Shell
+  version changes or extension-unwind bugs, shares the exact Cairo/Pango
+  layout and pitch rendering in `shared/` with zero duplication, and works
+  on any X11 or Wayland+XWayland desktop. The lyric and pitch windows use
+  `TOPLEVEL` with `Gdk.WindowTypeHint.NOTIFICATION` (`skip_taskbar`,
+  `skip_pager`, `keep_above`, `stick`, `focus_on_map=false`,
+  `accept_focus=true`): empirically verified on GNOME Shell 50 + XWayland
+  so `Ctrl+drag` from a focused native Wayland window delivers synchronous
+  `CONTROL_MASK`, `Shift`, and `Escape` (unlike `override_redirect`
+  popups, which receive stale `state=0`), while staying out of Alt+Tab,
+  taskbars, and window-border decorations and never stealing focus on map.
+  Empty pixels around the lyric stay click-through via
+  `input_shape_combine_region`. The legacy GNOME Shell 50 extension
+  (`gnome-extension/lyrics-overlay@ernop`) stays in the repository for
+  optional use (`scripts/install-gnome-extension.sh`), and `scripts/install.sh`
+  disables it automatically so two overlays never draw at once.
 - **Public, and installable by anyone (owner, 2026-11-10).** The repository
-  is public. On a GNOME Shell 50 desktop, `scripts/install.sh` installs
-  the service and the shell extension, and the signed add-on comes from
-  the GitHub release; nothing depends on the owner's other tools, and
-  ytarchive is off unless `ytarchiveUrl` is set. MIT license. The history
-  starts at the public release; the private history before it was dropped.
+  is public. On any Linux desktop with XWayland or X11, `scripts/install.sh`
+  installs the service and standalone desktop frontend, and the signed
+  add-on comes from the GitHub release; nothing depends on the owner's
+  other tools, and ytarchive is off unless `ytarchiveUrl` is set. MIT
+  license. The history starts at the public release; the private history
+  before it was dropped.

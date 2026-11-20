@@ -11,15 +11,14 @@ import {fileURLToPath} from 'node:url';
 import {promisify} from 'node:util';
 
 const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
+const sharedDir = path.join(root, 'shared');
 const run = promisify(execFile);
 
 test('a proportional double border around a period is solid inner ring, then solid outer trim', async t => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lyrics-ring-'));
     t.after(() => fs.rmSync(dir, {recursive: true, force: true}));
-    fs.symlinkSync(path.join(root, 'gnome-extension/lyrics-overlay@ernop/text-layout.js'), path.join(dir, 'text-layout.js'));
-    fs.symlinkSync(path.join(root, 'shared'), path.join(dir, 'shared'));
 
-    const {stdout} = await run('gjs', ['-m', path.join(root, 'tests/paint-lyric-ring.js'), dir, path.join(dir, 'ring.png'), '.', '220', 'double']);
+    const {stdout} = await run('gjs', ['-m', path.join(root, 'tests/paint-lyric-ring.js'), sharedDir, path.join(dir, 'ring.png'), '.', '220', 'double']);
     const {ring, samples} = JSON.parse(stdout.trim().split('\n').pop());
     assert.ok(ring.inner > 20 && ring.outer >= 7, `expected proportional double ring, got ${JSON.stringify(ring)}`);
 
@@ -40,11 +39,9 @@ test('a proportional double border around a period is solid inner ring, then sol
 test('double and glow borders fill the middle of an o with the solid inner body', async t => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lyrics-ring-'));
     t.after(() => fs.rmSync(dir, {recursive: true, force: true}));
-    fs.symlinkSync(path.join(root, 'gnome-extension/lyrics-overlay@ernop/text-layout.js'), path.join(dir, 'text-layout.js'));
-    fs.symlinkSync(path.join(root, 'shared'), path.join(dir, 'shared'));
     for (const border of ['double', 'glow']) {
         for (const size of [60, 100, 160]) {
-            const {stdout} = await run('gjs', ['-m', path.join(root, 'tests/paint-lyric-ring.js'), dir, path.join(dir, 'ring.png'), 'o', String(size), border]);
+            const {stdout} = await run('gjs', ['-m', path.join(root, 'tests/paint-lyric-ring.js'), sharedDir, path.join(dir, 'ring.png'), 'o', String(size), border]);
             const {center} = JSON.parse(stdout.trim().split('\n').pop());
             assert.ok(center.every(channel => channel < 40), `black wanted in the middle of an o (${border} at ${size} px), got rgb(${center})`);
         }
@@ -54,11 +51,9 @@ test('double and glow borders fill the middle of an o with the solid inner body'
 test('font size stays constant on long lines while requiredHeight expands naturally', async t => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lyrics-const-'));
     t.after(() => fs.rmSync(dir, {recursive: true, force: true}));
-    fs.symlinkSync(path.join(root, 'gnome-extension/lyrics-overlay@ernop/text-layout.js'), path.join(dir, 'text-layout.js'));
-    fs.symlinkSync(path.join(root, 'shared'), path.join(dir, 'shared'));
 
-    const shortRun = await run('gjs', ['-m', path.join(root, 'tests/paint-lyric-ring.js'), dir, path.join(dir, 'short.png'), 'Hello', '64', 'double']);
-    const longRun = await run('gjs', ['-m', path.join(root, 'tests/paint-lyric-ring.js'), dir, path.join(dir, 'long.png'),
+    const shortRun = await run('gjs', ['-m', path.join(root, 'tests/paint-lyric-ring.js'), sharedDir, path.join(dir, 'short.png'), 'Hello', '64', 'double']);
+    const longRun = await run('gjs', ['-m', path.join(root, 'tests/paint-lyric-ring.js'), sharedDir, path.join(dir, 'long.png'),
         'This is a much longer lyric line that wraps across multiple lines without shrinking', '64', 'double']);
     const shortRes = JSON.parse(shortRun.stdout.trim().split('\n').pop());
     const longRes = JSON.parse(longRun.stdout.trim().split('\n').pop());
@@ -70,13 +65,11 @@ test('font size stays constant on long lines while requiredHeight expands natura
 test('double and glow borders fuse monospace word gaps with zero background punch-through and cast a dark backing cloud', async t => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lyrics-fuse-'));
     t.after(() => fs.rmSync(dir, {recursive: true, force: true}));
-    fs.symlinkSync(path.join(root, 'gnome-extension/lyrics-overlay@ernop/text-layout.js'), path.join(dir, 'text-layout.js'));
-    fs.symlinkSync(path.join(root, 'shared'), path.join(dir, 'shared'));
 
     for (const border of ['double', 'glow']) {
         const {stdout} = await run('gjs', [
             '-m', path.join(root, 'tests/paint-lyric-ring.js'),
-            dir, path.join(dir, `fuse-${border}.png`), 'Good day', '84', border, 'Monospace',
+            sharedDir, path.join(dir, `fuse-${border}.png`), 'Good day', '84', border, 'Monospace',
         ]);
         const res = JSON.parse(stdout.trim().split('\n').pop());
         assert.equal(res.lineCount, 1);
@@ -90,9 +83,11 @@ test('double and glow borders fuse monospace word gaps with zero background punc
 test('a fit and a paint served from the caches match a fresh module with empty caches', async t => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lyrics-cache-'));
     t.after(() => fs.rmSync(dir, {recursive: true, force: true}));
-    fs.symlinkSync(path.join(root, 'gnome-extension/lyrics-overlay@ernop/text-layout.js'), path.join(dir, 'text-layout.js'));
-    fs.symlinkSync(path.join(root, 'gnome-extension/lyrics-overlay@ernop/text-layout.js'), path.join(dir, 'text-layout-fresh.js'));
-    fs.symlinkSync(path.join(root, 'shared'), path.join(dir, 'shared'));
+    for (const file of fs.readdirSync(sharedDir)) {
+        if (file.endsWith('.js'))
+            fs.symlinkSync(path.join(sharedDir, file), path.join(dir, file));
+    }
+    fs.symlinkSync(path.join(sharedDir, 'text-layout.js'), path.join(dir, 'text-layout-fresh.js'));
 
     const {stdout} = await run('gjs', ['-m', path.join(root, 'tests/text-layout-cache.js'), dir, dir]);
     const result = JSON.parse(stdout.trim().split('\n').pop());

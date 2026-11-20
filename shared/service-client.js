@@ -4,7 +4,7 @@
 import GLib from 'gi://GLib';
 import Gio from 'gi://Gio';
 
-import {BUS_NAME, INTERFACE_XML, OBJECT_PATH} from './shared/dbus-interface.js';
+import {BUS_NAME, INTERFACE_XML, OBJECT_PATH} from './dbus-interface.js';
 
 const LyricsProxy = Gio.DBusProxy.makeProxyWrapper(INTERFACE_XML);
 
