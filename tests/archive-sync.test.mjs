@@ -1,7 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import {ArchiveRefused, ArchiveSync, LRC_FORMAT, MAX_OUTBOX, lrcText} from '../service/archive-sync.js';
+import {
+    ArchiveRefused, ArchiveSync, LRC_FORMAT, MAX_OUTBOX, STOP_PAUSE_MS, lrcText,
+} from '../service/archive-sync.js';
 
 const SYNCED = '[00:01.00] One\n[00:03.00] Two';
 const timed = {id: 77, trackName: 'Stub Song', artistName: 'Stub Band', albumName: 'Stub Album', duration: 185,
@@ -21,6 +23,37 @@ function memoryStore() {
     };
 }
 
+function fakeTimers() {
+    let now = 0;
+    let nextId = 1;
+    const pending = new Map();
+    return {
+        get pending() { return pending.size; },
+        set(callback, delayMs) {
+            const id = nextId++;
+            pending.set(id, {at: now + delayMs, callback});
+            return id;
+        },
+        clear(id) {
+            pending.delete(id);
+        },
+        async advance(ms) {
+            now += ms;
+            for (;;) {
+                const due = [...pending.entries()]
+                    .filter(([, entry]) => entry.at <= now)
+                    .sort((a, b) => a[1].at - b[1].at);
+                if (!due.length)
+                    break;
+                const [id, entry] = due[0];
+                pending.delete(id);
+                entry.callback();
+                await Promise.resolve();
+            }
+        },
+    };
+}
+
 /** A ytarchive stand-in: `mode` 'up', 'down' (unreachable) or 'refusing' (HTTP 4xx). */
 function fakeClient() {
     const client = {
@@ -34,6 +67,10 @@ function fakeClient() {
             client.calls.push(['lyrics', videoId, lrc]);
             client._answer();
         },
+        async stop(videoId) {
+            client.calls.push(['stop', videoId]);
+            client._answer();
+        },
         _answer() {
             if (client.mode === 'down')
                 throw new Error('connection refused');
@@ -44,14 +81,22 @@ function fakeClient() {
     return client;
 }
 
-function setup({store = memoryStore(), client = fakeClient(), lyrics = new Map()} = {}) {
+function setup({store = memoryStore(), client = fakeClient(), lyrics = new Map(), timers = fakeTimers(), stopPauseMs} = {}) {
     const logs = [];
-    const sync = new ArchiveSync({store, client, lyricsFor: id => lyrics.get(id) ?? null, log: line => logs.push(line)});
-    return {sync, store, client, lyrics, logs};
+    const sync = new ArchiveSync({
+        store,
+        client,
+        lyricsFor: id => lyrics.get(id) ?? null,
+        timers,
+        stopPauseMs,
+        log: line => logs.push(line),
+    });
+    return {sync, store, client, lyrics, timers, logs};
 }
 
 const state = (videoId, {sounding = true, chosen = null} = {}) =>
     ({active: true, sounding, videoId, chosen: chosen ? {id: chosen.id} : null});
+const inactive = () => ({active: false, sounding: false, videoId: null, chosen: null});
 
 test('lrcText writes LRC tags and the timed lines, plain lines without times, and nothing without words', () => {
     assert.equal(lrcText(timed), '[ar:Stub Band]\n[ti:Stub Song]\n[al:Stub Album]\n[length:03:05]\n[00:01.00] One\n[00:03.00] Two\n');
@@ -149,4 +194,91 @@ test('the store failing is logged and never reaches the caller', async () => {
     const {sync, logs} = setup({store});
     await sync.observe(state('anyvideo001'));
     assert.deepEqual(logs, ['ytarchive hand-off failed: disk full']);
+});
+
+test('closing or switching away from a heard video sends stop immediately; never heard sends nothing', async () => {
+    const {sync, client, timers} = setup();
+    await sync.observe(state('neverheard1', {sounding: false}));
+    await sync.observe(inactive());
+    assert.deepEqual(client.calls, [], 'closing a tab that never sounded sends no stop');
+
+    await sync.observe(state('livestream1'));
+    await sync.observe(inactive());
+    assert.deepEqual(client.calls, [['add', 'livestream1'], ['stop', 'livestream1']]);
+    assert.equal(timers.pending, 0);
+
+    await sync.observe(state('livestream2'));
+    await sync.observe(state('nextvideo02'));
+    assert.deepEqual(client.calls.slice(2), [
+        ['add', 'livestream2'],
+        ['add', 'nextvideo02'],
+        ['stop', 'livestream2'],
+    ]);
+});
+
+test('pausing waits STOP_PAUSE_MS before sending stop, resumes cancel it, and closing during pause stops immediately', async () => {
+    const {sync, client, timers} = setup();
+    assert.equal(STOP_PAUSE_MS, 60_000);
+    await sync.observe(state('pausevid001'));
+    await sync.observe(state('pausevid001', {sounding: false}));
+    await timers.advance(STOP_PAUSE_MS - 1);
+    await sync._chain;
+    assert.deepEqual(client.calls, [['add', 'pausevid001']], 'brief pause does not stop the recording');
+
+    // Resuming cancels the timer.
+    await sync.observe(state('pausevid001'));
+    assert.equal(timers.pending, 0);
+    await timers.advance(STOP_PAUSE_MS * 2);
+    await sync._chain;
+    assert.deepEqual(client.calls, [['add', 'pausevid001']]);
+
+    // Pausing for the full STOP_PAUSE_MS sends stop once; closing later does not send a second stop.
+    await sync.observe(state('pausevid001', {sounding: false}));
+    await timers.advance(STOP_PAUSE_MS);
+    await sync._chain;
+    assert.deepEqual(client.calls, [['add', 'pausevid001'], ['stop', 'pausevid001']]);
+    await sync.observe(inactive());
+    assert.deepEqual(client.calls, [['add', 'pausevid001'], ['stop', 'pausevid001']]);
+
+    // Closing while paused cancels the timer and stops immediately.
+    await sync.observe(state('pausevid002'));
+    await sync.observe(state('pausevid002', {sounding: false}));
+    assert.equal(timers.pending, 1);
+    await sync.observe(inactive());
+    assert.equal(timers.pending, 0);
+    assert.deepEqual(client.calls.slice(2), [['add', 'pausevid002'], ['stop', 'pausevid002']]);
+});
+
+test('observePresence tracks background tabs alongside an active music tab', async () => {
+    const {sync, client, timers} = setup();
+    // Music tab is active while a background webcam also sounds.
+    await sync.observe(state('musicvid001'));
+    await sync.observePresence({sounding: ['musicvid001', 'webcamvid01'], open: ['musicvid001', 'webcamvid01']});
+    assert.deepEqual(client.calls, [['add', 'musicvid001'], ['add', 'webcamvid01']]);
+
+    // Closing the background webcam stops it immediately even though musicvid001 stays active.
+    await sync.observePresence({sounding: ['musicvid001'], open: ['musicvid001']});
+    assert.deepEqual(client.calls, [['add', 'musicvid001'], ['add', 'webcamvid01'], ['stop', 'webcamvid01']]);
+
+    // Pausing the remaining tab starts the pause timer, cleared on shutdown.
+    await sync.observePresence({sounding: [], open: ['musicvid001']});
+    assert.equal(timers.pending, 1);
+    sync.shutdown();
+    assert.equal(timers.pending, 0);
+});
+
+test('stop failures are logged and never added to the persistent outbox', async () => {
+    const {sync, client, store, logs} = setup();
+    await sync.observe(state('stopfail001'));
+    client.mode = 'down';
+    await sync.observe(inactive());
+    assert.deepEqual(store.outbox, []);
+    assert.match(logs.join('\n'), /ytarchive stop for stopfail001 failed: connection refused/u);
+
+    client.mode = 'up';
+    await sync.observe(state('stoprefuse1'));
+    client.mode = 'refusing';
+    await sync.observe(inactive());
+    assert.deepEqual(store.outbox, []);
+    assert.match(logs.join('\n'), /ytarchive refused stop for stoprefuse1: HTTP 400/u);
 });

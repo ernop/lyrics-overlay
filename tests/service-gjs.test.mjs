@@ -20,20 +20,25 @@ const WRITTEN_DCONF = '/org/gnome/shell/extensions/lyrics-overlay/';
 const LRC = '[00:01.00] One\n[00:03.00] Two\n[00:30.00] Three';
 const TOPIC = 'Provided to YouTube by Label\n\nStub Song · Stub Band\n\nStub Album\n\n℗ 2003 Label';
 
-/** Stub LRCLIB (GET /api/search) and stub ytarchive (POST /api/get, /api/lyrics) on one port. */
+/** Stub LRCLIB (GET /api/search) and stub ytarchive (POST /api/get, /api/lyrics, /api/played-stop) on one port. */
 function startStubLrclib() {
     const requests = [];
     const archived = [];
     const server = http.createServer((request, response) => {
         const url = new URL(request.url, 'http://stub');
-        if (request.method === 'POST' && ['/api/get', '/api/lyrics'].includes(url.pathname)) {
+        if (request.method === 'POST' && ['/api/get', '/api/lyrics', '/api/played-stop'].includes(url.pathname)) {
             let body = '';
             request.on('data', chunk => { body += chunk; });
             request.on('end', () => {
                 archived.push({path: url.pathname, body: JSON.parse(body), origin: request.headers.origin,
                     host: request.headers.host, type: request.headers['content-type']});
                 response.writeHead(url.pathname === '/api/get' ? 202 : 200, {'Content-Type': 'application/json'});
-                response.end(JSON.stringify(url.pathname === '/api/get' ? {status: 'queued'} : {lyrics: 'pending'}));
+                const reply = url.pathname === '/api/get'
+                    ? {status: 'queued'}
+                    : url.pathname === '/api/lyrics'
+                        ? {lyrics: 'pending'}
+                        : {status: 'stopping'};
+                response.end(JSON.stringify(reply));
             });
             return;
         }
@@ -376,6 +381,15 @@ test('a video that starts sounding is handed to ytarchive once, then the lyrics 
     assert.deepEqual(record, {version: 1, videoId: 'handoffvid1', added: true, lyricsKey: '1:77'});
     assert.equal((await request(port, {method: 'POST', urlPath: '/api/archive', body: '{}', headers: EXTENSION_HEADERS})).status, 404);
     assert.match(serviceLog, /ytarchive: added handoffvid1/u);
+
+    // Closing the tab immediately notifies ytarchive so an active live recording can finish.
+    assert.equal((await request(port, {method: 'POST', urlPath: '/api/gone', body: JSON.stringify({tabId: 6}),
+        headers: EXTENSION_HEADERS})).status, 204);
+    await waitFor(() => stub.archived.some(req => req.path === '/api/played-stop' && req.body.video_id === 'handoffvid1'),
+        'played-stop sent on tab close');
+    const stopReq = stub.archived.find(req => req.path === '/api/played-stop' && req.body.video_id === 'handoffvid1');
+    assert.deepEqual(stopReq, {path: '/api/played-stop', body: {video_id: 'handoffvid1'},
+        origin: undefined, host: `127.0.0.1:${stub.port}`, type: 'application/json'});
     assert.doesNotMatch(serviceLog, /CRITICAL|WARNING|failed|unreachable/u, serviceLog);
 });
 

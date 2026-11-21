@@ -216,11 +216,12 @@ request it keeps open (`service/browser-commands.js`):
 ## ytarchive hand-off
 
 Only when `ytarchiveUrl` is set (`null` in settings.example.json).
-`service/archive-sync.js` watches the state the core publishes (the video
-being heard and the lyric set in use) and tells ytarchive
+`service/archive-sync.js` watches the state and multi-tab presence
+(`{sounding, open}`) the core publishes and tells ytarchive
 (`service/ytarchive.js`):
 
-- A video is added once, when it first sounds:
+- A video is added once, when it first sounds (including a sounding
+  background tab alongside an active music tab):
   `POST <ytarchiveUrl>/api/get {url, via: 'played'}`. ytarchive keeps the
   first route by which each video reached it.
 - The lyric set in use follows as an LRC file (`lrcText`: `[ar:]`, `[ti:]`,
@@ -229,6 +230,18 @@ being heard and the lyric set in use) and tells ytarchive
   when no set with words remains. It is sent again only when the set in use
   changes (`lyricsKey`, `<LRC_FORMAT>:<candidate id>`; raising `LRC_FORMAT`
   resends every song's file the next time it plays).
+- When the owner stops hearing a video that was added, `ArchiveSync` sends
+  `POST <ytarchiveUrl>/api/played-stop {video_id}` so ytarchive can end an
+  active live stream recording cleanly (normal videos ignore it):
+  - **Immediately** when its tab closes (`/api/gone`), switches to another
+    video, or lapses past missed heartbeats (even when another music tab
+    stays active).
+  - After **60 s** (`STOP_PAUSE_MS`) when the tab stays open but paused or
+    muted, cancelled if playback resumes before the timeout (or sent
+    immediately if the tab closes first).
+  - Stop signals are real-time only and are never written to
+    `archive-outbox.json`; a failure is logged and dropped (ytarchive's own
+    recording cap bounds the clip if it is unreachable).
 - `archive/<id>.json` records what ytarchive has (`added`, `lyricsKey`).
   Videos with something to send wait in `archive-outbox.json` (at most 500;
   the oldest are dropped, and logged), sent at the next change and at

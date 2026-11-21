@@ -1,19 +1,23 @@
 // Hands each YouTube video the owner starts hearing, and the lyrics the
 // overlay settles on for it, to a local ytarchive service, which archives
-// it from there. Nothing about the hand-off reaches the overlay or the
-// menus; what goes wrong goes to the log (docs/architecture.md,
-// "ytarchive hand-off").
+// it from there, and tells ytarchive when the owner stops hearing a video
+// so a live stream clip can finish cleanly. Nothing about the hand-off
+// reaches the overlay or the menus; what goes wrong goes to the log
+// (docs/architecture.md, "ytarchive hand-off").
 //
-// It watches LyricsCore's published state, the summary the overlay gets:
-// the video being heard and its chosen lyrics. A video is added once ever;
-// its lyrics are sent again only when the chosen lyrics change. What
-// ytarchive has not taken waits in an outbox, tried again at the next
-// change and at service start, never on a timer.
+// A video is added once ever; its lyrics are sent again only when the
+// chosen lyrics change. What ytarchive has not taken waits in an outbox,
+// tried again at the next change and at service start, never on a timer.
+// Stop signals are real-time only and never queued in the outbox.
 
 // Part of each sent-lyrics key, so a change to lrcText() sends every
 // song's file again the next time it plays.
 export const LRC_FORMAT = 1;
 export const MAX_OUTBOX = 500;
+// A paused or muted video counts as stopped after this long (so a brief
+// pause or ad does not cut a live recording); closing or switching tabs
+// sends the stop immediately.
+export const STOP_PAUSE_MS = 60_000;
 
 /** ytarchive refused the request itself (HTTP 4xx); asking again would not help. */
 export class ArchiveRefused extends Error {}
@@ -49,26 +53,44 @@ export class ArchiveSync {
      *   store: {loadArchiveRecord(videoId: string): {version: number, videoId: string, added: boolean, lyricsKey: string}|null,
      *           saveArchiveRecord(record: {version: number, videoId: string, added: boolean, lyricsKey: string}): void,
      *           loadArchiveOutbox(): string[]|null, saveArchiveOutbox(videoIds: string[]): void},
-     *   client: {add(videoId: string): Promise<void>, lyrics(videoId: string, lrc: string|null): Promise<void>},
+     *   client: {add(videoId: string): Promise<void>, lyrics(videoId: string, lrc: string|null): Promise<void>,
+     *            stop(videoId: string): Promise<void>},
      *   lyricsFor: (videoId: string) => object|null,
+     *   timers: {set(callback: () => void, delayMs: number): unknown, clear(handle: unknown): void},
+     *   stopPauseMs?: number,
      *   log: (message: string) => void,
      * }} deps  lyricsFor answers the stored candidate the overlay uses for a video
      */
     constructor(deps) {
-        for (const name of ['store', 'client', 'lyricsFor', 'log']) {
+        for (const name of ['store', 'client', 'lyricsFor', 'timers', 'log']) {
             if (!deps[name])
                 throw new Error(`ArchiveSync needs ${name}`);
         }
         this._deps = deps;
+        this._stopPauseMs = deps.stopPauseMs ?? STOP_PAUSE_MS;
         this._outbox = null;
         this._lastSignature = '';
         this._unreachable = false;
         this._chain = Promise.resolve();
+        this._hasPresence = false;
+        /** @type {Map<string, {timer: unknown}>} */
+        this._hearing = new Map();
     }
 
     /** Sends what an earlier run could not. */
     start() {
         return this._run(() => this._flush());
+    }
+
+    /** Clears pending stop-pause timers on service shutdown. */
+    shutdown() {
+        for (const entry of this._hearing.values()) {
+            if (entry.timer !== null) {
+                this._deps.timers.clear(entry.timer);
+                entry.timer = null;
+            }
+        }
+        this._hearing.clear();
     }
 
     /**
@@ -77,22 +99,88 @@ export class ArchiveSync {
      * @param {{active: boolean, sounding: boolean, videoId: string|null, chosen: {id: number}|null}} state
      */
     observe(state) {
-        if (!state.active || !state.videoId)
-            return Promise.resolve();
+        if (!state.active || !state.videoId) {
+            this._lastSignature = '';
+            if (!this._hasPresence)
+                return this._updatePresence({sounding: [], open: []});
+            return this._chain;
+        }
         const signature = `${state.videoId} ${state.sounding ? 'heard' : 'quiet'} ${state.chosen?.id ?? 'none'}`;
-        if (signature === this._lastSignature)
-            return Promise.resolve();
-        this._lastSignature = signature;
-        const {videoId, sounding} = state;
-        return this._run(async () => {
-            const record = this._record(videoId);
-            // Until it is heard a video is not added; once added, a lyrics
-            // choice made while paused counts too.
-            const due = record.added ? this._lyricsNow(videoId).key !== record.lyricsKey : sounding;
-            if (due)
-                this._enqueue(videoId);
-            await this._flush();
-        });
+        if (signature !== this._lastSignature) {
+            this._lastSignature = signature;
+            const {videoId, sounding} = state;
+            this._run(async () => {
+                const record = this._record(videoId);
+                // Until it is heard a video is not added; once added, a lyrics
+                // choice made while paused counts too.
+                const due = record.added ? this._lyricsNow(videoId).key !== record.lyricsKey : sounding;
+                if (due)
+                    this._enqueue(videoId);
+                await this._flush();
+            });
+        }
+        if (!this._hasPresence) {
+            return this._updatePresence({
+                sounding: state.sounding ? [state.videoId] : [],
+                open: [state.videoId],
+            });
+        }
+        return this._chain;
+    }
+
+    /**
+     * Tracks all open and sounding YouTube tabs from LyricsCore so background
+     * tabs (such as a webcam behind a music tab) also get added when heard and
+     * send /api/played-stop when closed or silent past STOP_PAUSE_MS.
+     * @param {{sounding: string[], open: string[]}} presence
+     */
+    observePresence(presence) {
+        this._hasPresence = true;
+        return this._updatePresence(presence);
+    }
+
+    _updatePresence({sounding, open}) {
+        const soundingSet = new Set(sounding);
+        const openSet = new Set(open);
+
+        for (const videoId of soundingSet) {
+            const entry = this._hearing.get(videoId);
+            if (!entry) {
+                this._hearing.set(videoId, {timer: null});
+                if (this._hasPresence) {
+                    this._run(async () => {
+                        if (!this._record(videoId).added) {
+                            this._enqueue(videoId);
+                            await this._flush();
+                        }
+                    });
+                }
+            } else if (entry.timer !== null) {
+                this._deps.timers.clear(entry.timer);
+                entry.timer = null;
+            }
+        }
+
+        for (const [videoId, entry] of [...this._hearing.entries()]) {
+            if (!openSet.has(videoId)) {
+                if (entry.timer !== null) {
+                    this._deps.timers.clear(entry.timer);
+                    entry.timer = null;
+                }
+                this._hearing.delete(videoId);
+                this._run(() => this._sendStop(videoId));
+            } else if (!soundingSet.has(videoId) && entry.timer === null) {
+                entry.timer = this._deps.timers.set(() => {
+                    entry.timer = null;
+                    if (!this._hearing.has(videoId))
+                        return;
+                    this._hearing.delete(videoId);
+                    this._run(() => this._sendStop(videoId));
+                }, this._stopPauseMs);
+            }
+        }
+
+        return this._chain;
     }
 
     _run(step) {
@@ -168,5 +256,20 @@ export class ArchiveSync {
         record.lyricsKey = key;
         store.saveArchiveRecord(record);
         log(lrc ? `ytarchive: ${candidate.timed ? 'timed' : 'plain'} lyrics for ${videoId}` : `ytarchive: removed the lyrics for ${videoId}`);
+    }
+
+    async _sendStop(videoId) {
+        const {client, log} = this._deps;
+        if (!this._record(videoId).added)
+            return;
+        try {
+            await client.stop(videoId);
+            log(`ytarchive: stopped ${videoId}`);
+        } catch (error) {
+            if (error instanceof ArchiveRefused)
+                log(`ytarchive refused stop for ${videoId}: ${error.message}`);
+            else
+                log(`ytarchive stop for ${videoId} failed: ${error.message}`);
+        }
     }
 }

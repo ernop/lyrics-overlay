@@ -1037,6 +1037,14 @@ export class LyricsCore {
             emit.state(JSON.parse(state));
         }
 
+        if (emit.presence) {
+            const presence = this._presenceJson();
+            if (presence !== this._lastPresence) {
+                this._lastPresence = presence;
+                emit.presence(JSON.parse(presence));
+            }
+        }
+
         const line = this._lineAt(session, now);
         let ruby = null;
         if (this._furiganaEnabled && this._deps.furigana) {

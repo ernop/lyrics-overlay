@@ -41,6 +41,7 @@ function harness({answers = {}, budgetWindows, generate, maxGenerateDurationSeco
     const pending = [];
     const searches = [];
     const states = [];
+    const presences = [];
     const lines = [];
     const logs = [];
     const saved = {videos: new Map(), searches: new Map(), budget: null, videoWrites: 0};
@@ -80,7 +81,11 @@ function harness({answers = {}, budgetWindows, generate, maxGenerateDurationSeco
         },
         clock: {now: () => now},
         timers,
-        emit: {state: state => states.push(state), line: line => lines.push(line)},
+        emit: {
+            state: state => states.push(state),
+            presence: presence => presences.push(presence),
+            line: line => lines.push(line),
+        },
         log: message => logs.push(message),
         budgetWindows,
         generate,
@@ -88,7 +93,7 @@ function harness({answers = {}, budgetWindows, generate, maxGenerateDurationSeco
     });
     const flush = () => new Promise(resolve => setImmediate(resolve));
     return {
-        core, searches, states, lines, logs, saved, flush,
+        core, searches, states, presences, lines, logs, saved, flush,
         /** Reports as the content script does: a running video promises a heartbeat. */
         report(tabId, message) {
             const running = !message.media.paused && !message.media.ended;
@@ -803,3 +808,50 @@ test('manual LRCLIB search and local .lrc/.txt import select lyrics immediately 
     assert.deepEqual(h.core.command({op: 'choose', id: 42}), {ok: true});
     assert.equal(h.lastState().chosen.id, 42);
 });
+
+test('presence tracks all open and sounding tabs even when a music tab stays active', async () => {
+    const h = harness({answers: {'Band|Song One': [record(1)]}});
+    const songMeta = metadata('song0000001');
+    const camMeta = metadata('webcam00001', {
+        title: 'Harbor Live Cam',
+        author: 'Harbor Watch',
+        category: 'Travel & Events',
+        description: '',
+    });
+
+    h.report(1, {sampledAt: h.now, media: media('song0000001'), metadata: songMeta});
+    h.report(2, {sampledAt: h.now, media: media('webcam00001'), metadata: camMeta});
+    assert.equal(h.lastState().videoId, 'song0000001', 'musical tab remains active');
+    assert.deepEqual(h.presences.at(-1), {
+        sounding: ['song0000001', 'webcam00001'],
+        open: ['song0000001', 'webcam00001'],
+    });
+
+    // Closing the background webcam removes it from presence at once without changing active state.
+    const stateCountBefore = h.states.length;
+    h.core.tabGone(2);
+    assert.equal(h.states.length, stateCountBefore, 'active music state is undisturbed');
+    assert.deepEqual(h.presences.at(-1), {
+        sounding: ['song0000001'],
+        open: ['song0000001'],
+    });
+
+    // Pausing leaves the song open but no longer sounding; missing heartbeats on another tab drops it.
+    h.report(3, {sampledAt: h.now, media: media('webcam00002'), metadata: metadata('webcam00002', {
+        title: 'Plaza Live Cam',
+        author: 'City Watch',
+        category: 'Travel & Events',
+        description: '',
+    })});
+    h.report(1, {sampledAt: h.now, media: media('song0000001', {paused: true}), metadata: songMeta});
+    assert.deepEqual(h.presences.at(-1), {
+        sounding: ['webcam00002'],
+        open: ['song0000001', 'webcam00002'],
+    });
+    await h.advance(MISSED_HEARTBEATS * HEARTBEAT_MS + 10);
+    assert.deepEqual(h.presences.at(-1), {
+        sounding: [],
+        open: ['song0000001'],
+    });
+});
+

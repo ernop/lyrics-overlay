@@ -14,7 +14,7 @@ const TIMEOUT_SECONDS = 10;
 const decoder = new TextDecoder();
 const encoder = new TextEncoder();
 
-/** @returns {{add(videoId: string): Promise<void>, lyrics(videoId: string, lrc: string|null): Promise<void>}} */
+/** @returns {{add(videoId: string): Promise<void>, lyrics(videoId: string, lrc: string|null): Promise<void>, stop(videoId: string): Promise<void>}} */
 export function createYtarchiveClient(baseUrl) {
     const session = new Soup.Session({timeout: TIMEOUT_SECONDS});
     const post = async (path, body) => {
@@ -31,5 +31,6 @@ export function createYtarchiveClient(baseUrl) {
         // "played" fills ytarchive's Added by column.
         add: videoId => post('/api/get', {url: `https://www.youtube.com/watch?v=${videoId}`, via: 'played'}),
         lyrics: (videoId, lrc) => post('/api/lyrics', {video_id: videoId, lrc}),
+        stop: videoId => post('/api/played-stop', {video_id: videoId}),
     };
 }

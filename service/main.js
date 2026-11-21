@@ -101,6 +101,7 @@ const core = new LyricsCore({
             archive?.observe(state);
             syncSongKey(state);
         },
+        presence: presence => archive?.observePresence(presence),
         line: line => bus?.emitLine(line),
     },
     log,
@@ -110,6 +111,7 @@ if (settings.ytarchiveUrl !== null) {
         store,
         client: createYtarchiveClient(settings.ytarchiveUrl),
         lyricsFor: videoId => core.lyricsFor(videoId),
+        timers,
         log,
     });
     archive.start();
@@ -162,6 +164,7 @@ for (const signal of [2, 15]) {
 
 loop.run();
 http.disconnect();
+archive?.shutdown();
 core.shutdown();
 furigana.shutdown();
 songKey.shutdown();

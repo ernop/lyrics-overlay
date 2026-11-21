@@ -254,15 +254,18 @@ indicator changes quietly.
   the system default and every PipeWire audio input; the choice persists.
   The echo canceller, on by default, subtracts what the speakers play, so
   the trace follows the singer and not the song.
-- **Every video heard goes to ytarchive (owner, 2026-11-10).** When
-  `ytarchiveUrl` is set, every YouTube video that starts sounding, song or
-  not, is added to that ytarchive, which records "Played" as how it first
-  arrived (beside "Bookmarklet" and "Pasted" for the owner's other routes).
-  The lyrics in use follow as an LRC file, and are replaced when another
-  set is chosen. Nothing on the settings page or the overlay concerns it:
-  ytarchive tracks the video from there. This replaced the browser's "Add
-  to ytarchive" menu items, which the owner found unneeded once every
-  video is added. `ytarchiveUrl: null` (the default) turns it off.
+- **Every video heard goes to ytarchive (owner, 2026-11-10; live stop
+  2026-11-20).** When `ytarchiveUrl` is set, every YouTube video that starts
+  sounding, song or not, is added to that ytarchive, which records "Played"
+  as how it first arrived (beside "Bookmarklet" and "Pasted" for the owner's
+  other routes). The lyrics in use follow as an LRC file, and are replaced
+  when another set is chosen. When the tab closes or switches videos (or
+  stays paused/muted for 60 s), the service tells ytarchive so an ongoing
+  live stream recording finishes cleanly instead of running forever. Nothing
+  on the settings page or the overlay concerns it: ytarchive tracks the
+  video from there. This replaced the browser's "Add to ytarchive" menu
+  items, which the owner found unneeded once every video is added.
+  `ytarchiveUrl: null` (the default) turns it off.
 
 ## Decisions
 
