@@ -19,6 +19,7 @@ import subprocess
 import sys
 import sysconfig
 import tempfile
+import threading
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -364,8 +365,21 @@ def _run_with_gpu_gate(
     )
     _ACTIVE_CHILD = proc
     stderr_tail: list[str] = []
+    stdout_chunks: list[str] = []
+
+    def _drain_stdout() -> None:
+        assert proc.stdout is not None
+        try:
+            stdout_chunks.append(proc.stdout.read())
+        finally:
+            proc.stdout.close()
+
+    # Drain stdout on a dedicated thread while streaming stderr stage markers so
+    # large word-level transcripts (>64 KB pipe buffer) never deadlock the child.
+    stdout_reader = threading.Thread(target=_drain_stdout, daemon=True)
+    stdout_reader.start()
     try:
-        assert proc.stderr is not None and proc.stdout is not None
+        assert proc.stderr is not None
         for line in proc.stderr:
             stripped = line.strip()
             if stripped.startswith("stage:"):
@@ -374,7 +388,9 @@ def _run_with_gpu_gate(
                 stderr_tail.append(stripped)
                 if len(stderr_tail) > 10:
                     stderr_tail.pop(0)
-        stdout = proc.stdout.read()
+        proc.stderr.close()
+        stdout_reader.join()
+        stdout = "".join(stdout_chunks)
         code = proc.wait()
     finally:
         _ACTIVE_CHILD = None
