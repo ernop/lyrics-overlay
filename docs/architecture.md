@@ -183,7 +183,9 @@ below.
 The settings page's paths need the same Host. `GET /settings`, its
 scripts (`settings.js`, `preview.js`), its stylesheet, the shared modules
 it imports and the favicon are files read at start; `GET /` redirects to
-`/settings`. It reads `GET /api/state`, `/api/settings` (the schema and
+`/settings`. Its right inspector renders Lyrics, Pitch, and Song as one
+continuous page; the sticky stage independently selects the lyric preview,
+pitch preview, or Screen map. It reads `GET /api/state`, `/api/settings` (the schema and
 the values, including writable `box` and `pitch-box`), `/api/fonts`,
 `/api/microphones` and `/api/monitors` (logical monitor geometry from
 Mutter's `DisplayConfig` D-Bus interface, falling back to `1920x1080`
@@ -379,6 +381,10 @@ Active only when `lyricsGenerator` is configured in `settings.json`
   background until they finish (saving into that video's record and
   notifying `ArchiveSync.observeVideoLyrics`), are replaced by a new
   `generate`, or are cancelled explicitly via `Command {op: 'cancelGenerate'}`.
+  `Command {op: 'generateFromScratch'}` has the same manual lifetime and
+  duration behavior but passes an empty `plainLyrics` input, guaranteeing
+  direct audio transcription instead of alignment against a possibly wrong
+  lyric set.
 - **Audio & transcription**: `generate-lyrics.py` acquires audio on its own
   (streaming an already-cached `<ytarchiveUrl>/media/<videoId>/_condensed/soundtrack.mp3`
   to disk only opportunistically when configured) via `yt-dlp --no-playlist
@@ -448,7 +454,8 @@ Name `net.fuseki.LyricsOverlay`, path `/net/fuseki/LyricsOverlay`,
 interface `net.fuseki.LyricsOverlay1` (`shared/dbus-interface.js`):
 `GetState() -> s`, `GetLine() -> s`, `Command(s) -> s` (JSON ops: tooFast,
 tooSlow, resetOffset, choose, reject, searchAgain, lookUp, searchQuery,
-importLyrics, saveEditedLyrics, generate, cancelGenerate, pitch), `FocusSong() -> s`, `OpenSettings() -> s`, signals `StateChanged`,
+importLyrics, saveEditedLyrics, generate, generateFromScratch, cancelGenerate,
+pitch), `FocusSong() -> s`, `OpenSettings() -> s`, signals `StateChanged`,
 `LineChanged`, `PitchFrames`. All payloads are JSON strings. `state`
 includes `generation: {available, status, mode, stage, message}` (plus optional
 `background` when a manual forced run continues while another or no video is

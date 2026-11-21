@@ -314,7 +314,7 @@ process.stdout.write(${JSON.stringify(JSON.stringify(makeFakeTranscript()))} + '
         const fontsLoaded = await Promise.race([document.fonts.ready.then(() => true),
             new Promise(resolve => setTimeout(() => resolve(false), ${FONTS_CHECK_MS}))]);
         const filled = fontsLoaded && Boolean(document.querySelector('#stage canvas')) &&
-            document.querySelectorAll('#tabs button[role="tab"]').length === 3 &&
+            document.querySelectorAll('.settings-group').length === 3 &&
             document.querySelectorAll('.fonts button').length > 1 &&
             document.querySelectorAll('[aria-label="Microphones"] button').length === 3 &&
             document.querySelectorAll('.ring-chip').length === 3 &&
@@ -340,16 +340,16 @@ process.stdout.write(${JSON.stringify(JSON.stringify(makeFakeTranscript()))} + '
         console.log(`wrote ${path.relative(root, outPath)}`);
     };
 
-    // 1. Lyrics tab: live English preview + Triple ring controls
+    // 1. Combined page at its Lyrics section: live English preview + Triple ring controls
     await capture(OUT_LYRICS);
 
-    // 2. Pitch tab + Screen map on the sticky left stage
+    // 2. Pitch section + Screen map on the sticky left stage
     await session.send('script.evaluate', {
         target: {context},
         awaitPromise: true,
         expression: `(async () => {
-            [...document.querySelectorAll('#tabs button[role="tab"]')].find(b => b.textContent.includes('Pitch'))?.click();
             [...document.querySelectorAll('#stage .stage-bar button')].find(b => b.textContent.trim() === 'Screen map')?.click();
+            document.getElementById('pitch')?.scrollIntoView({block: 'start'});
             await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
             return true;
         })()`,
@@ -357,13 +357,13 @@ process.stdout.write(${JSON.stringify(JSON.stringify(makeFakeTranscript()))} + '
     await sleep(250);
     await capture(OUT_MAP);
 
-    // 3. Song tab: auto-transcribed set, Full lyrics, Edit & publish, manual search, .lrc/.txt import
+    // 3. Song section: auto-transcribed set, Full lyrics, Edit & publish, manual search, .lrc/.txt import
     await session.send('script.evaluate', {
         target: {context},
         awaitPromise: true,
         expression: `(async () => {
-            [...document.querySelectorAll('#tabs button[role="tab"]')].find(b => b.textContent.includes('Song'))?.click();
-            [...document.querySelectorAll('#stage .stage-bar button')].find(b => b.textContent.trim().includes('Preview'))?.click();
+            [...document.querySelectorAll('#stage .stage-bar button')].find(b => b.textContent.trim() === 'Lyrics preview')?.click();
+            document.getElementById('song')?.scrollIntoView({block: 'start'});
             await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
             return true;
         })()`,

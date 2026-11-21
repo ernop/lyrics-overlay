@@ -138,19 +138,20 @@ indicator changes quietly.
   addresses; the overlay adds nothing. Next acts where YouTube offers a
   next video. A service-side player that always targets the song tab was
   offered and is not built.
-- **The settings page (owner, 2026-11-10; redesigned 2026-11-19/20).**
+- **The settings page (owner, 2026-11-10; redesigned 2026-11-19/20/21).**
   Every setting is on one full-width two-column page in Firefox,
   `http://localhost:8792/settings`: a compact top bar (title, active song
   and status pill, `Lyrics: On/Off`, `Pitch: On/Off`), a sticky left Live
-  Stage (~42%) flipping between `Preview` (live lyric preview over
-  Video/Dark/Light scenes on `Lyrics`/`Song`, live pitch trace preview on
-  `Pitch`) and an interactive `Screen map` (exact monitor aspect ratio,
+  Stage (~42%) explicitly switching among `Lyrics preview` (over
+  Video/Dark/Light scenes), `Pitch preview`, and an interactive `Screen map`
+  (exact monitor aspect ratio,
   8-handle drag/resize with magnetic snap, multi-monitor picker, placement
-  presets, pitch panel docking/resizing), beside an open borderless right
-  Inspector (~58%) with hairline dividers and three URL-hash tabs
-  (`#lyric`, `#pitch`, `#song`). A right press on the indicator, the lyric
+  presets, pitch panel docking/resizing), beside one open borderless right
+  Inspector (~58%) containing the Lyrics, Pitch, and Song sections in one
+  continuous page with compact notched sliders. Its idle preview uses a
+  familiar English lyric even when furigana is enabled. A right press on the indicator, the lyric
   or the pitch panel shows it; each change applies live. There is one
-  settings tab: a right press selects the open one and raises its window
+  browser settings tab: a right press selects the open one and raises its window
   rather than opening another.
 - **Automatic local lyric timing with quiet in-overlay status (owner,
   2026-11-20).** When `lyricsGenerator` is configured in `settings.json`
@@ -219,20 +220,23 @@ indicator changes quietly.
     immediately via `SIGTERM` if the user skips songs or stops, persists the
     generated candidate per video (`gen:aligned:*` / `gen:transcribed:*`) so
     replays are instant, automatically forwards the generated LRC to
-    ytarchive when `ytarchiveUrl` is set, and offers manual `Generate timed
-    lyrics` / `Retry timing` / `Regenerate timed lyrics` and `Cancel timing`
-    in the settings page's Song tab. Manual `Generate timed lyrics` always
+    ytarchive when `ytarchiveUrl` is set, and offers manual `Time existing
+    lyrics` / `Retry timing` / `Regenerate timed lyrics`, **Generate from
+    scratch**, and `Cancel timing` in the settings page's Song section.
+    **Generate from scratch** deliberately withholds every existing lyric set
+    from Whisper and directly transcribes the audio, for the case where the
+    only available lyrics belong to another song. Manual generation always
     bypasses `maxDurationSeconds` so long works can be timed on demand even
     above the automatic cap, and raising `maxDurationSeconds` re-enables
     automatic generation for tracks previously skipped only for duration.
 - **Choosing lyrics and overriding music detection (updated 2026-11-20).**
   When a video is not automatically recognized as music (`not-music`), a
   prominent **This is a music video** button appears in both the top bar
-  and the Song tab: one click permanently marks the video as music, raises
+  and the Song section: one click permanently marks the video as music, raises
   its tab priority, runs LRCLIB lookup (including a title-only fallback for
   uploads whose channel is not the artist), preloads the upcoming song,
   and chains directly into automatic local lyric timing if LRCLIB has only
-  untimed or no lyrics. In the Song tab, **Lyric sets** lists every
+  untimed or no lyrics. In the Song section, **Lyric sets** lists every
   candidate with timed line counts and tags, lets the owner click any set
   to switch immediately, hide a wrong one ("Wrong lyrics: hide this set"),
   search again, run a manual LRCLIB artist/title search, generate or
@@ -240,9 +244,11 @@ indicator changes quietly.
   directly (persisted per video and forwarded to ytarchive; plain `.txt`
   files can be aligned automatically onto the song's audio). Choices,
   imported files, and rejections are remembered per video.
-- **Full lyrics modal view (owner, 2026-11-20).** A **Full lyrics** button
-  in the settings page header bar and Song tab (and keyboard shortcut `L`)
-  opens a resizable full-lyrics modal (`?lyrics=read`) showing every line
+- **Full lyrics modal view (owner, 2026-11-20; group view 2026-11-21).** A
+  **Full lyrics** button in the settings page header bar and Song section
+  (and keyboard shortcut `L`) opens a resizable, nearly full-viewport
+  full-lyrics modal (`?lyrics=read`) at a large 32 px reading size (adjustable
+  from 18–64 px), showing every line
   of the active lyric set (timed or untimed) with tabular timestamps,
   optional Japanese furigana, adjustable reading size, inline timing nudges,
   and live current-line highlighting (`Now`) with smooth auto-scroll (which

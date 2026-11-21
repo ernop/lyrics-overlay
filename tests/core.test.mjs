@@ -511,6 +511,25 @@ test('auto-generates timed lyrics when LRCLIB returns only plain text, updates s
     assert.deepEqual(h.core.command({op: 'generate'}), {ok: true});
     assert.equal(calls.length, 2);
     assert.equal(h.lastState().lyrics, 'generating');
+
+    finish({
+        ok: true,
+        mode: 'aligned',
+        lrc: '[00:10.00] First line\n[00:15.00] Second line\n',
+        plainText: 'First line\nSecond line',
+        duration: 200,
+        coverage: 0.92,
+        lineCount: 2,
+    });
+    await h.flush();
+
+    // "Generate from scratch" deliberately ignores even the selected plain
+    // lyrics, so Whisper directly transcribes audio from a blank lyric input.
+    assert.deepEqual(h.core.command({op: 'generateFromScratch'}), {ok: true});
+    assert.equal(calls.length, 3);
+    assert.equal(calls[2].plainLyrics, '');
+    assert.equal(calls[2].force, true);
+    assert.equal(h.lastState().generation.mode, 'transcribed');
 });
 
 test('auto-generation cancels when switching songs, skips instrumentals and long videos, and ignores next preloads', async () => {

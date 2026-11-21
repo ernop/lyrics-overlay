@@ -34,8 +34,9 @@ and dark apps, with a small note icon in the top bar whenever music is playing.
 
 ## Full lyrics view, local timing, and sharing back
 
-Click **Full lyrics** (or press `L`) whenever you want to read the whole song
-and follow along live without watching the video. If a track had no lyrics
+Click **Full lyrics** (or press `L`) for a nearly fullscreen, large-text view
+suited to a group following the whole song live without watching the video.
+If a track had no lyrics
 online, local timing transcribes and saves it automatically — and the **Edit &
 publish** tab lets you fix any words and optionally publish verified lyrics
 anonymously to LRCLIB.
@@ -56,19 +57,20 @@ Right-click the lyric, pitch panel, or top-bar note to open the single settings
 page (`http://localhost:8792/settings`). Every change updates the live overlay
 immediately.
 
-![Settings page — Lyrics tab with live preview and multi-ring border controls](docs/settings.png)
+![Settings page — combined Lyrics, Pitch, and Song page with live preview](docs/settings.png)
 
 Arrange the lyric box and pitch panel directly on a map of your monitor, dock
 the pitch panel on any side (or detach it), and adjust note range, scale
 highlighting, and microphone choice:
 
-![Settings page — Screen map and Pitch tab](docs/settings-map.png)
+![Settings page — Screen map and Pitch section](docs/settings-map.png)
 
 For the current song, open full lyrics, nudge timing, switch lyric sets
-(including locally transcribed ones), search by artist and title, load a local
+(including locally transcribed ones), time existing words or **Generate from
+scratch** when those words are wrong, search by artist and title, load a local
 `.lrc` or `.txt` file, or edit and publish to LRCLIB:
 
-![Settings page — Song tab with locally transcribed lyrics, timing nudges, manual search, and local file import](docs/settings-song.png)
+![Settings page — Song section with local transcription, timing nudges, search, and file import](docs/settings-song.png)
 
 ## Everyday controls
 

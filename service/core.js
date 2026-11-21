@@ -483,6 +483,7 @@ export class LyricsCore {
             return {ok: true, id: candidateId, timed: parsed.timed, lineCount: parsed.lineCount};
         }
         case 'generate':
+        case 'generateFromScratch':
             if (!this._deps.generate)
                 return {ok: false, error: 'automatic lyric timing is not configured'};
             if (!record || !session.identity)
@@ -495,6 +496,7 @@ export class LyricsCore {
             this._deps.store.saveVideo(record);
             this._startGeneration(session.videoId, session.identity, record, {
                 force: true,
+                fromScratch: command.op === 'generateFromScratch',
                 startAt: this._mediaTime(session, this._deps.clock.now()),
             });
             this._refresh();
@@ -1135,8 +1137,8 @@ export class LyricsCore {
         });
     }
 
-    _startGeneration(videoId, identity, record, {force, startAt = 0}) {
-        const plainCandidate = this._plainCandidateFor(record);
+    _startGeneration(videoId, identity, record, {force, fromScratch = false, startAt = 0}) {
+        const plainCandidate = fromScratch ? null : this._plainCandidateFor(record);
         const plainLyrics = plainCandidate?.plainLyrics ?? '';
         const startedAt = this._deps.clock.now();
         const job = {

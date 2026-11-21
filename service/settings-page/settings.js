@@ -1,7 +1,7 @@
 // Lyrics overlay settings page (http://localhost:8792/settings):
 // Two-column pro studio layout with a sticky left live stage (switching
-// cleanly between Live Preview / Live Pitch Preview and interactive Screen
-// Map) beside a calm borderless inspector (Lyrics, Pitch, Song).
+// cleanly between lyric preview, pitch preview, and interactive Screen Map)
+// beside one calm borderless inspector containing Lyrics, Pitch, and Song.
 
 import {LYRICS_STATUS_TEXT} from '/shared/lyrics-status.js';
 import {BORDER_DEFAULTS, PLACEMENT_PRESETS, borderSpec} from '/shared/overlay-geometry.js';
@@ -26,7 +26,6 @@ const SLIDER_STEPS = 1000;
 const MIN_FIXED_SPAN = 6;
 const SHARPS = pitchClassNames(null);
 const DEFAULT_SAMPLE = 'Amazing grace, how sweet the sound';
-const DEFAULT_JAPANESE_SAMPLE = '\u685c\u306e\u82b1\u3073\u3089\u304c\u821e\u3044\u6563\u308b\u591c';
 const KANJI_RE = /[\u4e00-\u9fff\u3400-\u4dbf\u3005]/u;
 
 const LINE_COLORS = [
@@ -36,12 +35,6 @@ const LINE_COLORS = [
 
 const BACKDROP_SWATCHES = [
     ['#000000', 'Black'], ['#141824', 'Midnight'], ['#1f2937', 'Slate'], ['#2b1429', 'Plum'], ['#ffffff', 'White'],
-];
-
-const TABS = [
-    {id: 'lyric', label: 'Lyrics'},
-    {id: 'pitch', label: 'Pitch'},
-    {id: 'song', label: 'Song'},
 ];
 
 const DEFAULT_MONITOR = {index: 0, x: 0, y: 0, width: 1920, height: 1080, scale: 1, primary: true, label: 'Primary (1920\u00d71080)'};
@@ -61,8 +54,7 @@ const model = {
     held: new Set(),
     views: [],
     stateViews: [],
-    activeTab: 'lyric',
-    stageMode: 'preview', // 'preview' | 'map'
+    stageMode: 'lyric', // 'lyric' | 'pitch' | 'map'
     previewScene: 'video',
     customSample: '',
     lyricPreview: null,
@@ -105,8 +97,6 @@ function activeSampleText() {
         return model.customSample;
     if (model.line?.text)
         return model.line.text;
-    if (model.values?.['text-furigana'])
-        return DEFAULT_JAPANESE_SAMPLE;
     return DEFAULT_SAMPLE;
 }
 
@@ -252,10 +242,16 @@ function view(fn) {
 }
 
 function section(title, headRight, ...rows) {
-    const head = el('div', {class: 'section-head'}, el('h2', {}, title));
+    const head = el('div', {class: 'section-head'}, el('h3', {}, title));
     if (headRight)
         head.append(headRight);
     return el('section', {class: 'section'}, head, ...rows);
+}
+
+function pageSection(id, title, panel) {
+    return el('section', {id, class: 'settings-group'},
+        el('h2', {class: 'settings-group-title'}, title),
+        panel);
 }
 
 function row(label, ...controls) {
@@ -406,16 +402,20 @@ function buildTopBar() {
 function buildStage() {
     const stage = document.getElementById('stage');
 
-    // Top mode toggle: Preview | Screen map
-    const previewModeBtn = pressButton('Preview', () => {
-        model.stageMode = 'preview';
+    // Explicit preview selector remains useful now all settings share one page.
+    const lyricModeBtn = pressButton('Lyrics preview', () => {
+        model.stageMode = 'lyric';
+        model.stageSync();
+    });
+    const pitchModeBtn = pressButton('Pitch preview', () => {
+        model.stageMode = 'pitch';
         model.stageSync();
     });
     const mapModeBtn = pressButton('Screen map', () => {
         model.stageMode = 'map';
         model.stageSync();
     });
-    const modeSeg = el('div', {class: 'seg compact'}, previewModeBtn, mapModeBtn);
+    const modeSeg = el('div', {class: 'seg compact'}, lyricModeBtn, pitchModeBtn, mapModeBtn);
 
     // Scene toggle (Video / Dark / Light) for lyric preview
     const sceneButtons = {};
@@ -473,7 +473,7 @@ function buildStage() {
         ),
     );
 
-    // 2. Pitch preview pane (auto-shown when Pitch tab is active)
+    // 2. Pitch preview pane
     const pitchCanvas = el('canvas', {'aria-label': 'Live pitch panel preview'});
     model.pitchPreview = new PitchPreviewCanvas(pitchCanvas);
     const pitchMeta = el('span', {class: 'metric-value'});
@@ -548,10 +548,10 @@ function buildStage() {
 
     model.stageSync = () => {
         const isMap = model.stageMode === 'map';
-        const isPitch = !isMap && model.activeTab === 'pitch';
-        const isLyric = !isMap && !isPitch;
-        previewModeBtn.textContent = model.activeTab === 'pitch' ? 'Pitch preview' : 'Preview';
-        previewModeBtn.setAttribute('aria-pressed', String(!isMap));
+        const isPitch = model.stageMode === 'pitch';
+        const isLyric = model.stageMode === 'lyric';
+        lyricModeBtn.setAttribute('aria-pressed', String(isLyric));
+        pitchModeBtn.setAttribute('aria-pressed', String(isPitch));
         mapModeBtn.setAttribute('aria-pressed', String(isMap));
         sceneSeg.hidden = !isLyric;
         lyricPane.hidden = !isLyric;
@@ -569,7 +569,7 @@ function buildStage() {
     model.stageSync();
 }
 
-// ----- Tab 1: Lyrics (clean 8-control pro inspector)
+// ----- Lyrics (clean 8-control pro inspector)
 
 function classifyFont(family) {
     const lower = family.toLowerCase();
@@ -953,7 +953,7 @@ function buildLyricsTab() {
     return el('div', {class: 'panel'}, typography, appearance, layoutMotion);
 }
 
-// ----- Tab 2: Pitch
+// ----- Pitch
 
 function lineColorRow() {
     const swatches = LINE_COLORS.map(([hex, label]) => {
@@ -1098,7 +1098,7 @@ function buildPitchTab() {
     return el('div', {class: 'panel'}, placement, range, trace, scaleMic);
 }
 
-// ----- Tab 3: Song & Lyrics
+// ----- Song & Lyrics
 
 function buildSongTab() {
     const playing = el('span', {class: 'value'});
@@ -1120,6 +1120,7 @@ function buildSongTab() {
     const wrong = pressButton('Wrong lyrics: hide this set', () => command({op: 'reject'}));
     const again = pressButton('Search again', () => command({op: 'searchAgain'}));
     const generate = pressButton('Generate timed lyrics', () => command({op: 'generate'}), {hidden: 'hidden'});
+    const generateFresh = pressButton('Generate from scratch', () => command({op: 'generateFromScratch'}), {hidden: 'hidden'});
     const cancelGenerate = pressButton('Cancel timing', () => command({op: 'cancelGenerate'}), {hidden: 'hidden'});
     const timingButtons = [
         pressButton('Too fast (\u22120.5 s)', () => command({op: 'tooFast'})),
@@ -1201,10 +1202,14 @@ function buildSongTab() {
         const timingActive = state.lyrics === 'generating' || Boolean(bgGen);
         generate.hidden = !canGenerate;
         generate.disabled = !state.active || state.lyrics === 'generating';
+        generateFresh.hidden = !canGenerate;
+        generateFresh.disabled = !state.active || state.lyrics === 'generating';
         cancelGenerate.hidden = !canGenerate || !timingActive;
         cancelGenerate.disabled = !timingActive;
         if (state.lyrics === 'generating')
             generate.textContent = 'Timing lyrics\u2026';
+        else if (state.lyrics === 'plain')
+            generate.textContent = 'Time existing lyrics';
         else if (gen?.status === 'error')
             generate.textContent = 'Retry timing';
         else if (state.candidates.some(c => c.generated))
@@ -1250,16 +1255,21 @@ function buildSongTab() {
         row('Playing', playing),
         row('Lyrics', lyrics),
         row('Timing offset', timing, ...timingButtons),
-        row('Actions', markMusic, fullLyrics, publishBtn, wrong, again, generate, cancelGenerate),
         row('Microphone', microphone),
         row('Detected scale', heardKey),
         row('Firefox add-on', addonVersion, install, updateService),
     );
 
+    const actionsSection = section('Actions', null,
+        row('Read & edit', fullLyrics, publishBtn),
+        row('Lyric source', markMusic, wrong, again),
+        row('Local timing', generate, generateFresh, cancelGenerate),
+    );
+
     const setsHeadRight = el('div', {class: 'section-head-actions'}, setsCount, loadFileBtn, fileInput);
     const setsSection = section('Lyric sets', setsHeadRight, manualSearchForm, emptySets, sets);
 
-    return el('div', {class: 'panel'}, songSection, setsSection);
+    return el('div', {class: 'panel'}, songSection, actionsSection, setsSection);
 }
 
 // ----- Full Lyrics Reader & Review/Publish to LRCLIB Modal
@@ -1292,7 +1302,7 @@ function buildLyricsModal() {
     let open = false;
     let mode = 'read'; // 'read' | 'edit'
     let autoScroll = true;
-    let readerPx = 18;
+    let readerPx = 32;
     let loadedKey = '';
     let loading = false;
     let payload = null;
@@ -1324,12 +1334,12 @@ function buildLyricsModal() {
     }, {class: 'compact', hidden: 'hidden'});
     const sizeReadout = el('span', {class: 'metric-value'}, `${readerPx} px`);
     const sizeDownBtn = pressButton('A\u2212', () => {
-        readerPx = Math.max(14, readerPx - 2);
+        readerPx = Math.max(18, readerPx - 2);
         reader.style.setProperty('--reader-size', `${readerPx}px`);
         sizeReadout.textContent = `${readerPx} px`;
     }, {class: 'compact', 'aria-label': 'Smaller lyrics text'});
     const sizeUpBtn = pressButton('A+', () => {
-        readerPx = Math.min(30, readerPx + 2);
+        readerPx = Math.min(64, readerPx + 2);
         reader.style.setProperty('--reader-size', `${readerPx}px`);
         sizeReadout.textContent = `${readerPx} px`;
     }, {class: 'compact', 'aria-label': 'Larger lyrics text'});
@@ -1747,58 +1757,15 @@ function buildLyricsModal() {
     return controller;
 }
 
-// ----- Tabs & page lifecycle
+// ----- Combined settings page lifecycle
 
 function buildWorkspace() {
-    const panels = {
-        lyric: buildLyricsTab(),
-        pitch: buildPitchTab(),
-        song: buildSongTab(),
-    };
-    const songBadge = el('span', {class: 'tab-badge', hidden: 'hidden'});
-    model.stateViews.push(state => {
-        if (state.candidates.length) {
-            songBadge.textContent = String(state.candidates.length);
-            songBadge.hidden = false;
-        } else {
-            songBadge.hidden = true;
-        }
-    });
-
-    const tabButtons = {};
-    const activate = id => {
-        if (!(id in panels))
-            id = 'lyric';
-        model.activeTab = id;
-        for (const [key, panel] of Object.entries(panels)) {
-            const selected = key === id;
-            panel.hidden = !selected;
-            tabButtons[key].setAttribute('aria-selected', String(selected));
-        }
-        if (window.location.hash !== `#${id}`)
-            history.replaceState(null, '', `#${id}`);
-        model.stageSync?.();
-    };
-
-    const nav = document.getElementById('tabs');
-    nav.replaceChildren(...TABS.map(tab => {
-        const btn = pressButton(tab.label, () => activate(tab.id), {role: 'tab', 'aria-selected': 'false'});
-        if (tab.id === 'song')
-            btn.append(songBadge);
-        tabButtons[tab.id] = btn;
-        return btn;
-    }));
-
     const workspace = document.getElementById('workspace');
-    workspace.replaceChildren(...Object.values(panels));
-
-    const initialHash = window.location.hash.replace(/^#/u, '');
-    activate(initialHash in panels ? initialHash : 'lyric');
-    window.addEventListener('hashchange', () => {
-        const target = window.location.hash.replace(/^#/u, '');
-        if (target in panels && target !== model.activeTab)
-            activate(target);
-    });
+    workspace.replaceChildren(
+        pageSection('lyrics', 'Lyrics', buildLyricsTab()),
+        pageSection('pitch', 'Pitch', buildPitchTab()),
+        pageSection('song', 'Song', buildSongTab()),
+    );
 }
 
 async function start() {

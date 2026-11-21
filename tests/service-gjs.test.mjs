@@ -188,9 +188,14 @@ test('the gjs service looks up lyrics, serves state and accepts shell commands',
     const page = await request(port, {urlPath: '/settings'});
     assert.equal(page.status, 200);
     assert.match(page.body, /<title>Lyrics overlay settings<\/title>/u, 'the shell raises the window by this title');
-    for (const script of ['/settings.js', '/preview.js', '/shared/scales.js', '/shared/text-ink.js',
+    assert.doesNotMatch(page.body, /role="tablist"/u, 'Lyrics, Pitch, and Song share one continuous page');
+    const settingsScript = await request(port, {urlPath: '/settings.js'});
+    assert.match(settingsScript.body, /pageSection\('lyrics'.*pageSection\('pitch'.*pageSection\('song'/su);
+    assert.match(settingsScript.body, /Generate from scratch/u);
+    for (const script of ['/preview.js', '/shared/scales.js', '/shared/text-ink.js',
         '/shared/lyrics-status.js', '/shared/overlay-geometry.js', '/shared/pitch-layout.js'])
         assert.match((await request(port, {urlPath: script})).headers['content-type'], /^text\/javascript/u, script);
+    assert.match(settingsScript.headers['content-type'], /^text\/javascript/u, '/settings.js');
     const icon = await request(port, {urlPath: '/favicon.svg'});
     assert.equal(icon.headers['content-type'], 'image/svg+xml');
     assert.equal(icon.body, fs.readFileSync(new URL('../firefox/icon.svg', import.meta.url), 'utf8'));
