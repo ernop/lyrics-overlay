@@ -103,6 +103,7 @@ const core = new LyricsCore({
             syncSongKey(state);
         },
         presence: presence => archive?.observePresence(presence),
+        videoUpdated: videoId => archive?.observeVideoLyrics(videoId),
         line: line => bus?.emitLine(line),
     },
     log,

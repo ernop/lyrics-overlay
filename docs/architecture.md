@@ -374,27 +374,41 @@ Active only when `lyricsGenerator` is configured in `settings.json`
   `maxDurationSeconds` clears prior duration skips), or on demand via
   `Command {op: 'generate'}` (which sets `force: true` and passes
   `--max-duration 0` to bypass the automatic duration cap). Switching
-  songs or stopping playback sends `SIGTERM` to the child process and
-  discards its result.
+  songs or stopping playback cancels automatic runs immediately via
+  `SIGTERM`; explicit manual runs (`force: true`) continue in the
+  background until they finish (saving into that video's record and
+  notifying `ArchiveSync.observeVideoLyrics`), are replaced by a new
+  `generate`, or are cancelled explicitly via `Command {op: 'cancelGenerate'}`.
 - **Audio & transcription**: `generate-lyrics.py` acquires audio on its own
-  (checking `<ytarchiveUrl>/media/<videoId>/_condensed/soundtrack.mp3` only
-  opportunistically when already cached) via `yt-dlp --no-playlist
+  (streaming an already-cached `<ytarchiveUrl>/media/<videoId>/_condensed/soundtrack.mp3`
+  to disk only opportunistically when configured) via `yt-dlp --no-playlist
   --ignore-config` into a `TemporaryDirectory` that is always deleted on exit.
   Both `lyric-generator.js` and `generate-lyrics.py` place `~/.local/bin`
   ahead of system bin directories (`/usr/bin`, `/usr/local/bin`) so a
-  user-installed standalone `yt-dlp` beats stale distro packages. It requests
-  `-f bestaudio[filesize<30M]/bestaudio` first; on HTTP 403 it cleans partial
-  files and retries once with `bestaudio[protocol^=m3u8]/best[filesize<30M]/best`
-  (HLS audio or progressive container). Optional
+  user-installed standalone `yt-dlp` beats stale distro packages. Automatic
+  runs (`--max-duration > 0`) cap downloads at 100 MB
+  (`-f bestaudio[filesize<100M]/bestaudio`, HTTP 403 fallback
+  `bestaudio[protocol^=m3u8]/best[filesize<100M]/best`); manual forced runs
+  (`--max-duration 0`) omit `--max-filesize` and request compact audio
+  (`-f bestaudio[abr<=96]/bestaudio`, HTTP 403 fallback
+  `bestaudio[protocol^=m3u8]/best`). Optional
   `lyricsGenerator.cookiesFromBrowser` (default `null`) passes
   `--cookies-from-browser <browser>` when explicitly configured. It decodes
   audio to 16 kHz mono float32 via `ffmpeg` (bypassing PyAV `av>=19`
-  compatibility breakage in `faster-whisper`), and emits `stage:audio`,
-  `stage:gpu-wait`, and `stage:transcribe` lines on stderr (streamed live into
-  `state.generation` and the overlay's quiet `StatusPill`). When `gpuGate` is
-  configured, only the child `--transcribe-audio` step runs under the external
-  GPU gate command so audio download never holds GPU memory; exit code 75 maps
-  to `{ok: false, busy: true}`.
+  compatibility breakage in `faster-whisper`), decoding and transcribing
+  tracks longer than 15 minutes in 10-minute slices so peak RAM stays
+  bounded while returning one complete merged transcript, and emits
+  `stage:audio`, `stage:gpu-wait`, `stage:transcribe`, and (for tracks
+  >= 2 minutes) `stage:transcribe:<done>/<total>` progress lines on stderr
+  (streamed live into `state.generation` and the overlay's quiet
+  `StatusPill`). When `gpuGate` is configured, only the child
+  `--transcribe-audio` step runs under the external GPU gate command so
+  audio download never holds GPU memory; exit code 75 maps to
+  `{ok: false, busy: true}`. For tracks longer than 15 minutes, the GPU gate
+  scales `--minutes` from probed duration, steps down from lane `now` to
+  `new` (or `gpuGate.longLane`), checks `should-yield` between 10-minute
+  slices so urgent `now` jobs can preempt cleanly, and resumes from
+  `--start-offset` until the whole track completes atomically.
 - **Alignment & persistence**: `shared/lyric-align.js` aligns LRCLIB's
   `plainLyrics` onto Whisper's word timestamps with monotone semi-global
   DP (`mode: 'aligned'`, falling back to hallucination-filtered
@@ -423,9 +437,11 @@ Name `net.fuseki.LyricsOverlay`, path `/net/fuseki/LyricsOverlay`,
 interface `net.fuseki.LyricsOverlay1` (`shared/dbus-interface.js`):
 `GetState() -> s`, `GetLine() -> s`, `Command(s) -> s` (JSON ops: tooFast,
 tooSlow, resetOffset, choose, reject, searchAgain, lookUp, searchQuery,
-importLyrics, generate, pitch), `FocusSong() -> s`, `OpenSettings() -> s`, signals `StateChanged`,
+importLyrics, saveEditedLyrics, generate, cancelGenerate, pitch), `FocusSong() -> s`, `OpenSettings() -> s`, signals `StateChanged`,
 `LineChanged`, `PitchFrames`. All payloads are JSON strings. `state`
-includes `generation: {available, status, mode, stage, message}`.
+includes `generation: {available, status, mode, stage, message}` (plus optional
+`background` when a manual forced run continues while another or no video is
+active).
 
 ## GJS lifetime rules (learned 2026-11-09)
 

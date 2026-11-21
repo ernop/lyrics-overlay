@@ -282,3 +282,17 @@ test('stop failures are logged and never added to the persistent outbox', async 
     assert.deepEqual(store.outbox, []);
     assert.match(logs.join('\n'), /ytarchive refused stop for stoprefuse1: HTTP 400/u);
 });
+
+test('observeVideoLyrics forwards newly generated lyrics for a previously heard background video', async () => {
+    const {sync, client, lyrics} = setup();
+    await sync.observe(state('bgconcert01'));
+    await sync.observe(state('othervideo1'));
+    assert.deepEqual(client.calls, [['add', 'bgconcert01'], ['add', 'othervideo1'], ['stop', 'bgconcert01']]);
+
+    // While another video is active, bgconcert01 finishes generating timed lyrics.
+    lyrics.set('bgconcert01', {...timed, id: 'gen:transcribed:1', syncedLyrics: '[00:05.00] Comfort ye'});
+    await sync.observeVideoLyrics('bgconcert01');
+    assert.equal(client.calls.at(-1)[0], 'lyrics');
+    assert.equal(client.calls.at(-1)[1], 'bgconcert01');
+    assert.match(client.calls.at(-1)[2], /\[00:05\.00\] Comfort ye/u);
+});

@@ -370,15 +370,19 @@ function buildTopBar() {
     });
 
     model.stateViews.push(state => {
+        const bgGen = state.generation?.background ?? null;
         songTitle.textContent = state.active ? (state.identityText || state.videoId) : 'No song playing';
         const statusText = state.lyrics === 'generating' && state.generation?.message
             ? state.generation.message
-            : (LYRICS_STATUS_TEXT[state.lyrics] ?? state.lyrics);
+            : (!state.active && bgGen?.message)
+                ? bgGen.message
+                : (LYRICS_STATUS_TEXT[state.lyrics] ?? state.lyrics);
         statusPill.textContent = statusText;
         statusPill.className = 'pill';
         if (state.lyrics === 'timed')
             statusPill.classList.add('pill-good');
-        else if (state.lyrics === 'searching' || state.lyrics === 'waiting' || state.lyrics === 'plain' || state.lyrics === 'generating')
+        else if (state.lyrics === 'searching' || state.lyrics === 'waiting' || state.lyrics === 'plain'
+            || state.lyrics === 'generating' || (!state.active && bgGen))
             statusPill.classList.add('pill-warn');
         else if (state.lyrics === 'error')
             statusPill.classList.add('pill-alert');
@@ -1116,6 +1120,7 @@ function buildSongTab() {
     const wrong = pressButton('Wrong lyrics: hide this set', () => command({op: 'reject'}));
     const again = pressButton('Search again', () => command({op: 'searchAgain'}));
     const generate = pressButton('Generate timed lyrics', () => command({op: 'generate'}), {hidden: 'hidden'});
+    const cancelGenerate = pressButton('Cancel timing', () => command({op: 'cancelGenerate'}), {hidden: 'hidden'});
     const timingButtons = [
         pressButton('Too fast (\u22120.5 s)', () => command({op: 'tooFast'})),
         pressButton('Too slow (+0.5 s)', () => command({op: 'tooSlow'})),
@@ -1162,13 +1167,20 @@ function buildSongTab() {
             titleInput.value = '';
         }
         const gen = state.generation;
-        if (state.lyrics === 'generating' && gen?.message) {
-            lyrics.textContent = gen.message;
-        } else if ((gen?.status === 'error' || gen?.status === 'skipped') && gen.message && state.lyrics !== 'timed') {
-            lyrics.textContent = `${LYRICS_STATUS_TEXT[state.lyrics]} (${gen.message})`;
-        } else {
-            lyrics.textContent = LYRICS_STATUS_TEXT[state.lyrics] ?? state.lyrics;
+        const bgGen = gen?.background ?? null;
+        let lyricsText;
+        if (state.lyrics === 'generating' && gen?.message)
+            lyricsText = gen.message;
+        else if ((gen?.status === 'error' || gen?.status === 'skipped') && gen.message && state.lyrics !== 'timed')
+            lyricsText = `${LYRICS_STATUS_TEXT[state.lyrics]} (${gen.message})`;
+        else
+            lyricsText = LYRICS_STATUS_TEXT[state.lyrics] ?? state.lyrics;
+        if (bgGen?.message) {
+            lyricsText = state.active
+                ? `${lyricsText} \u00b7 Background: ${bgGen.message} (${bgGen.label})`
+                : `${bgGen.message} (${bgGen.label})`;
         }
+        lyrics.textContent = lyricsText;
         timing.textContent = `${state.offsetSeconds > 0 ? '+' : ''}${state.offsetSeconds.toFixed(1)} s`;
         for (const button of timingButtons)
             button.disabled = !state.active;
@@ -1186,8 +1198,11 @@ function buildSongTab() {
         titleInput.disabled = !state.active;
         manualSearchBtn.disabled = !state.active;
         const canGenerate = Boolean(gen?.available);
+        const timingActive = state.lyrics === 'generating' || Boolean(bgGen);
         generate.hidden = !canGenerate;
         generate.disabled = !state.active || state.lyrics === 'generating';
+        cancelGenerate.hidden = !canGenerate || !timingActive;
+        cancelGenerate.disabled = !timingActive;
         if (state.lyrics === 'generating')
             generate.textContent = 'Timing lyrics\u2026';
         else if (gen?.status === 'error')
@@ -1235,7 +1250,7 @@ function buildSongTab() {
         row('Playing', playing),
         row('Lyrics', lyrics),
         row('Timing offset', timing, ...timingButtons),
-        row('Actions', markMusic, fullLyrics, publishBtn, wrong, again, generate),
+        row('Actions', markMusic, fullLyrics, publishBtn, wrong, again, generate, cancelGenerate),
         row('Microphone', microphone),
         row('Detected scale', heardKey),
         row('Firefox add-on', addonVersion, install, updateService),

@@ -145,8 +145,28 @@ function newVideoRecord(videoId) {
     return {version: 1, videoId, identity: null, lookup: null, generated: null, candidates: [], chosenId: null, rejectedIds: [], offsetSeconds: 0, userRequested: false};
 }
 
+function formatProgressClock(seconds) {
+    const total = Math.max(0, Math.floor(seconds));
+    const hours = Math.floor(total / 3600);
+    const minutes = Math.floor((total % 3600) / 60);
+    const secs = total % 60;
+    if (hours > 0)
+        return `${hours}:${String(minutes).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+    return `${minutes}:${String(secs).padStart(2, '0')}`;
+}
+
 function generationStageMessage(hasPlain, stage) {
     const verb = hasPlain ? 'Aligning lyrics' : 'Timing lyrics';
+    const progress = /^transcribe:(\d+(?:\.\d+)?)\/(\d+(?:\.\d+)?)$/u.exec(String(stage ?? ''));
+    if (progress) {
+        const done = Number(progress[1]);
+        const total = Number(progress[2]);
+        if (Number.isFinite(done) && Number.isFinite(total) && total > 0) {
+            const clamped = Math.min(total, Math.max(0, done));
+            const pct = Math.min(100, Math.round((clamped / total) * 100));
+            return `${verb} \u00b7 ${formatProgressClock(clamped)} / ${formatProgressClock(total)} (${pct}%)`;
+        }
+    }
     switch (stage) {
     case 'audio':
         return `${verb} \u00b7 loading audio`;
@@ -449,6 +469,26 @@ export class LyricsCore {
             this._startGeneration(session.videoId, session.identity, record, {force: true});
             this._refresh();
             return {ok: true};
+        case 'cancelGenerate': {
+            if (!this._generating)
+                return {ok: true, cancelled: false};
+            const {videoId} = this._generating;
+            this._cancelGeneration('cancelled by user');
+            const target = this._video(videoId);
+            if (!target.generated || (target.generated.status !== 'ready' && target.generated.status !== 'skipped')) {
+                target.generated = {
+                    version: GENERATE_VERSION,
+                    status: 'skipped',
+                    mode: null,
+                    at: this._deps.clock.now(),
+                    error: 'Cancelled',
+                    candidateId: null,
+                };
+                this._deps.store.saveVideo(target);
+            }
+            this._refresh();
+            return {ok: true, cancelled: true};
+        }
         default:
             return {ok: false, error: `unknown command ${command.op}`};
         }
@@ -1030,7 +1070,7 @@ export class LyricsCore {
             return;
         if (this._userRequestedNow && (!session || session.videoId !== this._userRequestedNow))
             this._userRequestedNow = null;
-        if (this._generating && (!session || session.videoId !== this._generating.videoId))
+        if (this._generating && !this._generating.force && (!session || session.videoId !== this._generating.videoId))
             this._cancelGeneration(session ? 'switched to another video' : 'playback ended');
         if (this._generating && session && session.videoId === this._generating.videoId && !this._generating.force) {
             if (this._effective(this._video(session.videoId))?.timed)
@@ -1068,6 +1108,7 @@ export class LyricsCore {
         const startedAt = this._deps.clock.now();
         const job = {
             videoId,
+            label: describeIdentity(identity) || videoId,
             force,
             hasPlain: Boolean(plainLyrics),
             stage: 'audio',
@@ -1147,6 +1188,7 @@ export class LyricsCore {
             candidateId,
         };
         store.saveVideo(record);
+        this._deps.emit.videoUpdated?.(videoId);
         const alignedNote = result.coverage !== undefined ? `, ${Math.round(result.coverage * 100)}% aligned` : '';
         log(`generate ${videoId}: ${result.mode}, ${result.lineCount} lines${alignedNote}, ${elapsedMs} ms`);
         this._refresh();
@@ -1187,8 +1229,25 @@ export class LyricsCore {
 
     _generationState(session, record) {
         const available = Boolean(this._deps.generate);
-        if (!session || !record)
-            return {available, status: 'idle', mode: null, stage: null, message: ''};
+        const background = this._generating && this._generating.videoId !== session?.videoId
+            ? {
+                videoId: this._generating.videoId,
+                label: this._generating.label,
+                mode: this._generating.hasPlain ? 'aligned' : 'transcribed',
+                stage: this._generating.stage,
+                message: generationStageMessage(this._generating.hasPlain, this._generating.stage),
+            }
+            : null;
+        if (!session || !record) {
+            return {
+                available,
+                status: 'idle',
+                mode: null,
+                stage: null,
+                message: '',
+                ...(background ? {background} : {}),
+            };
+        }
         if (this._generating?.videoId === session.videoId) {
             return {
                 available,
@@ -1196,17 +1255,27 @@ export class LyricsCore {
                 mode: this._generating.hasPlain ? 'aligned' : 'transcribed',
                 stage: this._generating.stage,
                 message: generationStageMessage(this._generating.hasPlain, this._generating.stage),
+                force: Boolean(this._generating.force),
             };
         }
         const gen = record.generated;
-        if (!gen)
-            return {available, status: 'idle', mode: null, stage: null, message: ''};
+        if (!gen) {
+            return {
+                available,
+                status: 'idle',
+                mode: null,
+                stage: null,
+                message: '',
+                ...(background ? {background} : {}),
+            };
+        }
         return {
             available,
             status: gen.status,
             mode: gen.mode ?? null,
             stage: null,
             message: gen.error ?? '',
+            ...(background ? {background} : {}),
         };
     }
 

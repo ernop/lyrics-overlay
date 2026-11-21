@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import ctypes
 import json
+import math
 import os
 import shutil
 import signal
@@ -20,6 +21,7 @@ import sys
 import sysconfig
 import tempfile
 import threading
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -34,8 +36,13 @@ def _emit_stage(stage: str) -> None:
 _SYSTEM_BIN_DIRS = frozenset(
     ("/usr/local/sbin", "/usr/local/bin", "/usr/sbin", "/usr/bin", "/sbin", "/bin")
 )
-_PRIMARY_AUDIO_FORMAT = "bestaudio[filesize<30M]/bestaudio"
-_FALLBACK_AUDIO_FORMAT = "bestaudio[protocol^=m3u8]/best[filesize<30M]/best"
+_AUTO_PRIMARY_AUDIO_FORMAT = "bestaudio[filesize<100M]/bestaudio"
+_AUTO_FALLBACK_AUDIO_FORMAT = "bestaudio[protocol^=m3u8]/best[filesize<100M]/best"
+_LARGE_PRIMARY_AUDIO_FORMAT = "bestaudio[abr<=96]/bestaudio"
+_LARGE_FALLBACK_AUDIO_FORMAT = "bestaudio[protocol^=m3u8]/best"
+_SLICE_THRESHOLD_SECONDS = 900.0
+_SLICE_SECONDS = 600.0
+_PROGRESS_MIN_DURATION = 120.0
 
 
 def _augmented_env() -> dict[str, str]:
@@ -90,15 +97,23 @@ def _fetch_ytarchive_audio(base_url: str, video_id: str, target: Path) -> bool:
     url = f"{base_url.rstrip('/')}/media/{video_id}/_condensed/soundtrack.mp3"
     req = urllib.request.Request(url, method="GET")
     try:
-        with urllib.request.urlopen(req, timeout=5) as resp:
+        with urllib.request.urlopen(req, timeout=15) as resp:
             if resp.status != 200:
                 return False
-            data = resp.read()
-            if len(data) < 4096:
+            written = 0
+            with target.open("wb") as fh:
+                while True:
+                    chunk = resp.read(65536)
+                    if not chunk:
+                        break
+                    fh.write(chunk)
+                    written += len(chunk)
+            if written < 4096:
+                target.unlink(missing_ok=True)
                 return False
-            target.write_bytes(data)
             return True
     except (urllib.error.URLError, TimeoutError, OSError):
+        target.unlink(missing_ok=True)
         return False
 
 
@@ -125,6 +140,7 @@ def _download_youtube_audio(
     env: dict[str, str],
     *,
     cookies_from_browser: str = "",
+    allow_large: bool = False,
 ) -> Path:
     yt_dlp = shutil.which("yt-dlp", path=env["PATH"])
     if not yt_dlp:
@@ -136,11 +152,14 @@ def _download_youtube_audio(
         "--ignore-config",
         "--no-warnings",
         "--no-progress",
-        "--max-filesize",
-        "30m",
     ]
+    if not allow_large:
+        base_cmd.extend(["--max-filesize", "100m"])
     if cookies_from_browser:
         base_cmd.extend(["--cookies-from-browser", cookies_from_browser])
+
+    primary_fmt = _LARGE_PRIMARY_AUDIO_FORMAT if allow_large else _AUTO_PRIMARY_AUDIO_FORMAT
+    fallback_fmt = _LARGE_FALLBACK_AUDIO_FORMAT if allow_large else _AUTO_FALLBACK_AUDIO_FORMAT
 
     def _try_format(fmt: str) -> tuple[Path | None, int, str]:
         _clear_partial_downloads(tmpdir)
@@ -153,14 +172,14 @@ def _download_youtube_audio(
             raise RuntimeError("yt-dlp produced no audio file")
         return files[0], 0, stderr
 
-    downloaded, code, stderr = _try_format(_PRIMARY_AUDIO_FORMAT)
+    downloaded, code, stderr = _try_format(primary_fmt)
     if downloaded is not None:
         return downloaded
 
     if _is_http_403(stderr):
         # YouTube intermittently returns HTTP 403 on anonymous DASH audio streams;
         # retry once via YouTube's separate HLS audio / progressive stream path.
-        downloaded, code, stderr = _try_format(_FALLBACK_AUDIO_FORMAT)
+        downloaded, code, stderr = _try_format(fallback_fmt)
         if downloaded is not None:
             return downloaded
         detail = _last_error_line(stderr, code)
@@ -229,21 +248,27 @@ def _load_whisper(WhisperModel, model_name: str, **kwargs):
         return WhisperModel(model_name, **kwargs)
 
 
-def _decode_audio_16k(audio_path: Path, env: dict[str, str]):
+def _decode_audio_16k(
+    audio_path: Path,
+    env: dict[str, str],
+    *,
+    start_sec: float = 0.0,
+    duration_sec: float | None = None,
+):
     """Decodes any container (WebM/Opus, M4A, MP3, etc.) to 16 kHz mono float32 via ffmpeg."""
     import numpy as np
 
     ffmpeg = shutil.which("ffmpeg", path=env["PATH"])
     if not ffmpeg:
         raise RuntimeError("ffmpeg is not installed")
-    proc = subprocess.Popen(
+    cmd = [ffmpeg, "-nostdin", "-v", "error"]
+    if start_sec > 0:
+        cmd.extend(["-ss", f"{start_sec:.3f}"])
+    cmd.extend(["-i", str(audio_path)])
+    if duration_sec is not None:
+        cmd.extend(["-t", f"{duration_sec:.3f}"])
+    cmd.extend(
         [
-            ffmpeg,
-            "-nostdin",
-            "-v",
-            "error",
-            "-i",
-            str(audio_path),
             "-f",
             "f32le",
             "-acodec",
@@ -253,7 +278,10 @@ def _decode_audio_16k(audio_path: Path, env: dict[str, str]):
             "-ar",
             "16000",
             "pipe:1",
-        ],
+        ]
+    )
+    proc = subprocess.Popen(
+        cmd,
         env=env,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -268,9 +296,70 @@ def _decode_audio_16k(audio_path: Path, env: dict[str, str]):
         detail = err.decode("utf-8", errors="replace").strip()[:200]
         raise RuntimeError(f"audio decode failed: {detail or f'exit {proc.returncode}'}")
     samples = np.frombuffer(raw, dtype=np.float32)
-    if samples.size == 0:
+    if samples.size == 0 and start_sec <= 0:
         raise RuntimeError("audio file has no samples")
     return samples
+
+
+def _should_yield(yield_check_cmd: list[str] | None, env: dict[str, str]) -> bool:
+    if not yield_check_cmd:
+        return False
+    try:
+        proc = subprocess.run(
+            yield_check_cmd,
+            env=env,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=5,
+        )
+        return proc.returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+def _emit_progress(done_sec: float, total_duration: float) -> None:
+    if total_duration < _PROGRESS_MIN_DURATION:
+        return
+    done = int(min(total_duration, max(0.0, done_sec)))
+    total = int(round(total_duration))
+    if total > 0:
+        _emit_stage(f"transcribe:{done}/{total}")
+
+
+def _collect_segments(
+    raw_segments,
+    *,
+    offset: float,
+    total_duration: float,
+    last_progress: float,
+) -> tuple[list[dict], float]:
+    segments: list[dict] = []
+    step = max(5.0, total_duration / 100.0) if total_duration > 0 else 5.0
+    for seg in raw_segments:
+        words = []
+        for w in seg.words or []:
+            words.append(
+                {
+                    "start": round(offset + float(w.start or 0), 3),
+                    "end": round(offset + float(w.end or 0), 3),
+                    "word": str(w.word or ""),
+                    "probability": round(float(w.probability or 0), 4),
+                }
+            )
+        end_sec = offset + float(seg.end or 0)
+        segments.append(
+            {
+                "start": round(offset + float(seg.start or 0), 3),
+                "end": round(end_sec, 3),
+                "text": str(seg.text or ""),
+                "no_speech_prob": round(float(getattr(seg, "no_speech_prob", 0) or 0), 4),
+                "words": words,
+            }
+        )
+        if total_duration >= _PROGRESS_MIN_DURATION and end_sec - last_progress >= step:
+            last_progress = end_sec
+            _emit_progress(end_sec, total_duration)
+    return segments, last_progress
 
 
 def _transcribe_audio(
@@ -281,11 +370,17 @@ def _transcribe_audio(
     compute_type: str,
     prompt: str,
     env: dict[str, str],
+    total_duration: float = 0.0,
+    start_offset: float = 0.0,
+    yield_check_cmd: list[str] | None = None,
+    slice_seconds: float = _SLICE_SECONDS,
 ) -> dict:
     import ctranslate2
     from faster_whisper import WhisperModel
 
-    samples = _decode_audio_16k(audio_path, env)
+    effective_total = total_duration if total_duration > 0 else _probe_duration(audio_path, env)
+    slice_threshold = _SLICE_THRESHOLD_SECONDS if slice_seconds >= _SLICE_SECONDS else slice_seconds
+    use_slices = start_offset > 0 or effective_total > slice_threshold
 
     chosen_device = device
     chosen_compute = compute_type
@@ -306,7 +401,10 @@ def _transcribe_audio(
             chosen_compute = "int8"
 
     threads = max(1, min(8, (os.cpu_count() or 2) // 2))
-    _emit_stage("transcribe")
+    if start_offset > 0 and effective_total >= _PROGRESS_MIN_DURATION:
+        _emit_progress(start_offset, effective_total)
+    else:
+        _emit_stage("transcribe")
     model = _load_whisper(
         WhisperModel,
         model_name,
@@ -324,133 +422,227 @@ def _transcribe_audio(
     if prompt:
         kwargs["initial_prompt"] = prompt[:700]
 
-    raw_segments, info = model.transcribe(samples, **kwargs)
-    segments = []
-    for seg in raw_segments:
-        words = []
-        for w in seg.words or []:
-            words.append(
-                {
-                    "start": round(float(w.start or 0), 3),
-                    "end": round(float(w.end or 0), 3),
-                    "word": str(w.word or ""),
-                    "probability": round(float(w.probability or 0), 4),
-                }
-            )
-        segments.append(
-            {
-                "start": round(float(seg.start or 0), 3),
-                "end": round(float(seg.end or 0), 3),
-                "text": str(seg.text or ""),
-                "no_speech_prob": round(float(getattr(seg, "no_speech_prob", 0) or 0), 4),
-                "words": words,
-            }
+    if not use_slices:
+        samples = _decode_audio_16k(audio_path, env)
+        raw_segments, info = model.transcribe(samples, **kwargs)
+        duration = round(float(getattr(info, "duration", 0) or effective_total or 0), 3)
+        language = str(getattr(info, "language", "") or "")
+        segments, _last = _collect_segments(
+            raw_segments,
+            offset=0.0,
+            total_duration=duration,
+            last_progress=0.0,
         )
-    duration = round(float(getattr(info, "duration", 0) or 0), 3)
-    language = str(getattr(info, "language", "") or "")
-    del raw_segments, model
+        del raw_segments, samples, model
+        return {
+            "ok": True,
+            "language": language,
+            "duration": duration,
+            "device": chosen_device,
+            "segments": segments,
+        }
+
+    offset = max(0.0, float(start_offset))
+    last_progress = offset
+    all_segments: list[dict] = []
+    language = ""
+    yielded = False
+    next_offset = offset
+
+    while True:
+        if effective_total > 0 and offset >= effective_total - 0.1:
+            break
+        samples = _decode_audio_16k(audio_path, env, start_sec=offset, duration_sec=slice_seconds)
+        if samples.size == 0:
+            break
+        actual_slice_dur = samples.size / 16000.0
+        raw_segments, info = model.transcribe(samples, **kwargs)
+        if not language:
+            language = str(getattr(info, "language", "") or "")
+        chunk_segments, last_progress = _collect_segments(
+            raw_segments,
+            offset=offset,
+            total_duration=effective_total,
+            last_progress=last_progress,
+        )
+        all_segments.extend(chunk_segments)
+        del raw_segments, samples
+
+        reached_eof = actual_slice_dur < slice_seconds - 0.5
+        offset = offset + (actual_slice_dur if reached_eof else slice_seconds)
+        next_offset = offset
+        if effective_total >= _PROGRESS_MIN_DURATION and next_offset - last_progress >= 1.0:
+            last_progress = next_offset
+            _emit_progress(next_offset, effective_total)
+        if reached_eof or (effective_total > 0 and next_offset >= effective_total - 0.1):
+            break
+        if _should_yield(yield_check_cmd, env):
+            yielded = True
+            break
+
+    del model
     return {
         "ok": True,
+        "yielded": yielded,
+        "nextOffset": round(next_offset, 3),
         "language": language,
-        "duration": duration,
+        "duration": round(max(effective_total, offset), 3),
         "device": chosen_device,
-        "segments": segments,
+        "segments": all_segments,
     }
 
 
 def _run_with_gpu_gate(
     gate: dict,
     audio_path: Path,
+    duration: float,
     args: argparse.Namespace,
     env: dict[str, str],
 ) -> dict:
     gate_bin = shutil.which(str(gate.get("command", "gpu")), path=env["PATH"])
     if not gate_bin:
         raise RuntimeError(f"GPU gate command not found: {gate.get('command', 'gpu')}")
-    _emit_stage("gpu-wait")
-    child_cmd = [
-        gate_bin,
-        "run",
-        "--name",
-        str(gate.get("name", "Lyrics overlay")),
-        "--what",
-        str(gate.get("what", f"Whisper {args.model}")),
-        "--gb",
-        str(gate.get("gb", 7)),
-        "--lane",
-        str(gate.get("lane", "now")),
-        "--minutes",
-        str(gate.get("minutes", 5)),
-    ]
-    if gate.get("waitMinutes") is not None:
-        child_cmd.extend(["--wait", str(gate["waitMinutes"])])
-    child_cmd.extend(
-        [
-            "--",
-            sys.executable,
-            str(Path(__file__).resolve()),
-            "--transcribe-audio",
-            str(audio_path),
-            "--model",
-            args.model,
-            "--device",
-            args.device,
-            "--compute-type",
-            args.compute_type,
+
+    slice_threshold = _SLICE_THRESHOLD_SECONDS if args.slice_seconds >= _SLICE_SECONDS else args.slice_seconds
+    is_long = duration > slice_threshold
+    configured_lane = str(gate.get("lane", "now"))
+    lane = str(gate.get("longLane", "new")) if (is_long and configured_lane == "now") else configured_lane
+    who = str(gate.get("name", "Lyrics overlay"))
+    yield_check_cmd = [gate_bin, "should-yield", "--lane", lane, "--name", who] if (is_long and lane != "now") else []
+    base_minutes = int(gate.get("minutes", 5))
+
+    start_offset = 0.0
+    all_segments: list[dict] = []
+    language = ""
+    device = ""
+    final_duration = duration
+
+    while True:
+        _emit_stage("gpu-wait")
+        remaining = max(0.0, duration - start_offset)
+        est_minutes = (
+            max(base_minutes, math.ceil((remaining / 60.0) / 6.0) + 2)
+            if remaining > 0
+            else base_minutes
+        )
+        child_cmd = [
+            gate_bin,
+            "run",
+            "--name",
+            who,
+            "--what",
+            str(gate.get("what", f"Whisper {args.model}")),
+            "--gb",
+            str(gate.get("gb", 7)),
+            "--lane",
+            lane,
+            "--minutes",
+            str(est_minutes),
         ]
-    )
-    if args.prompt_file:
-        child_cmd.extend(["--prompt-file", args.prompt_file])
+        # Short automatic runs fail fast if the GPU is busy; manual forced runs
+        # and runs resuming after politely yielding wait in line until ready.
+        if args.max_duration > 0 and start_offset <= 0 and gate.get("waitMinutes") is not None:
+            child_cmd.extend(["--wait", str(gate["waitMinutes"])])
+        child_cmd.extend(
+            [
+                "--",
+                sys.executable,
+                str(Path(__file__).resolve()),
+                "--transcribe-audio",
+                str(audio_path),
+                "--model",
+                args.model,
+                "--device",
+                args.device,
+                "--compute-type",
+                args.compute_type,
+                "--slice-seconds",
+                str(args.slice_seconds),
+            ]
+        )
+        if duration > 0:
+            child_cmd.extend(["--total-duration", f"{duration:.3f}"])
+        if start_offset > 0:
+            child_cmd.extend(["--start-offset", f"{start_offset:.3f}"])
+        if yield_check_cmd:
+            child_cmd.extend(["--yield-check-json", json.dumps(yield_check_cmd)])
+        if args.prompt_file:
+            child_cmd.extend(["--prompt-file", args.prompt_file])
 
-    # Stream stderr lines from child so stage:transcribe reaches the service immediately.
-    global _ACTIVE_CHILD
-    proc = subprocess.Popen(
-        child_cmd,
-        env=env,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-    )
-    _ACTIVE_CHILD = proc
-    stderr_tail: list[str] = []
-    stdout_chunks: list[str] = []
+        # Stream stderr lines from child so stage:transcribe reaches the service immediately.
+        global _ACTIVE_CHILD
+        proc = subprocess.Popen(
+            child_cmd,
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+        _ACTIVE_CHILD = proc
+        stderr_tail: list[str] = []
+        stdout_chunks: list[str] = []
 
-    def _drain_stdout() -> None:
-        assert proc.stdout is not None
+        def _drain_stdout() -> None:
+            assert proc.stdout is not None
+            try:
+                stdout_chunks.append(proc.stdout.read())
+            finally:
+                proc.stdout.close()
+
+        # Drain stdout on a dedicated thread while streaming stderr stage markers so
+        # large word-level transcripts (>64 KB pipe buffer) never deadlock the child.
+        stdout_reader = threading.Thread(target=_drain_stdout, daemon=True)
+        stdout_reader.start()
         try:
-            stdout_chunks.append(proc.stdout.read())
+            assert proc.stderr is not None
+            for line in proc.stderr:
+                stripped = line.strip()
+                if stripped.startswith("stage:"):
+                    print(stripped, file=sys.stderr, flush=True)
+                elif stripped:
+                    stderr_tail.append(stripped)
+                    if len(stderr_tail) > 10:
+                        stderr_tail.pop(0)
+            proc.stderr.close()
+            stdout_reader.join()
+            stdout = "".join(stdout_chunks)
+            code = proc.wait()
         finally:
-            proc.stdout.close()
+            _ACTIVE_CHILD = None
 
-    # Drain stdout on a dedicated thread while streaming stderr stage markers so
-    # large word-level transcripts (>64 KB pipe buffer) never deadlock the child.
-    stdout_reader = threading.Thread(target=_drain_stdout, daemon=True)
-    stdout_reader.start()
-    try:
-        assert proc.stderr is not None
-        for line in proc.stderr:
-            stripped = line.strip()
-            if stripped.startswith("stage:"):
-                print(stripped, file=sys.stderr, flush=True)
-            elif stripped:
-                stderr_tail.append(stripped)
-                if len(stderr_tail) > 10:
-                    stderr_tail.pop(0)
-        proc.stderr.close()
-        stdout_reader.join()
-        stdout = "".join(stdout_chunks)
-        code = proc.wait()
-    finally:
-        _ACTIVE_CHILD = None
+        if code == 75:
+            return {"ok": False, "busy": True, "error": "GPU is busy; try again later"}
+        if code != 0:
+            detail = stderr_tail[-1] if stderr_tail else f"exit {code}"
+            raise RuntimeError(f"transcription failed: {detail[:200]}")
 
-    if code == 75:
-        return {"ok": False, "busy": True, "error": "GPU is busy; try again later"}
-    if code != 0:
-        detail = stderr_tail[-1] if stderr_tail else f"exit {code}"
-        raise RuntimeError(f"transcription failed: {detail[:200]}")
-    return json.loads(stdout)
+        chunk = json.loads(stdout)
+        if not chunk.get("ok"):
+            return chunk
+        all_segments.extend(chunk.get("segments") or [])
+        if not language and chunk.get("language"):
+            language = str(chunk["language"])
+        if not device and chunk.get("device"):
+            device = str(chunk["device"])
+        if chunk.get("duration"):
+            final_duration = max(final_duration, float(chunk["duration"]))
+
+        next_offset = float(chunk.get("nextOffset") or 0.0)
+        if chunk.get("yielded") and next_offset > start_offset:
+            start_offset = next_offset
+            time.sleep(1.0 if args.slice_seconds >= _SLICE_SECONDS else 0.05)
+            continue
+        break
+
+    return {
+        "ok": True,
+        "language": language,
+        "duration": round(final_duration, 3),
+        "device": device,
+        "segments": all_segments,
+    }
 
 
 def _read_prompt(path: str | None) -> str:
@@ -474,6 +666,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--device", default="auto")
     parser.add_argument("--compute-type", default="auto")
     parser.add_argument("--max-duration", type=float, default=900.0)
+    parser.add_argument("--total-duration", type=float, default=0.0)
+    parser.add_argument("--start-offset", type=float, default=0.0)
+    parser.add_argument("--slice-seconds", type=float, default=_SLICE_SECONDS)
+    parser.add_argument("--yield-check-json", default="")
     parser.add_argument("--prompt-file", default="")
     parser.add_argument("--gpu-gate-json", default="")
     args = parser.parse_args(argv)
@@ -483,6 +679,7 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         if args.transcribe_audio:
+            yield_check_cmd = json.loads(args.yield_check_json) if args.yield_check_json else None
             result = _transcribe_audio(
                 Path(args.transcribe_audio),
                 model_name=args.model,
@@ -490,6 +687,10 @@ def main(argv: list[str] | None = None) -> int:
                 compute_type=args.compute_type,
                 prompt=prompt,
                 env=env,
+                total_duration=args.total_duration,
+                start_offset=args.start_offset,
+                yield_check_cmd=yield_check_cmd,
+                slice_seconds=args.slice_seconds,
             )
             print(json.dumps(result, ensure_ascii=False))
             return 0
@@ -513,6 +714,7 @@ def main(argv: list[str] | None = None) -> int:
                         tmpdir,
                         env,
                         cookies_from_browser=args.cookies_from_browser,
+                        allow_large=args.max_duration <= 0,
                     )
 
             duration = _probe_duration(audio_path, env)
@@ -531,7 +733,7 @@ def main(argv: list[str] | None = None) -> int:
 
             gate = json.loads(args.gpu_gate_json) if args.gpu_gate_json else None
             if gate and args.device != "cpu":
-                result = _run_with_gpu_gate(gate, audio_path, args, env)
+                result = _run_with_gpu_gate(gate, audio_path, duration, args, env)
             else:
                 result = _transcribe_audio(
                     audio_path,
@@ -540,6 +742,8 @@ def main(argv: list[str] | None = None) -> int:
                     compute_type=args.compute_type,
                     prompt=prompt,
                     env=env,
+                    total_duration=duration,
+                    slice_seconds=args.slice_seconds,
                 )
             print(json.dumps(result, ensure_ascii=False))
             return 0

@@ -22,7 +22,7 @@ const PAGE_PATHS = new Set(['/api/settings', '/api/settings/reset', '/api/comman
 // The song controls the settings page offers (LyricsCore.command).
 const PAGE_COMMANDS = new Set([
     'tooFast', 'tooSlow', 'resetOffset', 'choose', 'reject',
-    'searchAgain', 'lookUp', 'generate', 'searchQuery', 'importLyrics', 'saveEditedLyrics',
+    'searchAgain', 'lookUp', 'generate', 'cancelGenerate', 'searchQuery', 'importLyrics', 'saveEditedLyrics',
 ]);
 // "Fit to my singing" leaves this much room around what was sung.
 const FIT_MARGIN = 1;

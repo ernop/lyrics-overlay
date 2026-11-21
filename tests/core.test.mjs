@@ -42,6 +42,7 @@ function harness({answers = {}, budgetWindows, generate, maxGenerateDurationSeco
     const searches = [];
     const states = [];
     const presences = [];
+    const updatedVideos = [];
     const lines = [];
     const logs = [];
     const saved = {videos: new Map(), searches: new Map(), budget: null, videoWrites: 0};
@@ -84,6 +85,7 @@ function harness({answers = {}, budgetWindows, generate, maxGenerateDurationSeco
         emit: {
             state: state => states.push(state),
             presence: presence => presences.push(presence),
+            videoUpdated: videoId => updatedVideos.push(videoId),
             line: line => lines.push(line),
         },
         log: message => logs.push(message),
@@ -93,7 +95,7 @@ function harness({answers = {}, budgetWindows, generate, maxGenerateDurationSeco
     });
     const flush = () => new Promise(resolve => setImmediate(resolve));
     return {
-        core, searches, states, presences, lines, logs, saved, flush,
+        core, searches, states, presences, updatedVideos, lines, logs, saved, flush,
         /** Reports as the content script does: a running video promises a heartbeat. */
         report(tabId, message) {
             const running = !message.media.paused && !message.media.ended;
@@ -853,5 +855,116 @@ test('presence tracks all open and sounding tabs even when a music tab stays act
         sounding: [],
         open: ['song0000001'],
     });
+});
+
+test('manual forced generation formats live progress, survives tab switches and pauses, notifies archive, and supports explicit cancel', async () => {
+    const calls = [];
+    const h = harness({
+        answers: {
+            'Choir|Messiah': [],
+            'Band|Song Two': [record(2, {trackName: 'Song Two', syncedLyrics: '[00:05.00] Short song line'})],
+            'Band|Short Auto': [],
+        },
+        maxGenerateDurationSeconds: 1200,
+        generate: req => {
+            const entry = {
+                videoId: req.videoId,
+                force: req.force,
+                onStage: req.onStage,
+                cancelled: false,
+                resolve: null,
+            };
+            calls.push(entry);
+            return {
+                promise: new Promise(resolve => { entry.resolve = resolve; }),
+                cancel: () => {
+                    entry.cancelled = true;
+                    entry.resolve?.({ok: false, cancelled: true});
+                },
+            };
+        },
+    });
+
+    const concert = metadata('concert0001', {
+        title: 'Messiah',
+        author: 'Choir',
+        lengthSeconds: 8797,
+        description: 'Provided to YouTube by Label\n\nMessiah \u00b7 Choir\n\nAlbum\n\n\u2117 2020 Label',
+    });
+    h.report(1, {sampledAt: h.now, media: media('concert0001', {duration: 8797}), metadata: concert});
+    await h.flush();
+    assert.equal(h.lastState().generation.status, 'skipped');
+    assert.equal(calls.length, 0);
+
+    // Manual forced generation starts and formats multi-hour live progress cleanly.
+    assert.deepEqual(h.core.command({op: 'generate'}), {ok: true});
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].force, true);
+    calls[0].onStage('transcribe:2530/8797');
+    assert.equal(h.lastState().generation.message, 'Timing lyrics \u00b7 42:10 / 2:26:37 (29%)');
+
+    // Switching to another song does NOT cancel the manual forced run; progress stays visible in generation.background.
+    h.report(1, {sampledAt: h.now, media: media('v2', {currentTime: 6}), metadata: SONG_TWO});
+    await h.flush();
+    assert.equal(calls[0].cancelled, false, 'manual forced run survives switching videos');
+    assert.equal(h.lastState().videoId, 'v2');
+    assert.equal(h.lastState().lyrics, 'timed');
+    assert.deepEqual(h.lastState().generation.background, {
+        videoId: 'concert0001',
+        label: 'Choir - Messiah - 2020 - Album',
+        mode: 'transcribed',
+        stage: 'transcribe:2530/8797',
+        message: 'Timing lyrics \u00b7 42:10 / 2:26:37 (29%)',
+    });
+
+    // Closing the tab (no active video) also keeps the manual forced run alive and reports background progress.
+    h.core.tabGone(1);
+    assert.equal(calls[0].cancelled, false, 'manual forced run survives playback end');
+    assert.equal(h.lastState().active, false);
+    assert.equal(h.lastState().generation.background.videoId, 'concert0001');
+
+    // Completing in the background saves the candidate, notifies archive sync, and clears background state.
+    calls[0].resolve({
+        ok: true,
+        mode: 'transcribed',
+        lrc: '[01:40.00] Comfort ye, my people\n[146:30.00] Amen\n',
+        plainText: 'Comfort ye, my people\nAmen',
+        duration: 8797,
+        lineCount: 2,
+    });
+    await h.flush();
+    assert.equal(h.lastState().generation.background, undefined);
+    assert.deepEqual(h.updatedVideos, ['concert0001']);
+
+    // Returning to the concert immediately shows the saved timed lyrics at 2h 26m 31s.
+    h.report(2, {sampledAt: h.now, media: media('concert0001', {currentTime: 8791, duration: 8797}), metadata: concert});
+    assert.equal(h.lastState().lyrics, 'timed');
+    assert.equal(h.lastLine().text, 'Amen');
+
+    // Explicit cancelGenerate cancels a running automatic job and prevents immediate auto-restart.
+    const shortAuto = metadata('shortauto01', {
+        title: 'Short Auto',
+        author: 'Band',
+        lengthSeconds: 180,
+        description: 'Provided to YouTube by Label\n\nShort Auto \u00b7 Band\n\nAlbum\n\n\u2117 2020 Label',
+    });
+    h.report(2, {sampledAt: h.now, media: media('shortauto01', {duration: 180}), metadata: shortAuto});
+    await h.flush();
+    assert.equal(calls.length, 2);
+    assert.equal(h.lastState().lyrics, 'generating');
+    assert.deepEqual(h.core.command({op: 'cancelGenerate'}), {ok: true, cancelled: true});
+    assert.equal(calls[1].cancelled, true);
+    assert.equal(calls.length, 2, 'cancelling must not immediately restart automatic generation');
+    assert.equal(h.lastState().lyrics, 'none');
+    assert.equal(h.lastState().generation.status, 'skipped');
+
+    // Explicit cancelGenerate also cancels a background forced job when no video is active.
+    assert.deepEqual(h.core.command({op: 'generate'}), {ok: true});
+    assert.equal(calls.length, 3);
+    h.core.tabGone(2);
+    assert.equal(calls[2].cancelled, false);
+    assert.deepEqual(h.core.command({op: 'cancelGenerate'}), {ok: true, cancelled: true});
+    assert.equal(calls[2].cancelled, true);
+    assert.equal(h.lastState().generation.background, undefined);
 });
 

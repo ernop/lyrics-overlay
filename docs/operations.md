@@ -47,7 +47,9 @@ overlay, and the testing lessons behind the rules. What it is for:
   `--cookies-from-browser` to `yt-dlp` if YouTube returns HTTP 403 on
   anonymous audio downloads or tracks larger than ~10 MB; `gpuGate` optionally
   wraps runs through a shared local GPU coordinator
-  (`{command, name, what, gb, lane, minutes, waitMinutes}`). Both
+  (`{command, name, what, gb, lane, minutes, waitMinutes}`, plus optional
+  `longLane`, default `"new"`, for tracks over 15 minutes so urgent `now`
+  jobs can preempt cleanly between 10-minute slices). Both
   `service/lyric-generator.js` and `service/generate-lyrics.py` place
   `~/.local/bin` ahead of system bin directories on `PATH` because `systemd
   --user` omits it (and so standalone `~/.local/bin/yt-dlp` beats an outdated

@@ -172,32 +172,50 @@ indicator changes quietly.
   - **Quiet in-overlay status pill**: while generation runs (`lyrics ===
     'generating'`), the overlay shows a single compact translucent pill
     (`Timing lyrics · loading audio`, `Timing lyrics · waiting for GPU`,
-    `Timing lyrics…`, or `Aligning lyrics …` when LRCLIB has plain lyrics)
-    in crisp white bold text with no animation or flashing, hiding
-    immediately once timed lyrics arrive. Clicking the pill still raises
-    the YouTube tab; right-clicking opens the settings page.
+    `Timing lyrics…`, live progress like `Timing lyrics · 42:10 / 2:26:37
+    (29%)` on multi-minute tracks, or `Aligning lyrics …` when LRCLIB has
+    plain lyrics) in crisp white bold text with no animation or flashing,
+    hiding immediately once timed lyrics arrive. Clicking the pill still
+    raises the YouTube tab; right-clicking opens the settings page.
   - **Standalone audio acquisition (2026-11-21)**: `lyrics-overlay` is an
     independent tool that owns its own audio download via `yt-dlp` without
     requiring `ytarchive` (using an already-cached `ytarchive`
     `soundtrack.mp3` only opportunistically if configured and already on disk).
-    When YouTube rejects the primary anonymous DASH audio stream with HTTP 403,
-    `generate-lyrics.py` retries once with YouTube's HLS audio / progressive
-    stream path (`bestaudio[protocol^=m3u8]/best[filesize<30M]/best`), and
-    supports an explicit opt-in `lyricsGenerator.cookiesFromBrowser` setting
-    (default `null`, anonymous by default) for tracks or sessions where YouTube
-    requires browser cookies.
+    Automatic short-song downloads cap file size at 100 MB
+    (`bestaudio[filesize<100M]/bestaudio`); explicit manual runs (`Generate
+    timed lyrics`, `--max-duration 0`) lift the file-size cap and select a
+    compact audio stream (`bestaudio[abr<=96]/bestaudio`) since Whisper
+    resamples to 16 kHz mono. When YouTube rejects the primary DASH audio
+    stream with HTTP 403, `generate-lyrics.py` retries once via YouTube's
+    HLS audio / progressive stream path, and supports an explicit opt-in
+    `lyricsGenerator.cookiesFromBrowser` setting (default `null`, anonymous
+    by default) for tracks or sessions where YouTube requires browser cookies.
+  - **Long-track manual timing (owner, 2026-11-21)**: manual `Generate timed
+    lyrics` works on multi-hour concerts and albums (e.g., 2.5–3 h works)
+    and saves one complete LRC candidate atomically when finished (no partial
+    or mixed lyrics, preserving full-libretto alignment). Tracks longer than
+    15 minutes decode and transcribe in 10-minute slices internally so RAM
+    stays bounded (~38 MB per slice), emit live `done / total (%)` progress,
+    and on GPU-gated machines run in the `new` lane (yielding politely
+    between 10-minute slices if an urgent `now` task needs the GPU, then
+    resuming cleanly). Unlike automatic short-song runs—which cancel
+    immediately when switching songs or stopping—an explicit manual run
+    keeps running in the background if you pause or switch tabs, saves its
+    completed lyrics to that video (and forwards them to ytarchive) when
+    finished, surfaces background progress in Settings, and offers an
+    explicit **Cancel timing** button.
   - **Discipline and persistence**: only runs automatically for the active
     sounding song (never for `next` preloads, instrumentals, or videos
-    longer than `maxDurationSeconds`, default 900 s), cancels immediately
-    via `SIGTERM` if the user skips songs or stops, persists the generated
-    candidate per video (`gen:aligned:*` / `gen:transcribed:*`) so replays
-    are instant, automatically forwards the generated LRC to ytarchive when
-    `ytarchiveUrl` is set, and offers manual `Generate timed lyrics` /
-    `Retry timing` / `Regenerate timed lyrics` in the settings page's Song
-    tab. Manual `Generate timed lyrics` always bypasses `maxDurationSeconds`
-    so long narrative songs can be timed on demand even above the automatic
-    cap, and raising `maxDurationSeconds` re-enables automatic generation
-    for tracks previously skipped only for duration.
+    longer than `maxDurationSeconds`, default 900 s), cancels automatic runs
+    immediately via `SIGTERM` if the user skips songs or stops, persists the
+    generated candidate per video (`gen:aligned:*` / `gen:transcribed:*`) so
+    replays are instant, automatically forwards the generated LRC to
+    ytarchive when `ytarchiveUrl` is set, and offers manual `Generate timed
+    lyrics` / `Retry timing` / `Regenerate timed lyrics` and `Cancel timing`
+    in the settings page's Song tab. Manual `Generate timed lyrics` always
+    bypasses `maxDurationSeconds` so long works can be timed on demand even
+    above the automatic cap, and raising `maxDurationSeconds` re-enables
+    automatic generation for tracks previously skipped only for duration.
 - **Choosing lyrics and overriding music detection (updated 2026-11-20).**
   When a video is not automatically recognized as music (`not-music`), a
   prominent **This is a music video** button appears in both the top bar

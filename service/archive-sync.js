@@ -128,6 +128,18 @@ export class ArchiveSync {
         return this._chain;
     }
 
+    observeVideoLyrics(videoId) {
+        if (!videoId)
+            return this._chain;
+        return this._run(async () => {
+            const record = this._record(videoId);
+            if (record.added && this._lyricsNow(videoId).key !== record.lyricsKey) {
+                this._enqueue(videoId);
+                await this._flush();
+            }
+        });
+    }
+
     /**
      * Tracks all open and sounding YouTube tabs from LyricsCore so background
      * tabs (such as a webcam behind a music tab) also get added when heard and
