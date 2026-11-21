@@ -876,7 +876,7 @@ function borderRingsRows() {
         for (const swatch of ringSwatches)
             swatch.btn.setAttribute('aria-pressed', String(Boolean(customHex) && customHex === swatch.hex));
         colorPicker.value = resolvedHex;
-        colorHex.textContent = customHex ? resolvedHex.toUpperCase() : `${resolvedHex.toUpperCase()} (Auto)`;
+        colorHex.textContent = resolvedHex.toUpperCase();
 
         widthLabel.textContent = `${name} width`;
         const activeRing = spec.rings[activeIdx];

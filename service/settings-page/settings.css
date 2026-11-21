@@ -597,14 +597,14 @@ button:disabled:hover {
     display: flex;
     align-items: center;
     flex-wrap: wrap;
-    gap: 0.38rem;
+    gap: 0.28rem;
 }
 
 button.dot-swatch {
-    width: 1.7rem;
-    height: 1.7rem;
+    width: 1.5rem;
+    height: 1.5rem;
     padding: 0;
-    border-radius: 6px;
+    border-radius: 5px;
     border: 2px solid #525d73;
     background: transparent;
     position: relative;

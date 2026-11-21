@@ -1,15 +1,15 @@
-// Draws the README's picture of the settings page: the real page in a
+// Draws the README's pictures of the settings page: the real page in a
 // signed-out, headless Firefox with a throwaway profile, driven over
 // WebDriver BiDi with Node's own WebSocket. A private service on its own
-// session bus and port serves it with the default settings, no song and
-// made-up microphones (a stand-in pw-dump), so nothing of this computer's
-// devices or listening shows. Every file but the picture is deleted at the
-// end. Run by scripts/update-readme-pictures.sh, after the shell e2e (which
-// clears build/e2e-artifacts):
+// session bus, local mock LRCLIB server, and port serves it with a public-
+// domain song and made-up microphones (a stand-in pw-dump), so nothing of
+// this computer's devices or listening shows. Every temporary file is deleted
+// at the end. Run by scripts/update-readme-pictures.sh:
 //
 //   node scripts/settings-page-picture.mjs [--firefox PATH]
 import {execFileSync, spawn} from 'node:child_process';
 import fs from 'node:fs';
+import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
@@ -17,18 +17,18 @@ import {fileURLToPath} from 'node:url';
 import {dconfServiceDir, isolatedEnv, startBus} from '../tests/isolated-session.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const OUTPUT = path.join(root, 'build', 'e2e-artifacts', 'readme-settings.png');
+const ARTIFACTS = path.join(root, 'build', 'e2e-artifacts');
+const OUT_LYRICS = path.join(ARTIFACTS, 'readme-settings.png');
+const OUT_MAP = path.join(ARTIFACTS, 'readme-settings-map.png');
+const OUT_SONG = path.join(ARTIFACTS, 'readme-settings-song.png');
+
 const args = process.argv.slice(2);
-// Found on this PATH: the browser runs with the private session's.
 const firefox = args[0] === '--firefox' ? args[1] : execFileSync('sh', ['-c', 'command -v firefox'], {encoding: 'utf8'}).trim();
-// The picture is the page's first screen: the window less Firefox's bars.
-const WINDOW = {width: 1280, height: 900};
-// A fresh profile has taken 16 s to load the families the font list draws.
+const WINDOW = {width: 1280, height: 880};
 const READY_WAIT_MS = 60_000;
 const FONTS_CHECK_MS = 2_000;
 const SEND_LIMIT_MS = 30_000;
 
-// Shaped like `pw-dump` output (tests/microphones.test.mjs), with made-up devices.
 const DESK_MIC = 'alsa_input.usb-Example_Audio_Desk_Mic_0001-00.analog-stereo';
 const node = (id, mediaClass, name, description) => ({id, type: 'PipeWire:Interface:Node',
     info: {props: {'media.class': mediaClass, 'node.name': name, 'node.description': description}}});
@@ -39,9 +39,55 @@ const PW_DUMP = [
     node(46, 'Audio/Source', 'alsa_input.pci-0000_00_1f.3.analog-stereo', 'Built-in Audio Analog Stereo'),
 ];
 
+const VIDEO_ID = 'sakurasakura1';
+const SAKURA_LRC = [
+    '[00:05.00] 桜 弥生の空は 見渡す限り',
+    '[00:18.00] 霞か雲か 朝日に匂う',
+    '[00:31.00] 桜 桜 花ざかり',
+    '[00:44.00] いざや いざや 見にゆかん',
+].join('\n');
+const SAKURA_PLAIN = [
+    '桜 弥生の空は 見渡す限り',
+    '霞か雲か 朝日に匂う',
+    '桜 桜 花ざかり',
+    'いざや いざや 見にゆかん',
+].join('\n');
+
+const MOCK_LRCLIB = [
+    {
+        id: 101,
+        trackName: 'Sakura Sakura',
+        artistName: 'Traditional Ensemble',
+        albumName: 'Spring Folk Songs',
+        duration: 168,
+        instrumental: false,
+        plainLyrics: SAKURA_PLAIN,
+        syncedLyrics: SAKURA_LRC,
+    },
+    {
+        id: 102,
+        trackName: 'Sakura Sakura (Acoustic)',
+        artistName: 'Traditional Ensemble',
+        albumName: 'Koto & Voice',
+        duration: 170,
+        instrumental: false,
+        plainLyrics: SAKURA_PLAIN,
+        syncedLyrics: SAKURA_LRC,
+    },
+    {
+        id: 103,
+        trackName: 'Sakura Sakura',
+        artistName: 'Traditional Ensemble',
+        albumName: 'Anthology',
+        duration: 168,
+        instrumental: false,
+        plainLyrics: SAKURA_PLAIN,
+        syncedLyrics: null,
+    },
+];
+
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
-/** Resolves with the first match of `pattern` in what `child` prints. */
 function printed(child, pattern, what) {
     return new Promise((resolve, reject) => {
         let text = '';
@@ -58,7 +104,6 @@ function printed(child, pattern, what) {
     });
 }
 
-/** A WebDriver BiDi session: send(method, params) answers with the result. */
 async function bidi(url) {
     const socket = new WebSocket(url);
     await new Promise((resolve, reject) => {
@@ -96,9 +141,22 @@ async function bidi(url) {
     };
 }
 
+async function startMockLrclib() {
+    const server = http.createServer((_req, res) => {
+        res.writeHead(200, {'Content-Type': 'application/json'});
+        res.end(JSON.stringify(MOCK_LRCLIB));
+    });
+    await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+    const {port} = server.address();
+    return {server, url: `http://127.0.0.1:${port}`};
+}
+
+const manifest = JSON.parse(fs.readFileSync(path.join(root, 'firefox', 'manifest.json'), 'utf8'));
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'lyrics-overlay-settings-picture-'));
 const processes = [];
+let mockLrclib = null;
 try {
+    mockLrclib = await startMockLrclib();
     const env = isolatedEnv(tmp);
     const bus = await startBus(tmp, 'session', env, dconfServiceDir(tmp));
     processes.push(bus.daemon);
@@ -112,13 +170,80 @@ try {
 
     const port = 20000 + Math.floor(Math.random() * 20000);
     const settingsPath = path.join(tmp, 'settings.json');
-    // No song is reported, so LRCLIB is never asked; the address is closed anyway.
-    fs.writeFileSync(settingsPath, JSON.stringify({port, hostname: 'lyrics.localhost:8792', lrclibBaseUrl: 'http://127.0.0.1:9',
-        ytarchiveUrl: null, stateDir: path.join(tmp, 'state', 'lyrics')}));
+    fs.writeFileSync(settingsPath, JSON.stringify({
+        port,
+        hostname: 'lyrics.localhost:8792',
+        lrclibBaseUrl: mockLrclib.url,
+        ytarchiveUrl: null,
+        stateDir: path.join(tmp, 'state', 'lyrics'),
+    }));
     const service = spawn('gjs', ['-m', path.join(root, 'service', 'main.js'), '--settings', settingsPath],
         {env, stdio: ['ignore', 'pipe', 'pipe']});
     processes.push(service);
     await printed(service, /listening on/u, 'the service');
+
+    // Configure showcase settings and report a live public-domain Japanese song.
+    const api = async (method, apiPath, body, headers = {}) => {
+        const res = await fetch(`http://localhost:${port}${apiPath}`, {
+            method,
+            headers: {'Content-Type': 'application/json', ...headers},
+            body: body === undefined ? undefined : JSON.stringify(body),
+        });
+        if (!res.ok)
+            throw new Error(`${method} ${apiPath} -> ${res.status}`);
+        return res.status === 204 ? null : res.json();
+    };
+    await api('POST', '/api/settings', {
+        changes: {
+            'overlay-enabled': true,
+            'pitch-enabled': true,
+            'font-size': 56,
+            'text-color': 'pink',
+            'text-border': 'triple',
+            'text-furigana': true,
+            'text-backdrop': 'none',
+        },
+    }, {Origin: `http://localhost:${port}`});
+    await api('POST', '/api/report', {
+        tabId: 1,
+        addonVersion: manifest.version,
+        sampledAt: Date.now(),
+        heartbeatMs: 60_000,
+        media: {
+            videoId: VIDEO_ID,
+            currentTime: 7,
+            duration: 168,
+            playbackRate: 1,
+            paused: false,
+            ended: false,
+            muted: false,
+            volume: 1,
+            stalled: false,
+            adShowing: false,
+        },
+        metadata: {
+            host: 'www.youtube.com',
+            videoId: VIDEO_ID,
+            title: 'Sakura Sakura',
+            author: 'Traditional Ensemble - Topic',
+            lengthSeconds: 168,
+            category: 'Music',
+            musicVideoType: '',
+            musicCards: [],
+            mediaSession: null,
+            ytmByline: '',
+            description: 'Provided to YouTube by Label\n\nSakura Sakura · Traditional Ensemble\n\nSpring Folk Songs\n\n℗ 2026 Label',
+        },
+        next: null,
+    });
+
+    // Wait until LRCLIB lookup + offline SudachiPy furigana have populated the active line.
+    for (let i = 0; i < 40; i++) {
+        const st = await api('GET', '/api/state');
+        if (st.state.lyrics === 'timed' && Array.isArray(st.line?.ruby))
+            break;
+        await sleep(100);
+    }
 
     const profile = path.join(tmp, 'profile');
     fs.mkdirSync(profile);
@@ -137,10 +262,7 @@ try {
     await session.send('session.new', {capabilities: {}});
     const {contexts: [{context}]} = await session.send('browsingContext.getTree', {});
     await session.send('browsingContext.navigate', {context, url: `http://localhost:${port}/settings`, wait: 'complete'});
-    // The page fills in from the service: every section, the font list and
-    // the microphones, each family drawn in its own font. List rows are drawn
-    // (content-visibility) from the frame after they are found on screen.
-    // Each check gives the fonts a bounded time, so the deadline below holds.
+
     const ready = `(async () => {
         const fontsLoaded = await Promise.race([document.fonts.ready.then(() => true),
             new Promise(resolve => setTimeout(() => resolve(false), ${FONTS_CHECK_MS}))]);
@@ -148,6 +270,7 @@ try {
             document.querySelectorAll('#tabs button[role="tab"]').length === 3 &&
             document.querySelectorAll('.fonts button').length > 1 &&
             document.querySelectorAll('[aria-label="Microphones"] button').length === 3 &&
+            document.querySelectorAll('.ring-chip').length === 3 &&
             document.getElementById('banner').textContent === '';
         await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
         return filled;
@@ -161,13 +284,51 @@ try {
             throw new Error('the settings page did not fill in');
         await sleep(250);
     }
-    const {data} = await session.send('browsingContext.captureScreenshot', {context, origin: 'viewport'});
-    fs.mkdirSync(path.dirname(OUTPUT), {recursive: true});
-    fs.writeFileSync(OUTPUT, Buffer.from(data, 'base64'));
+    await sleep(300);
+
+    const capture = async outPath => {
+        const {data} = await session.send('browsingContext.captureScreenshot', {context, origin: 'viewport'});
+        fs.mkdirSync(path.dirname(outPath), {recursive: true});
+        fs.writeFileSync(outPath, Buffer.from(data, 'base64'));
+        console.log(`wrote ${path.relative(root, outPath)}`);
+    };
+
+    // 1. Lyrics tab: Furigana preview + Triple ring chips + per-ring controls
+    await capture(OUT_LYRICS);
+
+    // 2. Pitch tab + Screen map on the sticky left stage
+    await session.send('script.evaluate', {
+        target: {context},
+        awaitPromise: true,
+        expression: `(async () => {
+            document.querySelector('#tabs button[aria-controls="panel-pitch"]')?.click() ||
+                [...document.querySelectorAll('#tabs button[role="tab"]')].find(b => b.textContent.includes('Pitch'))?.click();
+            [...document.querySelectorAll('#stage .stage-bar button')].find(b => b.textContent.trim() === 'Screen map')?.click();
+            await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+            return true;
+        })()`,
+    });
+    await sleep(250);
+    await capture(OUT_MAP);
+
+    // 3. Song tab + live preview: timing nudges, manual LRCLIB search, .lrc/.txt import, lyric sets
+    await session.send('script.evaluate', {
+        target: {context},
+        awaitPromise: true,
+        expression: `(async () => {
+            [...document.querySelectorAll('#tabs button[role="tab"]')].find(b => b.textContent.includes('Song'))?.click();
+            [...document.querySelectorAll('#stage .stage-bar button')].find(b => b.textContent.trim().includes('Preview'))?.click();
+            await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+            return true;
+        })()`,
+    });
+    await sleep(250);
+    await capture(OUT_SONG);
+
     await session.send('session.end', {});
     session.close();
-    console.log(`wrote ${path.relative(root, OUTPUT)}`);
 } finally {
+    mockLrclib?.server.close();
     for (const child of processes.reverse()) {
         try {
             process.kill(child.detached ? -child.pid : child.pid);

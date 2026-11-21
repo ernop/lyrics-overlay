@@ -10,11 +10,17 @@ Firefox. When a YouTube or YouTube Music tab plays a song, the line about
 to be sung appears above normal windows, timed to the video, and the pitch
 meter draws the pitch you sing into the microphone. Lyrics come from
 [LRCLIB](https://lrclib.net), matched from the video's title and YouTube's
-song details. With optional local automatic lyric timing enabled, songs
-missing synced lyrics on LRCLIB are timed directly from their audio using
-local [faster-whisper](https://github.com/SYSTRAN/faster-whisper) (aligning
-LRCLIB's plain lyrics onto word timestamps when available, or transcribing
-sung lines otherwise), while a quiet pill in the overlay reports progress.
+song details — or you can search LRCLIB by hand, import a local `.lrc`/`.txt`
+file, or override non-music classification with one click. With optional local
+automatic lyric timing enabled, songs missing synced lyrics on LRCLIB are timed
+directly from their audio using local
+[faster-whisper](https://github.com/SYSTRAN/faster-whisper) (aligning LRCLIB's
+plain lyrics onto word timestamps when available, or transcribing sung lines
+otherwise), while a quiet pill in the overlay reports progress. Customizable
+1–4 ring broadcast-style telop borders keep lines sharp over both dark and
+bright video without needing a backdrop bar, and an optional offline Japanese
+furigana mode places hiragana readings above kanji locally via
+[SudachiPy](https://github.com/WorksApplications/sudachi.rs).
 
 It has three parts:
 
@@ -57,22 +63,31 @@ and `lyrics-overlay-desktop.service` immediately (no logout required). Then:
    [lyrics-overlay.xpi](https://github.com/ernop/lyrics-overlay/releases/latest/download/lyrics-overlay.xpi)
    and open it in Firefox (drag it onto a Firefox window); press Add.
 
-### Optional: automatic lyric timing
+### Optional: automatic lyric timing & Japanese furigana
 
-To generate timed lyrics locally for songs without synced LRCLIB lyrics:
+To generate timed lyrics locally for songs without synced LRCLIB lyrics (and
+enable offline Japanese furigana at the same time):
 
 ```
 scripts/install-generator.sh
 ```
 
-This creates a local `.venv` with `faster-whisper` and CUDA runtime libraries
-(nothing is installed globally). Then add a `lyricsGenerator` block to
-`settings.json` (see [Service settings](#service-settings)) and restart the
-service:
+This creates a local `.venv` with `faster-whisper`, CUDA runtime libraries,
+and `sudachipy` + `sudachidict-full` (nothing is installed globally). Then add
+a `lyricsGenerator` block to `settings.json` (see
+[Service settings](#service-settings)) and restart the service:
 
 ```
 systemctl --user restart lyrics-overlay.service
 ```
+
+If you only want offline Japanese furigana without Whisper:
+
+```
+uv venv .venv && uv pip install --python .venv/bin/python sudachipy sudachidict-full
+```
+
+Then enable **Furigana** under Settings -> Lyrics -> Typography.
 
 ### Optional: more fonts
 
@@ -136,6 +151,17 @@ Firefox itself, which exposes each playing tab to the desktop as a media
 player; this uses Firefox's `media.hardwaremediakeys.enabled` (on by default).
 The keys go to the tab that played media last.
 
+## Borders and Japanese furigana
+
+Multi-ring broadcast telop borders (`Single`, `Double`, `Triple` default,
+`Quad`, and `Glow`) paint concentric rings outermost-to-innermost across
+wrapped lines and furigana together, with automatic WCAG contrast alternation
+or per-ring custom colors and widths (`2%–35%` of text size). Offline
+Japanese furigana (`Furigana: On`) puts hiragana readings only over kanji while
+leaving okurigana, kana, ASCII countdowns, and non-Japanese lines untouched:
+
+![Multi-ring borders and offline Japanese furigana over split dark and light video backgrounds](docs/styles.png)
+
 ## The settings page
 
 Everything is set on one page in Firefox, http://localhost:8792/settings, and
@@ -144,21 +170,21 @@ on the indicator, the lyric, the timing status pill, or the pitch panel selects
 the open settings tab (or opens one) and raises its window; there is only ever
 one.
 
-![The settings page: live stage on the left, three-tab inspector on the right](docs/settings.png)
+![Settings page — Lyrics tab: live Japanese furigana preview on the left, multi-ring border controls on the right](docs/settings.png)
 
 | Area | What it holds |
 |---|---|
-| Live stage (left, sticky) | flips between **Preview** (live lyric preview over Video/Dark/Light scenes on Lyrics/Song, or live pitch trace preview on Pitch, with editable sample text) and **Screen map** (exact monitor aspect ratio, 8-handle lyric resize and drag with center snap, pitch panel docking/resizing, multi-monitor picker, placement presets) |
-| Lyrics | eight focused controls beside the preview: searchable font picker, constant size (`16-256 px`; long lines wrap evenly without shrinking), `Bold`/`Italic`, 11 colors or custom hex, proportional borders (`Double` fused x-height body + crisp trim + dark backing cloud, `Glow` fused body + feathered halo + soft dark cloud, `Single`, `None`), optional `Behind text` or `Full bar` backdrop, alignment, and transition |
+| Live stage (left, sticky) | flips between **Preview** (live lyric preview with furigana over Video/Dark/Light scenes on Lyrics/Song, or live pitch trace preview on Pitch, with editable sample text) and **Screen map** (exact monitor aspect ratio, 8-handle lyric resize and drag with center snap, pitch panel docking/resizing, multi-monitor picker, placement presets) |
+| Lyrics | searchable font picker, constant size (`16–256 px`; long lines wrap evenly without shrinking), `Bold`/`Italic`, offline Japanese **Furigana** toggle, 11 colors or custom hex, customizable 1–4 ring borders (`None`, `Single`, `Double`, `Triple` default, `Quad`, `Glow`) with per-ring colors, widths (`2%–35%`), and optional `Soft cloud`, optional `Behind text` or `Full bar` backdrop, alignment, and transition |
 | Pitch | docking/size, fixed or voice-following range (or fit to last 30 s), window duration, scroll in silence, trace thickness/color/background, note names, scale highlighting (detected from song, fixed, or none), current-note readout, analysis rate, PipeWire microphone picker, and echo cancelling |
-| Song | active song and live lyric status (including live timing stages when generating), timing nudges (`Too fast` / `Too slow` in `0.5 s` steps, `Reset`), single-line lyric sets with `Timed` / `Untimed` / `Aligned` / `Transcribed` pills (`Wrong lyrics`, `Search again`, `Look up`, and `Generate timed lyrics` / `Retry timing` / `Regenerate timed lyrics` when enabled), microphone and detected scale readout, and Firefox add-on version with install button when outdated |
+| Song | active song and live lyric status (including one-click `This is a music video` override for uncategorized uploads and live timing stages when generating), timing nudges (`Too fast` / `Too slow` in `0.5 s` steps, `Reset`), manual LRCLIB artist/title search, local `.lrc`/`.txt` lyric file import, single-line lyric sets with line counts and `Timed` / `Untimed` / `Aligned` / `Transcribed` / `Local file` badges, `Generate timed lyrics` (bypasses the duration cap when run manually), microphone and detected scale readout, and Firefox add-on version with install button when outdated |
 
-White with a double border (the default), then yellow with a single border,
-left-aligned:
+Screen placement map beside the Pitch tab, and the Song tab with lyric sets,
+manual LRCLIB search, and local `.lrc`/`.txt` import:
 
-![A lyric line, white with a double border](docs/line.png)
+![Settings page — Screen map and Pitch tab](docs/settings-map.png)
 
-![A lyric line, yellow with a single border, left-aligned](docs/line-yellow-left.png)
+![Settings page — Song tab with timing nudges, manual LRCLIB search, and local lyric import](docs/settings-song.png)
 
 ## Service settings
 
@@ -233,6 +259,8 @@ If no line shows:
   cookies, `--no-playlist --ignore-config`). Whisper runs locally, the
   temporary audio file is deleted immediately after transcription, and lyric
   text is never written to logs.
+- Japanese furigana runs 100% locally via `sudachipy` with no network requests
+  and never logs lyric text.
 - The microphone opens only while the line and the pitch panel are on and
   YouTube is playing sound.
 - While the pitch panel shows a scale detected from the song, the service also
