@@ -31,14 +31,21 @@ def _emit_stage(stage: str) -> None:
     print(f"stage:{stage}", file=sys.stderr, flush=True)
 
 
+_SYSTEM_BIN_DIRS = frozenset(
+    ("/usr/local/sbin", "/usr/local/bin", "/usr/sbin", "/usr/bin", "/sbin", "/bin")
+)
+_PRIMARY_AUDIO_FORMAT = "bestaudio[filesize<30M]/bestaudio"
+_FALLBACK_AUDIO_FORMAT = "bestaudio[protocol^=m3u8]/best[filesize<30M]/best"
+
+
 def _augmented_env() -> dict[str, str]:
-    """Ensures user-installed tools in ~/.local/bin (yt-dlp, deno, gpu gate) are on PATH."""
+    """Places ~/.local/bin ahead of system bin dirs so standalone yt-dlp/deno/gpu beat distro copies."""
     env = os.environ.copy()
     local_bin = str(Path.home() / ".local" / "bin")
-    path = env.get("PATH", "")
-    parts = [p for p in path.split(os.pathsep) if p]
-    if local_bin not in parts:
-        env["PATH"] = os.pathsep.join([local_bin, *parts])
+    parts = [p for p in env.get("PATH", "").split(os.pathsep) if p and p != local_bin]
+    insert_at = next((i for i, p in enumerate(parts) if p in _SYSTEM_BIN_DIRS), len(parts))
+    parts.insert(insert_at, local_bin)
+    env["PATH"] = os.pathsep.join(parts)
     return env
 
 
@@ -95,33 +102,76 @@ def _fetch_ytarchive_audio(base_url: str, video_id: str, target: Path) -> bool:
         return False
 
 
-def _download_youtube_audio(video_id: str, tmpdir: Path, env: dict[str, str]) -> Path:
+def _is_http_403(stderr: str) -> bool:
+    lower = stderr.lower()
+    return "http error 403" in lower or "403: forbidden" in lower
+
+
+def _last_error_line(stderr: str, code: int) -> str:
+    return next((line.strip() for line in reversed(stderr.splitlines()) if line.strip()), f"exit {code}")
+
+
+def _clear_partial_downloads(tmpdir: Path) -> None:
+    for p in tmpdir.glob("audio.*"):
+        try:
+            p.unlink()
+        except OSError:
+            pass
+
+
+def _download_youtube_audio(
+    video_id: str,
+    tmpdir: Path,
+    env: dict[str, str],
+    *,
+    cookies_from_browser: str = "",
+) -> Path:
     yt_dlp = shutil.which("yt-dlp", path=env["PATH"])
     if not yt_dlp:
         raise RuntimeError("yt-dlp is not installed")
     template = str(tmpdir / "audio.%(ext)s")
-    cmd = [
+    base_cmd = [
         yt_dlp,
         "--no-playlist",
         "--ignore-config",
         "--no-warnings",
         "--no-progress",
-        "-f",
-        "bestaudio[filesize<30M]/bestaudio",
         "--max-filesize",
         "30m",
-        "-o",
-        template,
-        f"https://www.youtube.com/watch?v={video_id}",
     ]
-    code, _stdout, stderr = _run_cancellable(cmd, env=env)
-    if code != 0:
-        detail = next((line.strip() for line in reversed(stderr.splitlines()) if line.strip()), f"exit {code}")
+    if cookies_from_browser:
+        base_cmd.extend(["--cookies-from-browser", cookies_from_browser])
+
+    def _try_format(fmt: str) -> tuple[Path | None, int, str]:
+        _clear_partial_downloads(tmpdir)
+        cmd = [*base_cmd, "-f", fmt, "-o", template, f"https://www.youtube.com/watch?v={video_id}"]
+        code, _stdout, stderr = _run_cancellable(cmd, env=env)
+        if code != 0:
+            return None, code, stderr
+        files = sorted(p for p in tmpdir.glob("audio.*") if p.is_file() and not p.name.endswith(".part"))
+        if not files:
+            raise RuntimeError("yt-dlp produced no audio file")
+        return files[0], 0, stderr
+
+    downloaded, code, stderr = _try_format(_PRIMARY_AUDIO_FORMAT)
+    if downloaded is not None:
+        return downloaded
+
+    if _is_http_403(stderr):
+        # YouTube intermittently returns HTTP 403 on anonymous DASH audio streams;
+        # retry once via YouTube's separate HLS audio / progressive stream path.
+        downloaded, code, stderr = _try_format(_FALLBACK_AUDIO_FORMAT)
+        if downloaded is not None:
+            return downloaded
+        detail = _last_error_line(stderr, code)
+        if _is_http_403(stderr) and not cookies_from_browser:
+            raise RuntimeError(
+                f"audio download failed (HTTP 403; update yt-dlp or set lyricsGenerator.cookiesFromBrowser): {detail[:160]}"
+            )
         raise RuntimeError(f"audio download failed: {detail[:200]}")
-    files = sorted(p for p in tmpdir.glob("audio.*") if p.is_file() and not p.name.endswith(".part"))
-    if not files:
-        raise RuntimeError("yt-dlp produced no audio file")
-    return files[0]
+
+    detail = _last_error_line(stderr, code)
+    raise RuntimeError(f"audio download failed: {detail[:200]}")
 
 
 def _probe_duration(audio_path: Path, env: dict[str, str]) -> float:
@@ -419,6 +469,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--audio-file", default="")
     parser.add_argument("--transcribe-audio", default="")
     parser.add_argument("--ytarchive-url", default="")
+    parser.add_argument("--cookies-from-browser", default="")
     parser.add_argument("--model", default="large-v3")
     parser.add_argument("--device", default="auto")
     parser.add_argument("--compute-type", default="auto")
@@ -457,7 +508,12 @@ def main(argv: list[str] | None = None) -> int:
                 if args.ytarchive_url and _fetch_ytarchive_audio(args.ytarchive_url, args.video_id, cached):
                     audio_path = cached
                 else:
-                    audio_path = _download_youtube_audio(args.video_id, tmpdir, env)
+                    audio_path = _download_youtube_audio(
+                        args.video_id,
+                        tmpdir,
+                        env,
+                        cookies_from_browser=args.cookies_from_browser,
+                    )
 
             duration = _probe_duration(audio_path, env)
             if args.max_duration > 0 and duration > args.max_duration:

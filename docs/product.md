@@ -176,6 +176,16 @@ indicator changes quietly.
     in crisp white bold text with no animation or flashing, hiding
     immediately once timed lyrics arrive. Clicking the pill still raises
     the YouTube tab; right-clicking opens the settings page.
+  - **Standalone audio acquisition (2026-11-21)**: `lyrics-overlay` is an
+    independent tool that owns its own audio download via `yt-dlp` without
+    requiring `ytarchive` (using an already-cached `ytarchive`
+    `soundtrack.mp3` only opportunistically if configured and already on disk).
+    When YouTube rejects the primary anonymous DASH audio stream with HTTP 403,
+    `generate-lyrics.py` retries once with YouTube's HLS audio / progressive
+    stream path (`bestaudio[protocol^=m3u8]/best[filesize<30M]/best`), and
+    supports an explicit opt-in `lyricsGenerator.cookiesFromBrowser` setting
+    (default `null`, anonymous by default) for tracks or sessions where YouTube
+    requires browser cookies.
   - **Discipline and persistence**: only runs automatically for the active
     sounding song (never for `next` preloads, instrumentals, or videos
     longer than `maxDurationSeconds`, default 900 s), cancels immediately

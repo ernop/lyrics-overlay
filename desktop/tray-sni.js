@@ -33,6 +33,7 @@ const SNI_XML = `
     <property name="OverlayIconPixmap" type="a(iiay)" access="read"/>
     <property name="ToolTip" type="(sa(iiay)ss)" access="read"/>
     <property name="ItemIsMenu" type="b" access="read"/>
+    <property name="Menu" type="o" access="read"/>
     <method name="ContextMenu">
       <arg type="i" name="x" direction="in"/>
       <arg type="i" name="y" direction="in"/>
@@ -196,6 +197,9 @@ export class TraySni {
             },
             get ItemIsMenu() {
                 return false;
+            },
+            get Menu() {
+                return '/NO_DBUSMENU';
             },
             Activate(_x, _y) {
                 self._settings.set_boolean('overlay-enabled', !self._isOn());

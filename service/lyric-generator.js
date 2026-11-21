@@ -27,11 +27,15 @@ function resolvePath(projectDir, value) {
     return value;
 }
 
+const SYSTEM_BIN_DIRS = new Set(['/usr/local/sbin', '/usr/local/bin', '/usr/sbin', '/usr/bin', '/sbin', '/bin']);
+
 function augmentedPath() {
     const localBin = GLib.build_filenamev([GLib.get_home_dir(), '.local', 'bin']);
     const current = GLib.getenv('PATH') ?? '/usr/local/bin:/usr/bin:/bin';
-    const parts = current.split(':').filter(Boolean);
-    return parts.includes(localBin) ? current : `${localBin}:${current}`;
+    const parts = current.split(':').filter(part => part && part !== localBin);
+    const insertAt = parts.findIndex(part => SYSTEM_BIN_DIRS.has(part));
+    parts.splice(insertAt === -1 ? parts.length : insertAt, 0, localBin);
+    return parts.join(':');
 }
 
 async function readAllBytes(stream, cancellable) {
@@ -78,6 +82,12 @@ export function validateGeneratorConfig(raw, path) {
         throw new Error(`${path}: "lyricsGenerator.computeType" must be a non-empty string`);
     if (typeof maxDurationSeconds !== 'number' || !Number.isFinite(maxDurationSeconds) || maxDurationSeconds <= 0)
         throw new Error(`${path}: "lyricsGenerator.maxDurationSeconds" must be a positive number`);
+    let cookiesFromBrowser = null;
+    if (raw.cookiesFromBrowser !== undefined && raw.cookiesFromBrowser !== null) {
+        if (typeof raw.cookiesFromBrowser !== 'string' || !/^[^\s-][^\s]*$/u.test(raw.cookiesFromBrowser))
+            throw new Error(`${path}: "lyricsGenerator.cookiesFromBrowser" must be a browser name (e.g. "firefox") or null`);
+        cookiesFromBrowser = raw.cookiesFromBrowser;
+    }
     let gpuGate = null;
     if (raw.gpuGate !== undefined && raw.gpuGate !== null) {
         if (typeof raw.gpuGate !== 'object' || Array.isArray(raw.gpuGate))
@@ -92,6 +102,7 @@ export function validateGeneratorConfig(raw, path) {
         device,
         computeType,
         maxDurationSeconds,
+        cookiesFromBrowser,
         gpuGate,
     };
 }
@@ -132,6 +143,8 @@ export function createLyricGenerator({config, projectDir, runtimeDir, ytarchiveU
         );
         if (ytarchiveUrl)
             argv.push('--ytarchive-url', ytarchiveUrl);
+        if (config.cookiesFromBrowser)
+            argv.push('--cookies-from-browser', config.cookiesFromBrowser);
         if (config.gpuGate)
             argv.push('--gpu-gate-json', JSON.stringify(config.gpuGate));
 

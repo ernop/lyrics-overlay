@@ -68,8 +68,9 @@ Firefox tab (YouTube)                         Standalone desktop frontend
     of the lyric or stands separate, and supports `Ctrl+drag` edge resize,
     move, dock, detach, and `Escape` cancel.
   - `tray-sni.js`: exports `org.kde.StatusNotifierItem` over session D-Bus
-    (SVG icon name plus ARGB32 `IconPixmap`), registering whenever
-    `org.kde.StatusNotifierWatcher` is present.
+    (SVG icon name, ARGB32 `IconPixmap`, and `Menu: "/NO_DBUSMENU"` so
+    `ubuntu-appindicators` does not fail property discovery), registering
+    whenever `org.kde.StatusNotifierWatcher` is present.
   - `tray-button.js`: standalone `Gtk.WindowType.POPUP` (`override_redirect`)
     rendered directly inside the primary monitor's panel strip (above
     `Main.panel`), activated automatically when `tray-mode` is `panel-button`
@@ -375,18 +376,25 @@ Active only when `lyricsGenerator` is configured in `settings.json`
   `--max-duration 0` to bypass the automatic duration cap). Switching
   songs or stopping playback sends `SIGTERM` to the child process and
   discards its result.
-- **Audio & transcription**: `generate-lyrics.py` first tries
-  `<ytarchiveUrl>/media/<videoId>/_condensed/soundtrack.mp3` when
-  `ytarchiveUrl` is configured, and otherwise fetches audio with anonymous
-  `yt-dlp --no-playlist --ignore-config` into a `TemporaryDirectory` that
-  is always deleted on exit. It decodes audio to 16 kHz mono float32 via
-  `ffmpeg` (bypassing PyAV `av>=19` compatibility breakage in
-  `faster-whisper`), and emits `stage:audio`, `stage:gpu-wait`, and
-  `stage:transcribe` lines on stderr (streamed live into `state.generation`
-  and the overlay's quiet `StatusPill`). When `gpuGate` is configured, only
-  the child `--transcribe-audio` step runs under the external GPU gate
-  command so audio download never holds GPU memory; exit code 75 maps to
-  `{ok: false, busy: true}`.
+- **Audio & transcription**: `generate-lyrics.py` acquires audio on its own
+  (checking `<ytarchiveUrl>/media/<videoId>/_condensed/soundtrack.mp3` only
+  opportunistically when already cached) via `yt-dlp --no-playlist
+  --ignore-config` into a `TemporaryDirectory` that is always deleted on exit.
+  Both `lyric-generator.js` and `generate-lyrics.py` place `~/.local/bin`
+  ahead of system bin directories (`/usr/bin`, `/usr/local/bin`) so a
+  user-installed standalone `yt-dlp` beats stale distro packages. It requests
+  `-f bestaudio[filesize<30M]/bestaudio` first; on HTTP 403 it cleans partial
+  files and retries once with `bestaudio[protocol^=m3u8]/best[filesize<30M]/best`
+  (HLS audio or progressive container). Optional
+  `lyricsGenerator.cookiesFromBrowser` (default `null`) passes
+  `--cookies-from-browser <browser>` when explicitly configured. It decodes
+  audio to 16 kHz mono float32 via `ffmpeg` (bypassing PyAV `av>=19`
+  compatibility breakage in `faster-whisper`), and emits `stage:audio`,
+  `stage:gpu-wait`, and `stage:transcribe` lines on stderr (streamed live into
+  `state.generation` and the overlay's quiet `StatusPill`). When `gpuGate` is
+  configured, only the child `--transcribe-audio` step runs under the external
+  GPU gate command so audio download never holds GPU memory; exit code 75 maps
+  to `{ok: false, busy: true}`.
 - **Alignment & persistence**: `shared/lyric-align.js` aligns LRCLIB's
   `plainLyrics` onto Whisper's word timestamps with monotone semi-global
   DP (`mode: 'aligned'`, falling back to hallucination-filtered

@@ -37,16 +37,22 @@ overlay, and the testing lessons behind the rules. What it is for:
     "device": "cuda",
     "computeType": "float16",
     "maxDurationSeconds": 900,
+    "cookiesFromBrowser": null,
     "gpuGate": null
   }
   ```
 
   Set `device: "cpu"` and `computeType: "int8"` on CPU-only machines;
-  `gpuGate` optionally wraps runs through a shared local GPU coordinator
+  `cookiesFromBrowser` (optional, default `null`, e.g. `"firefox"`) passes
+  `--cookies-from-browser` to `yt-dlp` if YouTube returns HTTP 403 on
+  anonymous audio downloads or tracks larger than ~10 MB; `gpuGate` optionally
+  wraps runs through a shared local GPU coordinator
   (`{command, name, what, gb, lane, minutes, waitMinutes}`). Both
-  `service/lyric-generator.js` and `service/generate-lyrics.py` prepend
-  `~/.local/bin` to `PATH` because `systemd --user` omits it (where `yt-dlp`,
-  `deno`, `uv`, and optional local GPU gate scripts often live).
+  `service/lyric-generator.js` and `service/generate-lyrics.py` place
+  `~/.local/bin` ahead of system bin directories on `PATH` because `systemd
+  --user` omits it (and so standalone `~/.local/bin/yt-dlp` beats an outdated
+  distro `/usr/bin/yt-dlp`, alongside `deno`, `uv`, and optional local GPU
+  gate scripts).
   `generate-lyrics.py` decodes audio with `ffmpeg` directly so it does not
   break on `av >= 19` (which removed `metadata_errors` expected by
   `faster-whisper.decode_audio`).
