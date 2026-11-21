@@ -1,0 +1,9 @@
+{
+  "uuid": "lyrics-overlay-raiser@ernop",
+  "name": "Lyrics Overlay Window Raiser",
+  "description": "Zero-UI GNOME Shell helper that raises the Firefox window owning the song or settings tab when requested by lyrics-overlay-desktop.",
+  "shell-version": [
+    "50"
+  ],
+  "version-name": "1"
+}

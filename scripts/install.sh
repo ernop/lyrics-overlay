@@ -4,6 +4,9 @@
 #   - the service systemd user unit (lyrics-overlay.service), restarted;
 #   - the standalone XWayland desktop frontend (lyrics-overlay-desktop.service),
 #     enabled and restarted immediately with no logout required;
+#   - on GNOME desktops, installs and enables the zero-UI window-raiser
+#     companion extension (lyrics-overlay-raiser@ernop) so clicking a lyric
+#     raises the exact Firefox window past Wayland focus-stealing prevention;
 #   - disables the legacy GNOME Shell extension (lyrics-overlay@ernop) if it
 #     is still enabled, so two overlays never draw at once.
 # The Firefox add-on is installed from the signed file (README.md, "Setup").
@@ -42,6 +45,12 @@ if systemctl --user is-enabled "$legacy_update_unit" >/dev/null 2>&1; then
     systemctl --user disable "$legacy_update_unit" >/dev/null 2>&1 || true
 fi
 rm -rf "$HOME/.local/share/gnome-shell/.$legacy_uuid.pending"
+
+# On GNOME desktops, install the zero-UI window-raiser companion so clicks raise
+# the exact Firefox window past Wayland focus-stealing prevention.
+if command -v gnome-shell >/dev/null; then
+    bash "$repo/scripts/install-window-raiser.sh"
+fi
 
 units="$HOME/.config/systemd/user"
 mkdir -p "$units"

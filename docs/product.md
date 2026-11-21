@@ -298,22 +298,34 @@ indicator changes quietly.
   a failure. Each lookup logs its outcome and timings. Before this, every
   open YouTube tab queued lookups and 429s read as failures, so a song
   could show "Looking up lyrics" for minutes.
-- **Going to the song (2026-11-10; lifecycle hardened 2026-11-20).** The
-  browser extension selects the tab but never focuses the browser window
-  itself: Firefox's focus request makes GNOME show a "... is ready"
-  notification instead of raising the window. The shell raises the one
-  window whose title is exactly the one the extension reports, waiting up
-  to 1 s for the browser to retitle it, and does nothing when two windows
-  share that title rather than guess. A tab switch answered more than 3 s
-  after the click is dropped, so a slow browser never pulls a window
+- **Going to the song (2026-11-10; lifecycle hardened 2026-11-20; standalone
+  window raiser 2026-11-20).** The browser extension selects the tab but never
+  focuses the browser window itself: Firefox's focus request (and its MPRIS
+  `Raise()` call) carries no Wayland activation token, so GNOME/Mutter blocks
+  it with focus-stealing prevention and shows a "... is ready" notification
+  instead of raising the window; MPRIS also ignores `windowTitle` across
+  multiple Firefox windows and does nothing when playback is paused or has no
+  MPRIS controller. On GNOME Wayland, the standalone desktop frontend calls a
+  tiny zero-UI GNOME Shell companion extension (`lyrics-overlay-raiser@ernop`,
+  no rendering or settings) over session D-Bus to raise the one window whose
+  title is exactly the one the extension reports, waiting up to 1 s for the
+  browser to retitle it and doing nothing when two windows share that title
+  rather than guess. Because the add-on omits the `tabs` permission, Firefox's
+  `windows.get()` can occasionally return `undefined` for `window.title` during
+  a tab switch; the service accepts an omitted or empty `windowTitle` instead
+  of refusing `/api/command-result`, and the raiser falls back to raising the
+  single or most recently active Firefox window when no title was reported. On
+  non-GNOME desktops (or before the helper extension is loaded), the desktop
+  frontend falls back to Firefox's MPRIS `Raise()`. A tab switch answered more
+  than 3 s after the click is dropped, so a slow browser never pulls a window
   forward unasked. On 2026-11-20, another GNOME extension disabling caused
-  GNOME Shell 50 to unwind `disable()`/`enable()` twice; the older
+  GNOME Shell 50 to unwind `disable()`/`enable()` twice; the older legacy
   extension threw inside `disable()` and left `this._client` unstarted
-  while a stale proxy still drew lyrics, breaking every click. `disable()`
-  is now idempotent, `enable()` clears stale status-area actors and rolls
-  back on error, callbacks verify `this._client === client`, and clicks
-  inside the edge resize zone only start resizing once pointer movement
-  passes the desktop drag threshold.
+  while a stale proxy still drew lyrics, breaking every click. Both extensions'
+  `disable()` are idempotent, `enable()` clears stale state and rolls back on
+  error, callbacks verify `this._client === client`, and clicks inside the
+  legacy edge resize zone only start resizing once pointer movement passes the
+  desktop drag threshold.
 - **A paused song stays clickable.** A paused video keeps the extension's
   background page alive for the two minutes its song stays on screen;
   otherwise Firefox stops that page after 30 s and a click on the lyric
@@ -435,7 +447,13 @@ indicator changes quietly.
   popups, which receive stale `state=0`), while staying out of Alt+Tab,
   taskbars, and window-border decorations and never stealing focus on map.
   Empty pixels around the lyric stay click-through via
-  `input_shape_combine_region`. The legacy GNOME Shell 50 extension
+  `input_shape_combine_region`. On GNOME Wayland, `scripts/install.sh` also
+  installs a minimal zero-UI companion extension
+  (`lyrics-overlay-raiser@ernop`) that exposes only `RaiseWindow(title)` over
+  session D-Bus so clicks raise the exact Firefox window without hitting
+  Wayland focus-stealing prevention (one logout/login to load; zero UI or
+  settings, so overlay changes still restart in milliseconds with no logout).
+  The legacy GNOME Shell 50 extension
   (`gnome-extension/lyrics-overlay@ernop`) stays in the repository for
   optional use (`scripts/install-gnome-extension.sh`), and `scripts/install.sh`
   disables it automatically so two overlays never draw at once.

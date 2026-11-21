@@ -1,5 +1,7 @@
 // Desktop integration helpers for the standalone overlay:
-// - raising Firefox via its MPRIS MediaPlayer2.Raise() method;
+// - raising Firefox through the zero-UI GNOME Shell window-raiser companion
+//   (net.fuseki.LyricsOverlayRaiser1.RaiseWindow), falling back to Firefox's
+//   MPRIS MediaPlayer2.Raise() on non-GNOME desktops or when absent;
 // - sending standard desktop notifications on org.freedesktop.Notifications;
 // - checking whether Dash to Panel hides the panel's rightBox (AppIndicators);
 // - converting SVG icons into pixbufs and StatusNotifierItem ARGB32 pixmaps.
@@ -10,11 +12,11 @@ import GdkPixbuf from 'gi://GdkPixbuf';
 
 const decoder = new TextDecoder();
 
-/**
- * Asks Firefox to raise its active window through its MPRIS D-Bus service.
- * Fails silently when Firefox has no MPRIS name on the bus.
- */
-export function raiseBrowser() {
+export const RAISER_BUS_NAME = 'net.fuseki.LyricsOverlayRaiser';
+export const RAISER_OBJECT_PATH = '/net/fuseki/LyricsOverlayRaiser';
+export const RAISER_IFACE = 'net.fuseki.LyricsOverlayRaiser1';
+
+function raiseViaMpris() {
     Gio.DBus.session.call(
         'org.freedesktop.DBus',
         '/org/freedesktop/DBus',
@@ -54,6 +56,48 @@ export function raiseBrowser() {
                     },
                 );
             }
+        },
+    );
+}
+
+/**
+ * Raises the browser window matching `windowTitle`.
+ * Uses the GNOME Shell window-raiser companion when present (bypasses Wayland
+ * focus-stealing prevention and targets the exact window across multiple
+ * Firefox windows); falls back to Firefox's MPRIS Raise() when the helper is
+ * absent on the session bus.
+ */
+export function raiseBrowser(windowTitle = '') {
+    const title = typeof windowTitle === 'string' ? windowTitle : '';
+    Gio.DBus.session.call(
+        RAISER_BUS_NAME,
+        RAISER_OBJECT_PATH,
+        RAISER_IFACE,
+        'RaiseWindow',
+        new GLib.Variant('(s)', [title]),
+        new GLib.VariantType('(s)'),
+        Gio.DBusCallFlags.NO_AUTO_START,
+        2500,
+        null,
+        (conn, res) => {
+            let reply;
+            try {
+                const [json] = conn.call_finish(res).deepUnpack();
+                reply = JSON.parse(json);
+            } catch {
+                raiseViaMpris();
+                return;
+            }
+            if (reply.ok)
+                return;
+            if (reply.reason === 'ambiguous') {
+                printerr('lyrics-overlay-desktop: multiple windows share the reported title; not guessing which to raise');
+                return;
+            }
+            if (reply.reason === 'replaced')
+                return;
+            printerr(`lyrics-overlay-desktop: window raiser did not find the browser (${reply.reason ?? 'unknown'}); trying MPRIS`);
+            raiseViaMpris();
         },
     );
 }

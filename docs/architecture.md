@@ -80,15 +80,32 @@ Firefox tab (YouTube)                         Standalone desktop frontend
     Primary press toggles `overlay-enabled`; secondary press opens settings;
     middle-drag slides horizontally along the panel and persists
     `tray-button-right-offset`.
-  - `desktop-actions.js`: raises Firefox through its MPRIS
-    `org.mpris.MediaPlayer2.firefox*.Raise()` method after `FocusSong` or
-    `OpenSettings`, sends failures to `org.freedesktop.Notifications`,
+  - `desktop-actions.js`: raises the target Firefox window after `FocusSong`
+    or `OpenSettings` by calling the zero-UI GNOME Shell companion extension
+    `net.fuseki.LyricsOverlayRaiser1.RaiseWindow(windowTitle)` first (passing
+    the exact title reported by Firefox, bypassing Wayland focus-stealing
+    prevention and selecting the right window when several Firefox windows are
+    open), falling back to Firefox's MPRIS
+    `org.mpris.MediaPlayer2.firefox*.Raise()` on non-GNOME desktops or when
+    the helper is absent; sends failures to `org.freedesktop.Notifications`,
     checks Dash to Panel's `rightBox` visibility, and compiles the GSettings
     schema from the checkout.
   - `main.js`: single-instance session D-Bus owner
     (`net.fuseki.LyricsOverlayDesktop`, `/net/fuseki/LyricsOverlayDesktop`,
     `net.fuseki.LyricsOverlayDesktop1.GetStatus() -> s` returning read-only
-    geometry/visibility metadata with no lyric text).
+    geometry/visibility/window-raiser metadata with no lyric text).
+- **GNOME Shell window raiser** (`gnome-extension/lyrics-overlay-raiser@ernop`,
+  GNOME 50). Minimal zero-UI companion extension (two files: `metadata.json`
+  and `extension.js`, no GSettings schema or actors) installed automatically
+  by `scripts/install.sh` on GNOME desktops (`scripts/install-window-raiser.sh`).
+  Owns `net.fuseki.LyricsOverlayRaiser` on the session bus and exports
+  `net.fuseki.LyricsOverlayRaiser1.RaiseWindow(s title) -> s`: activates the
+  unique normal window matching `title` (also matching stripped
+  ` — Mozilla Firefox` suffixes against Firefox windows, waiting up to 1 s
+  for `notify::title` / `window-created`, and refusing to guess when multiple
+  windows share the title); when `title` is empty, activates the single or
+  most recently active Firefox window. `enable()` and `disable()` are
+  idempotent and reply to any in-flight D-Bus invocation before tearing down.
 - **Legacy GNOME Shell extension** (`gnome-extension/lyrics-overlay@ernop`,
   GNOME 50). Optional in-shell frontend sharing `shared/text-layout.js`,
   `shared/service-client.js`, and `shared/pitch-painter.js`; `extension.js`
@@ -197,8 +214,10 @@ request it keeps open (`service/browser-commands.js`):
   browsers cannot trade the place in a tight loop). The background script
   starts listening on each report or keep-alive and stops on 409 or when
   the service cannot be reached.
-- `POST /api/command-result` answers with `{id, ok: true, windowTitle}`
-  (the title the tab's window shows once selected) or
+- `POST /api/command-result` answers with `{id, ok: true, windowTitle?}`
+  (the title the tab's window shows once selected; may be omitted or empty
+  when Firefox's `windows.get()` returns `undefined` without `tabs`
+  permission, normalized to `""`) or
   `{id, ok: false, error}`: 204, or 409 when that command is no longer
   waiting. A command no request collects within 1.5 s, or not answered
   within 3 s, fails. An unheard one is logged with whether any add-on has
@@ -206,8 +225,9 @@ request it keeps open (`service/browser-commands.js`):
   request ended: add-ons before 1.1 never ask, and a failure looks the
   same either way to the desktop.
 - D-Bus `FocusSong()` sends `focusTab` for the active session's tab and
-  returns the extension's answer; the shell then raises the window with
-  exactly that title.
+  returns the extension's answer; the desktop frontend then asks
+  `net.fuseki.LyricsOverlayRaiser1.RaiseWindow(windowTitle)` (or falls back
+  to MPRIS `Raise()`) to bring that window forward.
 - D-Bus `OpenSettings()` sends `openSettings`: the add-on selects the tab
   at `http://localhost:8792/settings`, or opens it when there is none, and
   answers with its window's title. Without access to `http://localhost/*`

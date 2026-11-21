@@ -144,8 +144,9 @@ export function parseGone(body) {
 const MAX_WINDOW_TITLE_LENGTH = 4000;
 
 /**
- * The extension's outcome for a focusTab command: the title its window
- * shows once the tab is selected, or why it could not select the tab.
+ * The extension's outcome for a focusTab or openSettings command: the title
+ * its window shows once the tab is selected (empty when Firefox omits
+ * window.title without the tabs permission), or why it could not select the tab.
  * @returns {{id: number, result: {ok: true, windowTitle: string}|{ok: false, error: string}}}
  */
 export function parseCommandResult(body) {
@@ -155,9 +156,11 @@ export function parseCommandResult(body) {
         throw new ReportError('id must be a positive integer');
     if (!flag(body.ok, 'ok'))
         return {id: body.id, result: {ok: false, error: text(body.error, 'error', 300)}};
-    if (typeof body.windowTitle !== 'string' || !body.windowTitle || body.windowTitle.length > MAX_WINDOW_TITLE_LENGTH)
-        throw new ReportError(`windowTitle must be text of 1 to ${MAX_WINDOW_TITLE_LENGTH} characters`);
-    return {id: body.id, result: {ok: true, windowTitle: body.windowTitle}};
+    const rawTitle = body.windowTitle;
+    if (rawTitle !== undefined && rawTitle !== null
+        && (typeof rawTitle !== 'string' || rawTitle.length > MAX_WINDOW_TITLE_LENGTH))
+        throw new ReportError(`windowTitle must be text of up to ${MAX_WINDOW_TITLE_LENGTH} characters`);
+    return {id: body.id, result: {ok: true, windowTitle: rawTitle ?? ''}};
 }
 
 export function isReportError(error) {

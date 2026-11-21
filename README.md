@@ -82,7 +82,11 @@ scripts/install.sh
 Then download
 [lyrics-overlay.xpi](https://github.com/ernop/lyrics-overlay/releases/latest/download/lyrics-overlay.xpi),
 drag it onto a Firefox window, and click **Add**. (From 1.3.0 onward, Firefox
-keeps the add-on updated automatically.)
+keeps the add-on updated automatically.) On GNOME Wayland, `scripts/install.sh`
+also installs a tiny zero-UI GNOME Shell helper (`lyrics-overlay-raiser@ernop`)
+so clicking a lyric raises the exact Firefox window past Wayland focus-stealing
+prevention; log out and back in once after first install so GNOME Shell loads
+it.
 
 ### Optional extras
 
@@ -92,8 +96,9 @@ keeps the add-on updated automatically.)
   **Furigana** on the settings page.
 - **Extra fonts:** `scripts/install-fonts.sh` unpacks extra fonts into
   `~/.local/share/fonts/` for your user.
-- **Update:** `git pull && scripts/install.sh` (restarts immediately, no logout).
-- **Remove:** `systemctl --user disable --now lyrics-overlay.service lyrics-overlay-desktop.service && rm -f ~/.config/systemd/user/lyrics-overlay*.service`, remove the add-on in Firefox, and optionally delete `~/.local/state/lyrics-overlay` and `.venv`.
+- **Update:** `git pull && scripts/install.sh` (overlay and service changes
+  restart immediately, no logout).
+- **Remove:** `systemctl --user disable --now lyrics-overlay.service lyrics-overlay-desktop.service && rm -f ~/.config/systemd/user/lyrics-overlay*.service && gnome-extensions disable lyrics-overlay-raiser@ernop && rm -rf ~/.local/share/gnome-shell/extensions/lyrics-overlay-raiser@ernop`, remove the add-on in Firefox, and optionally delete `~/.local/state/lyrics-overlay` and `.venv`.
 
 ## Privacy
 

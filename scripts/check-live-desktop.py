@@ -108,6 +108,9 @@ def main():
     print(describe_box('tray button', status['trayButtonVisible'], status['trayButtonBox']))
     print(f"tray SNI: {'registered' if status['traySniActive'] else 'inactive'} "
           f"(watcher {'present' if status['traySniWatcher'] else 'absent'})")
+    raiser = status.get('windowRaiserActive')
+    if raiser is not None:
+        print(f"window raiser: {'active (GNOME Shell)' if raiser else 'inactive (log out and back in if just installed, or non-GNOME)'}")
     print(describe_box('lyric line', status['lyricVisible'], status['lyricBox']))
     if status['lyricVisible'] and status['inkBox']:
         ink = status['inkBox']

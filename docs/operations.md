@@ -12,10 +12,13 @@ overlay, and the testing lessons behind the rules. What it is for:
   `gir1.2-gtk-3.0`, `pipewire`, `pipewire-bin`), copies
   `settings.example.json` to the gitignored `settings.json` if missing,
   disables the legacy `lyrics-overlay@ernop` GNOME Shell extension if
-  enabled, renders both `lyrics-overlay.service` and
-  `lyrics-overlay-desktop.service` (`PartOf=graphical-session.target`) for
-  this checkout, and enables and restarts both immediately — no logout
-  needed. Safe to rerun.
+  enabled, installs and enables the tiny zero-UI `lyrics-overlay-raiser@ernop`
+  GNOME Shell window-raiser companion on GNOME desktops
+  (`scripts/install-window-raiser.sh`; takes one logout/login the first time
+  so GNOME Shell loads it, then never needs logout for overlay edits), renders
+  both `lyrics-overlay.service` and `lyrics-overlay-desktop.service`
+  (`PartOf=graphical-session.target`) for this checkout, and enables and
+  restarts both immediately. Safe to rerun.
 - **A proxy name** (optional): a local reverse proxy may give the service
   a name of its own, such as `http://lyrics.localhost/`; set `hostname` in
   `settings.json` to the Host it forwards, then restart the service.
@@ -90,24 +93,27 @@ overlay, and the testing lessons behind the rules. What it is for:
 - **On the live desktop**, with a song playing:
   `python3 scripts/check-live-desktop.py` queries
   `net.fuseki.LyricsOverlayDesktop1.GetStatus()` (read-only; no lyric text)
-  and prints tray button, StatusNotifierItem, lyric window, ink hit-box,
-  and pitch panel status (falling back to GNOME Shell's accessibility tree
-  if the legacy extension is active). It exits 1 when the service has a
-  song but no tray indicator is active.
+  and prints tray button, StatusNotifierItem, window raiser, lyric window,
+  ink hit-box, and pitch panel status (falling back to GNOME Shell's
+  accessibility tree if the legacy extension is active). It exits 1 when
+  the service has a song but no tray indicator is active.
 
 ## Tests
 
 - `npm test`: every unit suite plus the real gjs service against a stub
   LRCLIB, about 4 s. `npm run lint`: `web-ext lint` on the extension.
 - `npm run test:desktop`: a hermetic headless GNOME Shell 50 **with
-  XWayland**, running the real `service/` and standalone `desktop/` under
-  constant GC (~16 s). Tests tray button toggle, per-pixel click-through,
-  immediate focus on plain press, `Ctrl+drag` from a focused native Wayland
-  window (using real Linux evdev keycodes), `Escape` cancel, right-click
-  settings + `org.freedesktop.Notifications` error notice, pitch panel
-  docking/resizing/detaching with `Ctrl+drag`, quiet generating status
-  pill, service stop/restart, and desktop restart persistence. Screenshots
-  land in `build/e2e-artifacts/`.
+  XWayland**, running the real `service/`, standalone `desktop/`, and
+  `lyrics-overlay-raiser@ernop` under constant GC (~16 s). Tests tray button
+  toggle, per-pixel click-through, immediate focus on plain press (verifying
+  Mutter actually focuses the matching Wayland browser window across exact
+  title, delayed retitle, ambiguous duplicate titles, empty `windowTitle`,
+  and duplicate `disable()`/`enable()` cycles on the raiser), `Ctrl+drag` from
+  a focused native Wayland window (using real Linux evdev keycodes), `Escape`
+  cancel, right-click settings + `org.freedesktop.Notifications` error notice,
+  pitch panel docking/resizing/detaching with `Ctrl+drag`, quiet generating
+  status pill, service stop/restart, and desktop restart persistence.
+  Screenshots land in `build/e2e-artifacts/`.
 - `npm run test:shell`: a headless GNOME Shell 50 with the legacy
   extension and service (~11 s). Screenshots land in `build/e2e-artifacts/`.
 - Both service-level suites run in an isolated session

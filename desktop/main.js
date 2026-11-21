@@ -21,7 +21,9 @@ import Gtk from 'gi://Gtk?version=3.0';
 import System from 'system';
 
 import {ServiceClient} from '../shared/service-client.js';
-import {notify, openCompiledSettings, panelHidesRightBox, raiseBrowser} from './desktop-actions.js';
+import {
+    RAISER_BUS_NAME, notify, openCompiledSettings, panelHidesRightBox, raiseBrowser,
+} from './desktop-actions.js';
 import {LyricWindow} from './lyric-window.js';
 import {MonitorManager} from './monitors.js';
 import {PitchWindow} from './pitch-window.js';
@@ -63,6 +65,14 @@ class DesktopApp {
         this._state = null;
         this._micRequested = false;
         this._hidesRightBox = panelHidesRightBox();
+        this._raiserPresent = false;
+        this._raiserWatchId = Gio.bus_watch_name(
+            Gio.BusType.SESSION,
+            RAISER_BUS_NAME,
+            Gio.BusNameWatcherFlags.NONE,
+            () => { this._raiserPresent = true; },
+            () => { this._raiserPresent = false; },
+        );
 
         this._pitchWindow = null;
         this._lyricWindow = new LyricWindow({
@@ -135,6 +145,10 @@ class DesktopApp {
         for (const id of this._settingsIds)
             this._settings.disconnect(id);
         this._settingsIds = [];
+        if (this._raiserWatchId) {
+            Gio.bus_unwatch_name(this._raiserWatchId);
+            this._raiserWatchId = 0;
+        }
         if (this._nameOwnerId) {
             Gio.bus_unown_name(this._nameOwnerId);
             this._nameOwnerId = 0;
@@ -167,6 +181,7 @@ class DesktopApp {
             traySniActive: this._traySni.registered,
             trayButtonVisible: this._trayButton.visible,
             trayButtonBox: this._trayButton.box,
+            windowRaiserActive: this._raiserPresent,
             monitorCount: this._monitors.count,
         };
     }
@@ -222,7 +237,7 @@ class DesktopApp {
             log(`could not go to the song: ${result.error}`);
             return;
         }
-        raiseBrowser();
+        raiseBrowser(result.windowTitle);
     }
 
     async _openSettings() {
@@ -237,7 +252,7 @@ class DesktopApp {
             notify('Lyrics overlay settings did not open', `${why}. The page is ${SETTINGS_URI}`);
             return;
         }
-        raiseBrowser();
+        raiseBrowser(result.windowTitle);
     }
 }
 

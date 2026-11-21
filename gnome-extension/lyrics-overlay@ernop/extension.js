@@ -170,6 +170,8 @@ export default class LyricsOverlayExtension extends Extension {
 
     _raiseWindowTitled(title) {
         this._cancelRaise?.();
+        if (!title)
+            return;
         const raise = () => {
             const matches = global.display.list_all_windows().filter(window => window.get_title() === title);
             if (matches.length > 1)

@@ -83,16 +83,19 @@ test('gone messages carry only a tab id', () => {
     assert.equal(isReportError(new Error('other')), false);
 });
 
-test('a command result names its window exactly, or why the tab could not be selected', () => {
+test('a command result names its window (or omits it when Firefox withholds window.title), or why the tab could not be selected', () => {
     const title = '(2) Song - YouTube — Mozilla Firefox';
     assert.deepEqual(parseCommandResult({id: 4, ok: true, windowTitle: title}), {id: 4, result: {ok: true, windowTitle: title}});
+    assert.deepEqual(parseCommandResult({id: 4, ok: true}), {id: 4, result: {ok: true, windowTitle: ''}});
+    assert.deepEqual(parseCommandResult({id: 4, ok: true, windowTitle: ''}), {id: 4, result: {ok: true, windowTitle: ''}});
+    assert.deepEqual(parseCommandResult({id: 4, ok: true, windowTitle: null}), {id: 4, result: {ok: true, windowTitle: ''}});
     assert.deepEqual(parseCommandResult({id: 4, ok: false, error: 'Invalid tab ID: 12'}), {id: 4, result: {ok: false, error: 'Invalid tab ID: 12'}});
     const refusedResult = (body, pattern) => assert.throws(() => parseCommandResult(body),
         error => isReportError(error) && pattern.test(error.message));
     refusedResult(null, /must be an object/u);
     refusedResult({id: 0, ok: true, windowTitle: title}, /id must be a positive integer/u);
     refusedResult({id: 4, ok: 'yes', windowTitle: title}, /ok must be true or false/u);
-    refusedResult({id: 4, ok: true, windowTitle: ''}, /windowTitle/u);
+    refusedResult({id: 4, ok: true, windowTitle: 123}, /windowTitle/u);
     // Cut short, a title would match no window.
     refusedResult({id: 4, ok: true, windowTitle: 'x'.repeat(4001)}, /windowTitle/u);
     refusedResult({id: 4, ok: false}, /error must be text/u);

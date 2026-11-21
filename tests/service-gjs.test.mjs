@@ -216,16 +216,25 @@ test('the gjs service looks up lyrics, serves state and accepts shell commands',
     assert.deepEqual(command, {op: 'focusTab', tabId: 3, id: 1});
     const title = 'Stub Song - YouTube — Mozilla Firefox';
     const answer = result => request(port, {method: 'POST', urlPath: '/api/command-result', body: JSON.stringify(result), headers: EXTENSION_HEADERS});
-    assert.equal((await answer({id: command.id, ok: true})).status, 400, 'a success names its window');
+    assert.equal((await answer({id: command.id, ok: true, windowTitle: 123})).status, 400, 'non-text windowTitle is refused');
     assert.equal((await answer({id: command.id, ok: true, windowTitle: title})).status, 204);
     assert.deepEqual(await focused, {ok: true, windowTitle: title});
     assert.equal((await answer({id: command.id, ok: true, windowTitle: title})).status, 409, 'answered once');
+
+    // When Firefox omits window.title (no tabs permission during a tab switch),
+    // the service accepts the answer with an empty windowTitle instead of HTTP 400.
+    const waitingUntitled = commandRequest(EXTENSION_HEADERS);
+    const focusedUntitled = gdbus('FocusSong');
+    const untitledCmd = JSON.parse((await waitingUntitled).body);
+    assert.equal((await answer({id: untitledCmd.id, ok: true})).status, 204);
+    assert.deepEqual(await focusedUntitled, {ok: true, windowTitle: ''});
+
     assert.deepEqual(await gdbus('FocusSong'), {ok: false, error: 'the browser extension is not listening'});
 
     // A right-click on the lyric or the indicator asks for the one settings tab.
     const opening = gdbus('OpenSettings');
     const settingsCommand = JSON.parse((await commandRequest(EXTENSION_HEADERS)).body);
-    assert.deepEqual(settingsCommand, {op: 'openSettings', id: 3});
+    assert.deepEqual(settingsCommand, {op: 'openSettings', id: 4});
     const settingsTitle = 'Lyrics overlay settings — Mozilla Firefox';
     assert.equal((await answer({id: settingsCommand.id, ok: true, windowTitle: settingsTitle})).status, 204);
     assert.deepEqual(await opening, {ok: true, windowTitle: settingsTitle});

@@ -140,6 +140,7 @@ const timer = setInterval(() => {
         answers: ANSWERS,
         xwayland: true,
         enableExtension: false,
+        enableRaiser: true,
         extraSettings: {
             lyricsGenerator: {
                 command: [process.execPath, stubGen],
@@ -170,6 +171,7 @@ async function desktopScenario(h, releaseFile) {
     assert.equal(initial.active, false);
     assert.equal(initial.lyricVisible, false);
     assert.equal(initial.trayButtonVisible, false, 'no tray button while nothing plays');
+    await h.waitFor(async () => (await h.desktopStatus()).windowRaiserActive, 'GNOME Shell window raiser companion on D-Bus');
 
     // Start playback: tray button appears (no StatusNotifierWatcher in headless shell),
     // lyric stays hidden until opted in.
@@ -217,7 +219,12 @@ async function desktopScenario(h, releaseFile) {
     assert.equal(winMeta.skipTaskbar, true);
     assert.equal(winMeta.inAltTab, false);
 
-    // Open a native Wayland window and focus it (mirrors Firefox/Cursor on the real desktop).
+    // Open native Wayland windows standing in for the playing browser window,
+    // the settings window, and an unrelated app (mirrors Firefox + Cursor).
+    const songWindow = 'Stub Song - YouTube — Mozilla Firefox';
+    const settingsWindow = 'Lyrics overlay settings — Mozilla Firefox';
+    await h.openWindow(songWindow);
+    await h.openWindow(settingsWindow);
     await h.openWindow('Another window');
     const focusOther = async () => {
         await h.evalJs(`(() => {
@@ -235,8 +242,6 @@ async function desktopScenario(h, releaseFile) {
     }, 'second lyric line');
 
     // 1. Per-pixel click-through: clicking transparent padding outside inkBox must NOT fire FocusSong.
-    const songWindow = 'Stub Song - YouTube — Mozilla Firefox';
-    const settingsWindow = 'Lyrics overlay settings — Mozilla Firefox';
     await focusOther();
     let accidentalFocus = false;
     const clickThroughGuard = h.answerNextCommand(() => { accidentalFocus = true; return {ok: true, windowTitle: songWindow}; });
@@ -246,11 +251,84 @@ async function desktopScenario(h, releaseFile) {
     await sleep(150);
     assert.equal(accidentalFocus, false, 'clicking empty transparent space around the lyric must pass through');
 
-    // 2. Plain left-press on ink fires FocusSong immediately (before release!).
+    // 2. Plain left-press on ink fires FocusSong immediately (before release!)
+    //    and raises the exact matching Wayland browser window past focus-stealing prevention.
     await h.evalJs(inputScript([{move: inkCenter(line2), wait: 40}, {button: 1, down: true, wait: 80}]));
     const focusCmd = await clickThroughGuard;
     assert.deepEqual([focusCmd.op, focusCmd.tabId], ['focusTab', 4]);
     await h.evalJs(inputScript([{button: 1, down: false, wait: 60}]));
+    await h.waitFor(async () => (await h.evalJs(focusedTitle)) === songWindow,
+        'clicking the active lyric to actually focus the matching browser window');
+    const songDemandsAttention = await h.evalJs(`global.display.list_all_windows().find(w => w.get_title() === ${JSON.stringify(songWindow)})?.demands_attention ?? true`);
+    assert.equal(songDemandsAttention, false, 'browser window must be raised directly, not stuck demanding attention');
+
+    // 2b. Delayed retitle: browser window retitles 150 ms after FocusSong answers;
+    //     the raiser waits up to 1 s and still activates it.
+    const delayedTitle = 'Delayed Song - YouTube — Mozilla Firefox';
+    const retitleTrigger = path.join(h.env.XDG_RUNTIME_DIR, 'retitle-now');
+    const retitlingProgram = path.join(h.env.XDG_RUNTIME_DIR, 'retitling-window.js');
+    fs.writeFileSync(retitlingProgram, `
+import GLib from 'gi://GLib';
+import Gtk from 'gi://Gtk?version=4.0';
+import System from 'system';
+Gtk.init();
+const loop = new GLib.MainLoop(null, false);
+const win = new Gtk.Window({title: System.programArgs[0], default_width: 480, default_height: 320});
+win.connect('close-request', () => { loop.quit(); return false; });
+GLib.timeout_add(GLib.PRIORITY_DEFAULT, 40, () => {
+    if (!GLib.file_test(${JSON.stringify(retitleTrigger)}, GLib.FileTest.EXISTS))
+        return GLib.SOURCE_CONTINUE;
+    win.set_title(${JSON.stringify(delayedTitle)});
+    return GLib.SOURCE_REMOVE;
+});
+win.present();
+loop.run();
+`);
+    await h.openWindow('Old Tab — Mozilla Firefox', retitlingProgram);
+    await focusOther();
+    const delayedAnswer = h.answerNextCommand(() => ({ok: true, windowTitle: delayedTitle}));
+    await h.evalJs(inputScript([{move: inkCenter(line2), wait: 40}, {button: 1, down: true, wait: 40}, {button: 1, down: false, wait: 60}]));
+    await delayedAnswer;
+    await sleep(150);
+    fs.writeFileSync(retitleTrigger, 'go');
+    await h.waitFor(async () => (await h.evalJs(focusedTitle)) === delayedTitle,
+        'window raiser to wait for delayed browser retitle and focus the window');
+
+    // 2c. Ambiguous duplicate titles: two windows share the title -> raiser refuses to guess.
+    const dupTitle = 'Duplicate Window — Mozilla Firefox';
+    await h.openWindow(dupTitle);
+    await h.openWindow(dupTitle);
+    await focusOther();
+    const dupAnswer = h.answerNextCommand(() => ({ok: true, windowTitle: dupTitle}));
+    await h.evalJs(inputScript([{move: inkCenter(line2), wait: 40}, {button: 1, down: true, wait: 40}, {button: 1, down: false, wait: 60}]));
+    await dupAnswer;
+    await h.waitFor(() => h.desktopLog.includes('not guessing which to raise'), 'ambiguous title refusal logged');
+    assert.notEqual(await h.evalJs(focusedTitle), dupTitle, 'must not guess between two windows sharing a title');
+
+    // 2d. Omitted windowTitle (Firefox withholding window.title without tabs permission):
+    //     service accepts /api/command-result (no 400 / 3 s timeout).
+    await focusOther();
+    const untitledAnswer = h.answerNextCommand(() => ({ok: true}));
+    await h.evalJs(inputScript([{move: inkCenter(line2), wait: 40}, {button: 1, down: true, wait: 40}, {button: 1, down: false, wait: 60}]));
+    await untitledAnswer;
+    assert.doesNotMatch(h.serviceLog, /refused \/api\/command-result/u, h.serviceLog);
+
+    // 2e. Duplicate disable/enable unwind on lyrics-overlay-raiser@ernop keeps raising working.
+    await h.evalJs(`(() => {
+        const ext = Main.extensionManager.lookup('lyrics-overlay-raiser@ernop');
+        ext.stateObj.disable();
+        ext.stateObj.disable();
+        ext.stateObj.enable();
+        ext.stateObj.enable();
+        return true;
+    })()`);
+    await h.waitFor(async () => (await h.desktopStatus()).windowRaiserActive, 'raiser re-acquired after duplicate enable');
+    await focusOther();
+    const afterUnwind = h.answerNextCommand(() => ({ok: true, windowTitle: songWindow}));
+    await h.evalJs(inputScript([{move: inkCenter(line2), wait: 40}, {button: 1, down: true, wait: 40}, {button: 1, down: false, wait: 60}]));
+    await afterUnwind;
+    await h.waitFor(async () => (await h.evalJs(focusedTitle)) === songWindow,
+        'clicking lyric after raiser duplicate enable/disable still raises browser window');
 
     // 3. Plain drag (without Ctrl) must NOT move the lyric.
     await focusOther();
@@ -290,11 +368,14 @@ async function desktopScenario(h, releaseFile) {
     assert.ok(near(afterEsc.savedBox.x, moved.savedBox.x) && near(afterEsc.savedBox.y, moved.savedBox.y),
         `Escape must cancel Ctrl+drag: ${JSON.stringify([moved.savedBox, afterEsc.savedBox])}`);
 
-    // 7. Right-click on the lyric fires openSettings (consumes the armed ctrlTapGuard).
+    // 7. Right-click on the lyric fires openSettings (consumes the armed ctrlTapGuard)
+    //    and raises the settings browser window.
     await focusOther();
     await h.evalJs(inputScript([{move: inkCenter(afterEsc), wait: 40}, {button: 3, down: true, wait: 40}, {button: 3, down: false, wait: 80}]));
     const settingsCmd = await ctrlTapGuard;
     assert.equal(settingsCmd.op, 'openSettings');
+    await h.waitFor(async () => (await h.evalJs(focusedTitle)) === settingsWindow,
+        'right-clicking the lyric to raise the settings browser window');
 
     // 8. Right-click on tray button with no browser listening triggers desktop notification.
     await h.evalJs(inputScript([{move: center(afterEsc.trayButtonBox), wait: 40}, {button: 3, down: true, wait: 40}, {button: 3, down: false, wait: 80}]));

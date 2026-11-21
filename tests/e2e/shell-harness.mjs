@@ -18,6 +18,7 @@ import {dconfServiceDir, isolatedEnv, realDconf, startBus} from '../isolated-ses
 const run = promisify(execFile);
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const UUID = 'lyrics-overlay@ernop';
+const RAISER_UUID = 'lyrics-overlay-raiser@ernop';
 const HELPER_UUID = 'unsafe-for-tests@local';
 const SCHEMA = 'org.gnome.shell.extensions.lyrics-overlay';
 // The session's first write; the screen lock and idle keys come after the
@@ -54,9 +55,9 @@ function startStubLrclib(answers) {
 
 /**
  * @param {{answers: Record<string, object[]>, extraSettings?: object,
- *          xwayland?: boolean, enableExtension?: boolean}} options LRCLIB answers by "artist|title"
+ *          xwayland?: boolean, enableExtension?: boolean, enableRaiser?: boolean}} options LRCLIB answers by "artist|title"
  */
-export async function startHarness({answers, extraSettings = {}, xwayland = false, enableExtension = true}) {
+export async function startHarness({answers, extraSettings = {}, xwayland = false, enableExtension = true, enableRaiser = false}) {
     const realDconfBefore = await realDconf(FIRST_WRITTEN);
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'lyrics-overlay-shell-'));
     const env = isolatedEnv(tmp);
@@ -82,7 +83,12 @@ export async function startHarness({answers, extraSettings = {}, xwayland = fals
         env.DBUS_SYSTEM_BUS_ADDRESS = systemBus.address;
 
         const gsettings = (...args) => run('gsettings', args, {env});
-        const enabledList = enableExtension ? `['${UUID}', '${HELPER_UUID}']` : `['${HELPER_UUID}']`;
+        const enabledUuids = [
+            ...(enableExtension ? [UUID] : []),
+            ...(enableRaiser ? [RAISER_UUID] : []),
+            HELPER_UUID,
+        ];
+        const enabledList = `[${enabledUuids.map(id => `'${id}'`).join(', ')}]`;
         await gsettings('set', 'org.gnome.shell', 'enabled-extensions', enabledList);
         if (!fs.existsSync(path.join(tmp, 'config', 'dconf', 'user')))
             throw new Error('dconf did not write the temporary database; refusing to continue');
@@ -102,6 +108,10 @@ export async function startHarness({answers, extraSettings = {}, xwayland = fals
             fs.mkdirSync(schemaDir, {recursive: true});
             await run('glib-compile-schemas', ['--strict', `--targetdir=${schemaDir}`,
                 path.join(root, 'gnome-extension', UUID, 'schemas')], {env});
+        }
+        if (enableRaiser) {
+            await run(path.join(root, 'scripts', 'install-window-raiser.sh'),
+                ['--data-home', env.XDG_DATA_HOME, '--no-enable'], {env});
         }
         const helperDir = path.join(env.XDG_DATA_HOME, 'gnome-shell', 'extensions', HELPER_UUID);
         fs.mkdirSync(helperDir, {recursive: true});
@@ -293,11 +303,12 @@ export default class UnsafeForTests extends Extension {
                 const socket = fs.readdirSync(env.XDG_RUNTIME_DIR).find(name => /^wayland-\d+$/u.test(name));
                 if (!socket)
                     throw new Error('the headless shell has no Wayland socket');
+                const countExpr = `global.display.list_all_windows().filter(window =>
+                    window.get_title() === ${JSON.stringify(title)} && window.get_compositor_private()?.visible === true).length`;
+                const before = await evalJs(countExpr);
                 processes.push(spawn('gjs', ['-m', program, title],
                     {env: {...env, WAYLAND_DISPLAY: socket, GDK_BACKEND: 'wayland'}, stdio: 'ignore'}));
-                const shown = `global.display.list_all_windows().some(window =>
-                    window.get_title() === ${JSON.stringify(title)} && window.get_compositor_private()?.visible === true)`;
-                await waitFor(() => evalJs(shown), `the window "${title}"`);
+                await waitFor(async () => (await evalJs(countExpr)) > before, `the window "${title}"`);
             },
             /**
              * Reports like a page whose video runs: now, then every
