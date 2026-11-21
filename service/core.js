@@ -155,9 +155,36 @@ function formatProgressClock(seconds) {
     return `${minutes}:${String(secs).padStart(2, '0')}`;
 }
 
+function formatBytesProgress(done, total) {
+    if (total > 0) {
+        const pct = Math.min(100, Math.round((Math.min(done, total) / total) * 100));
+        if (total >= 1_000_000) {
+            const digits = total >= 10_000_000 ? 0 : 1;
+            return `${(done / 1_000_000).toFixed(digits)} / ${(total / 1_000_000).toFixed(digits)} MB (${pct}%)`;
+        }
+        return `${Math.round(done / 1_000)} / ${Math.round(total / 1_000)} kB (${pct}%)`;
+    }
+    if (done >= 1_000_000)
+        return `${(done / 1_000_000).toFixed(1)} MB`;
+    return `${Math.max(1, Math.round(done / 1_000))} kB`;
+}
+
 function generationStageMessage(hasPlain, stage) {
     const verb = hasPlain ? 'Aligning lyrics' : 'Timing lyrics';
-    const progress = /^transcribe:(\d+(?:\.\d+)?)\/(\d+(?:\.\d+)?)$/u.exec(String(stage ?? ''));
+    const raw = String(stage ?? '');
+    const audioProgress = /^audio:(\d+)\/(\d+)$/u.exec(raw);
+    if (audioProgress) {
+        const done = Number(audioProgress[1]);
+        const total = Number(audioProgress[2]);
+        if (Number.isFinite(done) && Number.isFinite(total) && (done > 0 || total > 0))
+            return `${verb} \u00b7 loading audio ${formatBytesProgress(done, total)}`;
+    }
+    if (raw.startsWith('gpu-wait:')) {
+        const why = raw.slice('gpu-wait:'.length).trim();
+        if (why)
+            return `${verb} \u00b7 waiting for GPU (${why})`;
+    }
+    const progress = /^transcribe:(\d+(?:\.\d+)?)\/(\d+(?:\.\d+)?)$/u.exec(raw);
     if (progress) {
         const done = Number(progress[1]);
         const total = Number(progress[2]);
@@ -167,7 +194,7 @@ function generationStageMessage(hasPlain, stage) {
             return `${verb} \u00b7 ${formatProgressClock(clamped)} / ${formatProgressClock(total)} (${pct}%)`;
         }
     }
-    switch (stage) {
+    switch (raw) {
     case 'audio':
         return `${verb} \u00b7 loading audio`;
     case 'gpu-wait':
@@ -466,7 +493,10 @@ export class LyricsCore {
                 this._cancelGeneration('replaced by user request');
             record.userRequested = true;
             this._deps.store.saveVideo(record);
-            this._startGeneration(session.videoId, session.identity, record, {force: true});
+            this._startGeneration(session.videoId, session.identity, record, {
+                force: true,
+                startAt: this._mediaTime(session, this._deps.clock.now()),
+            });
             this._refresh();
             return {ok: true};
         case 'cancelGenerate': {
@@ -1099,10 +1129,13 @@ export class LyricsCore {
             this._deps.log(`generate ${session.videoId}: skipped (${record.generated.error})`);
             return;
         }
-        this._startGeneration(session.videoId, session.identity, record, {force: false});
+        this._startGeneration(session.videoId, session.identity, record, {
+            force: false,
+            startAt: this._mediaTime(session, now),
+        });
     }
 
-    _startGeneration(videoId, identity, record, {force}) {
+    _startGeneration(videoId, identity, record, {force, startAt = 0}) {
         const plainCandidate = this._plainCandidateFor(record);
         const plainLyrics = plainCandidate?.plainLyrics ?? '';
         const startedAt = this._deps.clock.now();
@@ -1112,6 +1145,7 @@ export class LyricsCore {
             force,
             hasPlain: Boolean(plainLyrics),
             stage: 'audio',
+            partial: null,
             handle: null,
         };
         this._generating = job;
@@ -1120,10 +1154,25 @@ export class LyricsCore {
             identity,
             plainLyrics,
             force,
+            startAt,
             onStage: stage => {
                 if (this._generating !== job || job.stage === stage)
                     return;
                 job.stage = stage;
+                this._refresh();
+            },
+            onPartial: partial => {
+                if (this._generating !== job || !partial?.lrc)
+                    return;
+                const lines = parseSyncedLyrics(partial.lrc);
+                if (!lines.length)
+                    return;
+                job.partial = {
+                    lrc: partial.lrc,
+                    lines,
+                    coveredRanges: Array.isArray(partial.coveredRanges) ? partial.coveredRanges : [],
+                    lineCount: Number(partial.lineCount) || lines.length,
+                };
                 this._refresh();
             },
         });
@@ -1227,7 +1276,15 @@ export class LyricsCore {
         return record.lookup.status === 'error' ? 'error' : 'none';
     }
 
-    _generationState(session, record) {
+    _partialCovers(partial, mediaTime) {
+        if (!partial?.lines?.length)
+            return false;
+        if (partial.coveredRanges.length)
+            return partial.coveredRanges.some(([start, end]) => mediaTime >= start - 4.0 && mediaTime <= end + 2.0);
+        return mediaTime >= partial.lines[0].time - 4.0 && mediaTime <= partial.lines[partial.lines.length - 1].time + 8.0;
+    }
+
+    _generationState(session, record, now) {
         const available = Boolean(this._deps.generate);
         const background = this._generating && this._generating.videoId !== session?.videoId
             ? {
@@ -1249,6 +1306,12 @@ export class LyricsCore {
             };
         }
         if (this._generating?.videoId === session.videoId) {
+            const effective = this._effective(record);
+            const previewing = Boolean(
+                !effective?.timed
+                && this._generating.partial
+                && this._partialCovers(this._generating.partial, this._mediaTime(session, now)),
+            );
             return {
                 available,
                 status: 'running',
@@ -1256,6 +1319,7 @@ export class LyricsCore {
                 stage: this._generating.stage,
                 message: generationStageMessage(this._generating.hasPlain, this._generating.stage),
                 force: Boolean(this._generating.force),
+                ...(previewing ? {previewing: true} : {}),
             };
         }
         const gen = record.generated;
@@ -1285,7 +1349,7 @@ export class LyricsCore {
             return JSON.stringify({active: false, sounding: false, videoId: null, identityText: '', musical: false,
                 lyrics: 'idle', chosen: null, userChose: false, offsetSeconds: 0, candidates: [],
                 publishAvailable: Boolean(this._deps.publish), publishedAt: null,
-                generation: this._generationState(null, null), pitch: this._pitch, key: null});
+                generation: this._generationState(null, null, now), pitch: this._pitch, key: null});
         }
         const record = this._video(session.videoId);
         const effective = this._effective(record);
@@ -1313,7 +1377,7 @@ export class LyricsCore {
                 ...(candidate.generated ? {generated: candidate.generated} : {}),
                 ...(candidate.custom ? {custom: true} : {}),
             })),
-            generation: this._generationState(session, record),
+            generation: this._generationState(session, record, now),
             pitch: this._pitch,
             key: this._songKey?.videoId === session.videoId ? {root: this._songKey.root, type: this._songKey.type} : null,
         });
@@ -1337,8 +1401,14 @@ export class LyricsCore {
         if (!session || session.media.adShowing || session.media.ended)
             return {text: '', key: 'none', nextChangeAt: Infinity};
         const record = this._video(session.videoId);
-        const lines = this._linesFor(this._effective(record));
-        return displayAt({lines, offsetSeconds: record.offsetSeconds, mediaTime: this._mediaTime(session, now)});
+        const effective = this._effective(record);
+        const mediaTime = this._mediaTime(session, now);
+        if (effective?.timed)
+            return displayAt({lines: this._linesFor(effective), offsetSeconds: record.offsetSeconds, mediaTime});
+        const partial = this._generating?.videoId === session.videoId ? this._generating.partial : null;
+        if (partial && this._partialCovers(partial, mediaTime))
+            return displayAt({lines: partial.lines, offsetSeconds: record.offsetSeconds, mediaTime});
+        return {text: '', key: 'none', nextChangeAt: Infinity};
     }
 
     _refresh() {

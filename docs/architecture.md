@@ -393,22 +393,33 @@ Active only when `lyricsGenerator` is configured in `settings.json`
   (`-f bestaudio[abr<=96]/bestaudio`, HTTP 403 fallback
   `bestaudio[protocol^=m3u8]/best`). Optional
   `lyricsGenerator.cookiesFromBrowser` (default `null`) passes
-  `--cookies-from-browser <browser>` when explicitly configured. It decodes
-  audio to 16 kHz mono float32 via `ffmpeg` (bypassing PyAV `av>=19`
-  compatibility breakage in `faster-whisper`), decoding and transcribing
-  tracks longer than 15 minutes in 10-minute slices so peak RAM stays
-  bounded while returning one complete merged transcript, and emits
-  `stage:audio`, `stage:gpu-wait`, `stage:transcribe`, and (for tracks
-  >= 2 minutes) `stage:transcribe:<done>/<total>` progress lines on stderr
-  (streamed live into `state.generation` and the overlay's quiet
-  `StatusPill`). When `gpuGate` is configured, only the child
-  `--transcribe-audio` step runs under the external GPU gate command so
-  audio download never holds GPU memory; exit code 75 maps to
-  `{ok: false, busy: true}`. For tracks longer than 15 minutes, the GPU gate
-  scales `--minutes` from probed duration, steps down from lane `now` to
-  `new` (or `gpuGate.longLane`), checks `should-yield` between 10-minute
-  slices so urgent `now` jobs can preempt cleanly, and resumes from
-  `--start-offset` until the whole track completes atomically.
+  `--cookies-from-browser <browser>` when explicitly configured. `yt-dlp`
+  runs with `--newline --progress-delta 0.5 --progress-template` so byte
+  progress streams as `stage:audio:<done>/<total>` on stderr (SI units). It
+  decodes audio to 16 kHz mono float32 via `ffmpeg` (bypassing PyAV `av>=19`
+  compatibility breakage in `faster-whisper`), partitioning tracks longer
+  than 15 minutes into disjoint 10-minute slices anchored near `--start-at`
+  (playhead forward to end, then wrapping back to `0:00`) so peak RAM stays
+  bounded while producing one complete chronologically sorted transcript at
+  the end. When `--stream-partials` is passed, `generate-lyrics.py` emits
+  incremental NDJSON `{"partial": true, "range": [start, end], "segments":
+  [...]}` lines on stdout (never lyric text on stderr); `lyric-generator.js`
+  accumulates them into an in-memory early preview passed to `LyricsCore`
+  via `onPartial` (shown on screen whenever the playhead falls inside a
+  covered range, hiding the overlay status pill via `generation.previewing`,
+  never saved to disk or handed to ytarchive until the full run finishes).
+  Stderr carries `stage:audio[:<done>/<total>]`, `stage:gpu-wait[:<why>]`,
+  `stage:transcribe`, and (for tracks >= 2 minutes)
+  `stage:transcribe:<done>/<total>` progress lines (streamed live into
+  `state.generation` and the overlay's quiet `StatusPill`). When `gpuGate`
+  is configured, only the child `--transcribe-audio` step runs under the
+  external GPU gate command so audio download never holds GPU memory; exit
+  code 75 maps to `{ok: false, busy: true}`. For tracks longer than 15
+  minutes, the GPU gate scales `--minutes` from remaining duration, steps
+  down from lane `now` to `new` (or `gpuGate.longLane`), checks
+  `should-yield` between slices so urgent `now` jobs can preempt cleanly,
+  and resumes from `--slice-index` until the whole track completes
+  atomically.
 - **Alignment & persistence**: `shared/lyric-align.js` aligns LRCLIB's
   `plainLyrics` onto Whisper's word timestamps with monotone semi-global
   DP (`mode: 'aligned'`, falling back to hallucination-filtered

@@ -171,12 +171,13 @@ indicator changes quietly.
     inserting instrumental-gap blanks).
   - **Quiet in-overlay status pill**: while generation runs (`lyrics ===
     'generating'`), the overlay shows a single compact translucent pill
-    (`Timing lyrics · loading audio`, `Timing lyrics · waiting for GPU`,
-    `Timing lyrics…`, live progress like `Timing lyrics · 42:10 / 2:26:37
-    (29%)` on multi-minute tracks, or `Aligning lyrics …` when LRCLIB has
-    plain lyrics) in crisp white bold text with no animation or flashing,
-    hiding immediately once timed lyrics arrive. Clicking the pill still
-    raises the YouTube tab; right-clicking opens the settings page.
+    (`Timing lyrics · loading audio 34 / 73 MB (47%)`, `Timing lyrics ·
+    waiting for GPU`, `Timing lyrics…`, live progress like `Timing lyrics ·
+    42:10 / 2:26:37 (29%)` on multi-minute tracks, or `Aligning lyrics …`
+    when LRCLIB has plain lyrics) in crisp white bold text with no animation
+    or flashing, hiding immediately once timed lyrics (or early streaming
+    subtitles covering the playhead) arrive. Clicking the pill still raises
+    the YouTube tab; right-clicking opens the settings page.
   - **Standalone audio acquisition (2026-11-21)**: `lyrics-overlay` is an
     independent tool that owns its own audio download via `yt-dlp` without
     requiring `ytarchive` (using an already-cached `ytarchive`
@@ -185,20 +186,28 @@ indicator changes quietly.
     (`bestaudio[filesize<100M]/bestaudio`); explicit manual runs (`Generate
     timed lyrics`, `--max-duration 0`) lift the file-size cap and select a
     compact audio stream (`bestaudio[abr<=96]/bestaudio`) since Whisper
-    resamples to 16 kHz mono. When YouTube rejects the primary DASH audio
+    resamples to 16 kHz mono, streaming `yt-dlp`'s byte progress into the
+    `loading audio` status. When YouTube rejects the primary DASH audio
     stream with HTTP 403, `generate-lyrics.py` retries once via YouTube's
     HLS audio / progressive stream path, and supports an explicit opt-in
     `lyricsGenerator.cookiesFromBrowser` setting (default `null`, anonymous
     by default) for tracks or sessions where YouTube requires browser cookies.
-  - **Long-track manual timing (owner, 2026-11-21)**: manual `Generate timed
-    lyrics` works on multi-hour concerts and albums (e.g., 2.5–3 h works)
-    and saves one complete LRC candidate atomically when finished (no partial
-    or mixed lyrics, preserving full-libretto alignment). Tracks longer than
-    15 minutes decode and transcribe in 10-minute slices internally so RAM
-    stays bounded (~38 MB per slice), emit live `done / total (%)` progress,
-    and on GPU-gated machines run in the `new` lane (yielding politely
-    between 10-minute slices if an urgent `now` task needs the GPU, then
-    resuming cleanly). Unlike automatic short-song runs—which cancel
+  - **Long-track manual timing & early subtitles (owner, 2026-11-21)**:
+    manual `Generate timed lyrics` works on multi-hour concerts and albums
+    (e.g., 2.5–3 h works) and persists one complete LRC candidate atomically
+    when finished (never saving partial lyrics to disk or handing partial
+    lyrics to ytarchive, preserving full-libretto Mode A alignment). Tracks
+    longer than 15 minutes decode and transcribe in 10-minute slices
+    starting near the current playhead (`startAt - 10 s`, continuing forward
+    to the end, then wrapping back to `0:00`), so peak RAM stays bounded
+    (~38 MB per slice) and live early subtitles begin appearing on screen
+    within seconds while transcription finishes in the background (for Mode
+    A, temporary transcribed subtitles show until the full aligned libretto
+    swaps in atomically). Multi-minute runs emit live `done / total (%)`
+    progress (and name the GPU holder when waiting in line), and on
+    GPU-gated machines tracks over 15 minutes run in the `new` lane
+    (yielding politely between slices if an urgent `now` task needs the GPU,
+    then resuming cleanly). Unlike automatic short-song runs—which cancel
     immediately when switching songs or stopping—an explicit manual run
     keeps running in the background if you pause or switch tabs, saves its
     completed lyrics to that video (and forwards them to ytarchive) when

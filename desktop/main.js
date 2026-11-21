@@ -213,7 +213,8 @@ class DesktopApp {
         const pitchEnabled = this._settings.get_boolean('pitch-enabled');
         const active = Boolean(state?.active);
         const generating = state?.lyrics === 'generating';
-        this._lyricWindow.setStatus(generating ? (state.generation?.message || 'Timing lyrics\u2026') : '');
+        const showStatus = generating && !state.generation?.previewing;
+        this._lyricWindow.setStatus(showStatus ? (state.generation?.message || 'Timing lyrics\u2026') : '');
         this._lyricWindow.setShown(enabled && active && (state.lyrics === 'timed' || generating));
 
         const pitchShown = enabled && pitchEnabled && active;

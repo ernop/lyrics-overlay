@@ -1170,7 +1170,7 @@ function buildSongTab() {
         const bgGen = gen?.background ?? null;
         let lyricsText;
         if (state.lyrics === 'generating' && gen?.message)
-            lyricsText = gen.message;
+            lyricsText = gen.previewing ? `${gen.message} \u00b7 showing early subtitles` : gen.message;
         else if ((gen?.status === 'error' || gen?.status === 'skipped') && gen.message && state.lyrics !== 'timed')
             lyricsText = `${LYRICS_STATUS_TEXT[state.lyrics]} (${gen.message})`;
         else

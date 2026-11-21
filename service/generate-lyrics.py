@@ -14,6 +14,7 @@ import ctypes
 import json
 import math
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -43,6 +44,10 @@ _LARGE_FALLBACK_AUDIO_FORMAT = "bestaudio[protocol^=m3u8]/best"
 _SLICE_THRESHOLD_SECONDS = 900.0
 _SLICE_SECONDS = 600.0
 _PROGRESS_MIN_DURATION = 120.0
+_FIRST_PARTIAL_SECONDS = 12.0
+_FIRST_SLICE_PARTIAL_STEP = 60.0
+_DL_PROGRESS_RE = re.compile(r"^DL:([^/]*)/(.*)$")
+_GPU_WAIT_RE = re.compile(r"waits for the GPU:\s*(.+)$")
 
 
 def _augmented_env() -> dict[str, str]:
@@ -134,6 +139,63 @@ def _clear_partial_downloads(tmpdir: Path) -> None:
             pass
 
 
+def _parse_int_field(raw: str) -> int:
+    text = raw.strip()
+    if not text or text.upper() == "NA":
+        return 0
+    try:
+        return max(0, int(float(text)))
+    except ValueError:
+        return 0
+
+
+def _run_yt_dlp_with_progress(cmd: list[str], *, env: dict[str, str]) -> tuple[int, str]:
+    global _ACTIVE_CHILD
+    proc = subprocess.Popen(
+        cmd,
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    _ACTIVE_CHILD = proc
+    stderr_chunks: list[str] = []
+
+    def _drain_stderr() -> None:
+        assert proc.stderr is not None
+        try:
+            stderr_chunks.append(proc.stderr.read())
+        finally:
+            proc.stderr.close()
+
+    stderr_reader = threading.Thread(target=_drain_stderr, daemon=True)
+    stderr_reader.start()
+    last_done = 0
+    try:
+        assert proc.stdout is not None
+        for line in proc.stdout:
+            match = _DL_PROGRESS_RE.match(line.strip())
+            if not match:
+                continue
+            done = _parse_int_field(match.group(1))
+            total = _parse_int_field(match.group(2))
+            if done <= 0:
+                continue
+            finished = total > 0 and done >= total and done != last_done
+            step = max(500_000, int(total * 0.02)) if total > 0 else 500_000
+            if last_done == 0 or done - last_done >= step or finished:
+                last_done = done
+                _emit_stage(f"audio:{done}/{total}")
+        proc.stdout.close()
+        stderr_reader.join()
+        code = proc.wait()
+        return code, "".join(stderr_chunks)
+    finally:
+        _ACTIVE_CHILD = None
+
+
 def _download_youtube_audio(
     video_id: str,
     tmpdir: Path,
@@ -151,7 +213,11 @@ def _download_youtube_audio(
         "--no-playlist",
         "--ignore-config",
         "--no-warnings",
-        "--no-progress",
+        "--newline",
+        "--progress-delta",
+        "0.5",
+        "--progress-template",
+        "download:DL:%(progress.downloaded_bytes)s/%(progress.total_bytes,progress.total_bytes_estimate)s",
     ]
     if not allow_large:
         base_cmd.extend(["--max-filesize", "100m"])
@@ -164,7 +230,7 @@ def _download_youtube_audio(
     def _try_format(fmt: str) -> tuple[Path | None, int, str]:
         _clear_partial_downloads(tmpdir)
         cmd = [*base_cmd, "-f", fmt, "-o", template, f"https://www.youtube.com/watch?v={video_id}"]
-        code, _stdout, stderr = _run_cancellable(cmd, env=env)
+        code, stderr = _run_yt_dlp_with_progress(cmd, env=env)
         if code != 0:
             return None, code, stderr
         files = sorted(p for p in tmpdir.glob("audio.*") if p.is_file() and not p.name.endswith(".part"))
@@ -326,14 +392,62 @@ def _emit_progress(done_sec: float, total_duration: float) -> None:
         _emit_stage(f"transcribe:{done}/{total}")
 
 
+def _emit_partial(segments: list[dict], range_start: float, range_end: float, total_duration: float) -> None:
+    print(
+        json.dumps(
+            {
+                "partial": True,
+                "range": [round(range_start, 3), round(range_end, 3)],
+                "duration": round(total_duration, 3),
+                "segments": segments,
+            },
+            ensure_ascii=False,
+        ),
+        flush=True,
+    )
+
+
+def _plan_slices(total_duration: float, slice_seconds: float, start_at: float = 0.0) -> list[tuple[float, float]]:
+    """Partitions [0, total_duration) into disjoint slices starting near start_at."""
+    if total_duration <= 0 or slice_seconds <= 0:
+        return []
+    anchor = max(0.0, math.floor(start_at) - 10.0) if start_at >= 30.0 else 0.0
+    if anchor >= total_duration - 1.0:
+        anchor = 0.0
+
+    slices: list[tuple[float, float]] = []
+    pos = anchor
+    while pos < total_duration - 0.1:
+        rem = total_duration - pos
+        end = total_duration if rem <= slice_seconds * 1.1 else pos + slice_seconds
+        slices.append((round(pos, 3), round(end, 3)))
+        pos = end
+    pos = 0.0
+    while pos < anchor - 0.1:
+        rem = anchor - pos
+        end = anchor if rem <= slice_seconds * 1.1 else pos + slice_seconds
+        slices.append((round(pos, 3), round(end, 3)))
+        pos = end
+    return slices
+
+
 def _collect_segments(
     raw_segments,
     *,
     offset: float,
+    slice_end: float,
+    completed_before: float,
     total_duration: float,
     last_progress: float,
+    stream_partials: bool = False,
+    partial_first_step: float = _FIRST_PARTIAL_SECONDS,
+    partial_step: float = _FIRST_SLICE_PARTIAL_STEP,
 ) -> tuple[list[dict], float]:
     segments: list[dict] = []
+    pending: list[dict] = []
+    batch_start = offset
+    emitted_any = False
+    slice_len = max(0.0, slice_end - offset)
     step = max(5.0, total_duration / 100.0) if total_duration > 0 else 5.0
     for seg in raw_segments:
         words = []
@@ -346,19 +460,30 @@ def _collect_segments(
                     "probability": round(float(w.probability or 0), 4),
                 }
             )
-        end_sec = offset + float(seg.end or 0)
-        segments.append(
-            {
-                "start": round(offset + float(seg.start or 0), 3),
-                "end": round(end_sec, 3),
-                "text": str(seg.text or ""),
-                "no_speech_prob": round(float(getattr(seg, "no_speech_prob", 0) or 0), 4),
-                "words": words,
-            }
-        )
-        if total_duration >= _PROGRESS_MIN_DURATION and end_sec - last_progress >= step:
-            last_progress = end_sec
-            _emit_progress(end_sec, total_duration)
+        rel_end = float(seg.end or 0)
+        end_sec = offset + rel_end
+        item = {
+            "start": round(offset + float(seg.start or 0), 3),
+            "end": round(end_sec, 3),
+            "text": str(seg.text or ""),
+            "no_speech_prob": round(float(getattr(seg, "no_speech_prob", 0) or 0), 4),
+            "words": words,
+        }
+        segments.append(item)
+        if stream_partials:
+            pending.append(item)
+            threshold = partial_first_step if not emitted_any else partial_step
+            if end_sec - batch_start >= threshold and pending:
+                _emit_partial(pending, batch_start, end_sec, total_duration)
+                pending = []
+                batch_start = end_sec
+                emitted_any = True
+        done_sec = completed_before + (min(slice_len, rel_end) if slice_len > 0 else rel_end)
+        if total_duration >= _PROGRESS_MIN_DURATION and done_sec - last_progress >= step:
+            last_progress = done_sec
+            _emit_progress(done_sec, total_duration)
+    if stream_partials and (pending or slice_end > batch_start + 0.1):
+        _emit_partial(pending, batch_start, max(slice_end, batch_start), total_duration)
     return segments, last_progress
 
 
@@ -372,6 +497,9 @@ def _transcribe_audio(
     env: dict[str, str],
     total_duration: float = 0.0,
     start_offset: float = 0.0,
+    start_at: float = 0.0,
+    slice_index: int = 0,
+    stream_partials: bool = False,
     yield_check_cmd: list[str] | None = None,
     slice_seconds: float = _SLICE_SECONDS,
 ) -> dict:
@@ -380,7 +508,7 @@ def _transcribe_audio(
 
     effective_total = total_duration if total_duration > 0 else _probe_duration(audio_path, env)
     slice_threshold = _SLICE_THRESHOLD_SECONDS if slice_seconds >= _SLICE_SECONDS else slice_seconds
-    use_slices = start_offset > 0 or effective_total > slice_threshold
+    use_slices = slice_index > 0 or start_offset > 0 or effective_total > slice_threshold
 
     chosen_device = device
     chosen_compute = compute_type
@@ -400,9 +528,21 @@ def _transcribe_audio(
         if chosen_compute in ("auto", "float16"):
             chosen_compute = "int8"
 
+    planned: list[tuple[float, float]] = []
+    start_idx = max(0, int(slice_index))
+    completed_before = 0.0
+    if use_slices and effective_total > 0:
+        planned = _plan_slices(effective_total, slice_seconds, start_at=start_at)
+        if start_idx == 0 and start_offset > 0:
+            start_idx = next(
+                (i for i, (s, _e) in enumerate(planned) if s >= start_offset - 0.1),
+                len(planned),
+            )
+        completed_before = sum(e - s for s, e in planned[:start_idx])
+
     threads = max(1, min(8, (os.cpu_count() or 2) // 2))
-    if start_offset > 0 and effective_total >= _PROGRESS_MIN_DURATION:
-        _emit_progress(start_offset, effective_total)
+    if completed_before > 0 and effective_total >= _PROGRESS_MIN_DURATION:
+        _emit_progress(completed_before, effective_total)
     else:
         _emit_stage("transcribe")
     model = _load_whisper(
@@ -430,8 +570,13 @@ def _transcribe_audio(
         segments, _last = _collect_segments(
             raw_segments,
             offset=0.0,
+            slice_end=duration,
+            completed_before=0.0,
             total_duration=duration,
             last_progress=0.0,
+            stream_partials=stream_partials and duration >= _PROGRESS_MIN_DURATION,
+            partial_first_step=_FIRST_PARTIAL_SECONDS,
+            partial_step=_FIRST_SLICE_PARTIAL_STEP,
         )
         del raw_segments, samples, model
         return {
@@ -442,51 +587,95 @@ def _transcribe_audio(
             "segments": segments,
         }
 
-    offset = max(0.0, float(start_offset))
-    last_progress = offset
     all_segments: list[dict] = []
     language = ""
     yielded = False
-    next_offset = offset
+    last_progress = completed_before
+    next_slice_idx = start_idx
+    next_offset = start_offset
 
-    while True:
-        if effective_total > 0 and offset >= effective_total - 0.1:
-            break
-        samples = _decode_audio_16k(audio_path, env, start_sec=offset, duration_sec=slice_seconds)
-        if samples.size == 0:
-            break
-        actual_slice_dur = samples.size / 16000.0
-        raw_segments, info = model.transcribe(samples, **kwargs)
-        if not language:
-            language = str(getattr(info, "language", "") or "")
-        chunk_segments, last_progress = _collect_segments(
-            raw_segments,
-            offset=offset,
-            total_duration=effective_total,
-            last_progress=last_progress,
-        )
-        all_segments.extend(chunk_segments)
-        del raw_segments, samples
+    if planned:
+        for idx in range(start_idx, len(planned)):
+            s_start, s_end = planned[idx]
+            s_dur = max(0.0, s_end - s_start)
+            if s_dur <= 0.05:
+                next_slice_idx = idx + 1
+                continue
+            samples = _decode_audio_16k(audio_path, env, start_sec=s_start, duration_sec=s_dur)
+            if samples.size == 0:
+                next_slice_idx = idx + 1
+                completed_before += s_dur
+                continue
+            actual_slice_dur = samples.size / 16000.0
+            raw_segments, info = model.transcribe(samples, **kwargs)
+            if not language:
+                language = str(getattr(info, "language", "") or "")
+            is_playhead_slice = idx == 0
+            chunk_segments, last_progress = _collect_segments(
+                raw_segments,
+                offset=s_start,
+                slice_end=s_start + actual_slice_dur,
+                completed_before=completed_before,
+                total_duration=effective_total,
+                last_progress=last_progress,
+                stream_partials=stream_partials,
+                partial_first_step=_FIRST_PARTIAL_SECONDS if is_playhead_slice else s_dur,
+                partial_step=_FIRST_SLICE_PARTIAL_STEP if is_playhead_slice else s_dur,
+            )
+            all_segments.extend(chunk_segments)
+            del raw_segments, samples
 
-        reached_eof = actual_slice_dur < slice_seconds - 0.5
-        offset = offset + (actual_slice_dur if reached_eof else slice_seconds)
-        next_offset = offset
-        if effective_total >= _PROGRESS_MIN_DURATION and next_offset - last_progress >= 1.0:
-            last_progress = next_offset
-            _emit_progress(next_offset, effective_total)
-        if reached_eof or (effective_total > 0 and next_offset >= effective_total - 0.1):
-            break
-        if _should_yield(yield_check_cmd, env):
-            yielded = True
-            break
+            completed_before += s_dur
+            next_slice_idx = idx + 1
+            next_offset = planned[next_slice_idx][0] if next_slice_idx < len(planned) else effective_total
+            if effective_total >= _PROGRESS_MIN_DURATION and completed_before - last_progress >= 1.0:
+                last_progress = completed_before
+                _emit_progress(completed_before, effective_total)
+            if next_slice_idx < len(planned) and _should_yield(yield_check_cmd, env):
+                yielded = True
+                break
+    else:
+        offset = max(0.0, float(start_offset))
+        while True:
+            samples = _decode_audio_16k(audio_path, env, start_sec=offset, duration_sec=slice_seconds)
+            if samples.size == 0:
+                break
+            actual_slice_dur = samples.size / 16000.0
+            raw_segments, info = model.transcribe(samples, **kwargs)
+            if not language:
+                language = str(getattr(info, "language", "") or "")
+            chunk_segments, last_progress = _collect_segments(
+                raw_segments,
+                offset=offset,
+                slice_end=offset + actual_slice_dur,
+                completed_before=offset,
+                total_duration=effective_total,
+                last_progress=last_progress,
+                stream_partials=stream_partials,
+            )
+            all_segments.extend(chunk_segments)
+            del raw_segments, samples
+            reached_eof = actual_slice_dur < slice_seconds - 0.5
+            offset = offset + (actual_slice_dur if reached_eof else slice_seconds)
+            next_offset = offset
+            if reached_eof:
+                break
+            if _should_yield(yield_check_cmd, env):
+                yielded = True
+                break
+
+    if not yielded:
+        all_segments.sort(key=lambda seg: (seg.get("start", 0.0), seg.get("end", 0.0)))
 
     del model
     return {
         "ok": True,
         "yielded": yielded,
+        "nextSliceIndex": next_slice_idx,
+        "completedSeconds": round(completed_before, 3),
         "nextOffset": round(next_offset, 3),
         "language": language,
-        "duration": round(max(effective_total, offset), 3),
+        "duration": round(max(effective_total, completed_before), 3),
         "device": chosen_device,
         "segments": all_segments,
     }
@@ -511,7 +700,9 @@ def _run_with_gpu_gate(
     yield_check_cmd = [gate_bin, "should-yield", "--lane", lane, "--name", who] if (is_long and lane != "now") else []
     base_minutes = int(gate.get("minutes", 5))
 
+    slice_index = 0
     start_offset = 0.0
+    completed_sec = 0.0
     all_segments: list[dict] = []
     language = ""
     device = ""
@@ -519,7 +710,7 @@ def _run_with_gpu_gate(
 
     while True:
         _emit_stage("gpu-wait")
-        remaining = max(0.0, duration - start_offset)
+        remaining = max(0.0, duration - completed_sec)
         est_minutes = (
             max(base_minutes, math.ceil((remaining / 60.0) / 6.0) + 2)
             if remaining > 0
@@ -541,7 +732,7 @@ def _run_with_gpu_gate(
         ]
         # Short automatic runs fail fast if the GPU is busy; manual forced runs
         # and runs resuming after politely yielding wait in line until ready.
-        if args.max_duration > 0 and start_offset <= 0 and gate.get("waitMinutes") is not None:
+        if args.max_duration > 0 and slice_index == 0 and start_offset <= 0 and gate.get("waitMinutes") is not None:
             child_cmd.extend(["--wait", str(gate["waitMinutes"])])
         child_cmd.extend(
             [
@@ -562,14 +753,20 @@ def _run_with_gpu_gate(
         )
         if duration > 0:
             child_cmd.extend(["--total-duration", f"{duration:.3f}"])
-        if start_offset > 0:
+        if args.start_at > 0:
+            child_cmd.extend(["--start-at", f"{args.start_at:.3f}"])
+        if slice_index > 0:
+            child_cmd.extend(["--slice-index", str(slice_index)])
+        elif start_offset > 0:
             child_cmd.extend(["--start-offset", f"{start_offset:.3f}"])
+        if args.stream_partials:
+            child_cmd.append("--stream-partials")
         if yield_check_cmd:
             child_cmd.extend(["--yield-check-json", json.dumps(yield_check_cmd)])
         if args.prompt_file:
             child_cmd.extend(["--prompt-file", args.prompt_file])
 
-        # Stream stderr lines from child so stage:transcribe reaches the service immediately.
+        # Stream stderr lines and NDJSON partial lines from child concurrently.
         global _ACTIVE_CHILD
         proc = subprocess.Popen(
             child_cmd,
@@ -582,12 +779,25 @@ def _run_with_gpu_gate(
         )
         _ACTIVE_CHILD = proc
         stderr_tail: list[str] = []
-        stdout_chunks: list[str] = []
+        final_lines: list[str] = []
 
         def _drain_stdout() -> None:
             assert proc.stdout is not None
             try:
-                stdout_chunks.append(proc.stdout.read())
+                for raw_line in proc.stdout:
+                    stripped = raw_line.strip()
+                    if not stripped:
+                        continue
+                    try:
+                        parsed = json.loads(stripped)
+                    except json.JSONDecodeError:
+                        final_lines.append(stripped)
+                        continue
+                    if isinstance(parsed, dict) and parsed.get("partial"):
+                        if args.stream_partials:
+                            print(stripped, flush=True)
+                    else:
+                        final_lines.append(stripped)
             finally:
                 proc.stdout.close()
 
@@ -602,12 +812,14 @@ def _run_with_gpu_gate(
                 if stripped.startswith("stage:"):
                     print(stripped, file=sys.stderr, flush=True)
                 elif stripped:
+                    wait_match = _GPU_WAIT_RE.search(stripped)
+                    if wait_match:
+                        _emit_stage(f"gpu-wait:{wait_match.group(1).strip()[:80]}")
                     stderr_tail.append(stripped)
                     if len(stderr_tail) > 10:
                         stderr_tail.pop(0)
             proc.stderr.close()
             stdout_reader.join()
-            stdout = "".join(stdout_chunks)
             code = proc.wait()
         finally:
             _ACTIVE_CHILD = None
@@ -618,6 +830,7 @@ def _run_with_gpu_gate(
             detail = stderr_tail[-1] if stderr_tail else f"exit {code}"
             raise RuntimeError(f"transcription failed: {detail[:200]}")
 
+        stdout = final_lines[-1] if final_lines else ""
         chunk = json.loads(stdout)
         if not chunk.get("ok"):
             return chunk
@@ -629,13 +842,22 @@ def _run_with_gpu_gate(
         if chunk.get("duration"):
             final_duration = max(final_duration, float(chunk["duration"]))
 
-        next_offset = float(chunk.get("nextOffset") or 0.0)
-        if chunk.get("yielded") and next_offset > start_offset:
-            start_offset = next_offset
-            time.sleep(1.0 if args.slice_seconds >= _SLICE_SECONDS else 0.05)
-            continue
+        if chunk.get("yielded"):
+            next_idx = int(chunk.get("nextSliceIndex") or 0)
+            next_off = float(chunk.get("nextOffset") or 0.0)
+            if "nextSliceIndex" in chunk and next_idx > slice_index:
+                slice_index = next_idx
+                completed_sec = max(completed_sec, float(chunk.get("completedSeconds") or completed_sec))
+                time.sleep(1.0 if args.slice_seconds >= _SLICE_SECONDS else 0.05)
+                continue
+            if next_off > start_offset:
+                start_offset = next_off
+                completed_sec = max(completed_sec, start_offset)
+                time.sleep(1.0 if args.slice_seconds >= _SLICE_SECONDS else 0.05)
+                continue
         break
 
+    all_segments.sort(key=lambda seg: (seg.get("start", 0.0), seg.get("end", 0.0)))
     return {
         "ok": True,
         "language": language,
@@ -668,6 +890,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--max-duration", type=float, default=900.0)
     parser.add_argument("--total-duration", type=float, default=0.0)
     parser.add_argument("--start-offset", type=float, default=0.0)
+    parser.add_argument("--start-at", type=float, default=0.0)
+    parser.add_argument("--slice-index", type=int, default=0)
+    parser.add_argument("--stream-partials", action="store_true")
     parser.add_argument("--slice-seconds", type=float, default=_SLICE_SECONDS)
     parser.add_argument("--yield-check-json", default="")
     parser.add_argument("--prompt-file", default="")
@@ -689,6 +914,9 @@ def main(argv: list[str] | None = None) -> int:
                 env=env,
                 total_duration=args.total_duration,
                 start_offset=args.start_offset,
+                start_at=args.start_at,
+                slice_index=args.slice_index,
+                stream_partials=args.stream_partials,
                 yield_check_cmd=yield_check_cmd,
                 slice_seconds=args.slice_seconds,
             )
@@ -743,6 +971,8 @@ def main(argv: list[str] | None = None) -> int:
                     prompt=prompt,
                     env=env,
                     total_duration=duration,
+                    start_at=args.start_at,
+                    stream_partials=args.stream_partials,
                     slice_seconds=args.slice_seconds,
                 )
             print(json.dumps(result, ensure_ascii=False))

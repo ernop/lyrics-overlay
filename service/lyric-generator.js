@@ -9,15 +9,29 @@
 import GLib from 'gi://GLib';
 import Gio from 'gi://Gio';
 
-import {generateLrcFromTranscript} from '../shared/lyric-align.js';
+import {buildTranscribedLyrics, generateLrcFromTranscript} from '../shared/lyric-align.js';
 
 Gio._promisify(Gio.DataInputStream.prototype, 'read_line_async', 'read_line_finish_utf8');
-Gio._promisify(Gio.InputStream.prototype, 'read_bytes_async', 'read_bytes_finish');
 Gio._promisify(Gio.Subprocess.prototype, 'wait_async', 'wait_finish');
 
-const READ_CHUNK_BYTES = 65536;
-const decoder = new TextDecoder();
 const encoder = new TextEncoder();
+
+function mergeRanges(ranges, [start, end]) {
+    const s = Number(start);
+    const e = Number(end);
+    if (!Number.isFinite(s) || !Number.isFinite(e) || e <= s)
+        return ranges;
+    const next = [...ranges, [s, e]].sort((a, b) => a[0] - b[0]);
+    const merged = [[next[0][0], next[0][1]]];
+    for (let i = 1; i < next.length; i++) {
+        const last = merged[merged.length - 1];
+        if (next[i][0] <= last[1] + 1.0)
+            last[1] = Math.max(last[1], next[i][1]);
+        else
+            merged.push([next[i][0], next[i][1]]);
+    }
+    return merged;
+}
 
 function resolvePath(projectDir, value) {
     if (GLib.path_is_absolute(value))
@@ -36,26 +50,6 @@ function augmentedPath() {
     const insertAt = parts.findIndex(part => SYSTEM_BIN_DIRS.has(part));
     parts.splice(insertAt === -1 ? parts.length : insertAt, 0, localBin);
     return parts.join(':');
-}
-
-async function readAllBytes(stream, cancellable) {
-    const chunks = [];
-    let total = 0;
-    for (;;) {
-        const bytes = await stream.read_bytes_async(READ_CHUNK_BYTES, GLib.PRIORITY_DEFAULT, cancellable);
-        const arr = bytes.toArray();
-        if (!arr.length)
-            break;
-        chunks.push(arr);
-        total += arr.length;
-    }
-    const merged = new Uint8Array(total);
-    let offset = 0;
-    for (const chunk of chunks) {
-        merged.set(chunk, offset);
-        offset += chunk.length;
-    }
-    return decoder.decode(merged);
 }
 
 /**
@@ -116,7 +110,7 @@ export function createLyricGenerator({config, projectDir, runtimeDir, ytarchiveU
         return null;
     let runSeq = 0;
 
-    return ({videoId, identity, plainLyrics, force = false, onStage}) => {
+    return ({videoId, identity, plainLyrics, force = false, startAt = 0, onStage, onPartial}) => {
         const cancellable = new Gio.Cancellable();
         let cancelled = false;
         let promptPath = '';
@@ -141,6 +135,10 @@ export function createLyricGenerator({config, projectDir, runtimeDir, ytarchiveU
             '--compute-type', config.computeType,
             '--max-duration', String(force ? 0 : config.maxDurationSeconds),
         );
+        if (onPartial)
+            argv.push('--stream-partials');
+        if (Number.isFinite(startAt) && startAt >= 30)
+            argv.push('--start-at', String(Math.round(startAt)));
         if (ytarchiveUrl)
             argv.push('--ytarchive-url', ytarchiveUrl);
         if (config.cookiesFromBrowser)
@@ -172,8 +170,13 @@ export function createLyricGenerator({config, projectDir, runtimeDir, ytarchiveU
                 proc = launcher.spawnv(argv);
                 const stdoutPipe = proc.get_stdout_pipe();
                 const stderrPipe = proc.get_stderr_pipe();
+                const stdoutReader = new Gio.DataInputStream({base_stream: stdoutPipe});
                 const stderrReader = new Gio.DataInputStream({base_stream: stderrPipe});
                 const stderrErrors = [];
+                const partialSegments = [];
+                let coveredRanges = [];
+                let payload = null;
+                let badStdout = false;
 
                 const readStderr = (async () => {
                     for (;;) {
@@ -196,24 +199,60 @@ export function createLyricGenerator({config, projectDir, runtimeDir, ytarchiveU
                         log(`lyric generator stderr error for ${videoId}: ${error.message}`);
                 });
 
-                const stdoutText = await readAllBytes(stdoutPipe, cancellable);
-                await readStderr;
+                const readStdout = (async () => {
+                    for (;;) {
+                        const [line] = await stdoutReader.read_line_async(GLib.PRIORITY_DEFAULT, cancellable);
+                        if (line === null)
+                            break;
+                        const trimmed = line.trim();
+                        if (!trimmed)
+                            continue;
+                        let parsed;
+                        try {
+                            parsed = JSON.parse(trimmed);
+                        } catch {
+                            badStdout = true;
+                            continue;
+                        }
+                        if (parsed?.partial) {
+                            if (cancelled || !onPartial)
+                                continue;
+                            if (Array.isArray(parsed.segments) && parsed.segments.length)
+                                partialSegments.push(...parsed.segments);
+                            if (Array.isArray(parsed.range) && parsed.range.length === 2)
+                                coveredRanges = mergeRanges(coveredRanges, parsed.range);
+                            if (partialSegments.length) {
+                                const ordered = [...partialSegments].sort((a, b) => (a.start - b.start) || (a.end - b.end));
+                                const totalDuration = Number(parsed.duration) || identity?.durationSeconds || 0;
+                                const built = buildTranscribedLyrics(ordered, totalDuration);
+                                if (built.ok) {
+                                    onPartial({
+                                        lrc: built.lrc,
+                                        plainText: built.plainText,
+                                        lineCount: built.lineCount,
+                                        duration: totalDuration,
+                                        coveredRanges,
+                                    });
+                                }
+                            }
+                        } else {
+                            payload = parsed;
+                        }
+                    }
+                })();
+
+                await Promise.all([readStdout, readStderr]);
                 await proc.wait_async(cancellable);
 
                 if (cancelled)
                     return {ok: false, cancelled: true, error: 'cancelled'};
 
                 const exitOk = proc.get_successful();
-                if (!stdoutText.trim()) {
+                if (!payload) {
+                    if (badStdout)
+                        return {ok: false, error: `invalid generator output (exit ${exitOk ? 0 : proc.get_exit_status()})`};
                     const detail = stderrErrors.at(-1) || `exit status ${proc.get_exit_status()}`;
                     return {ok: false, error: `lyric generator stopped: ${detail}`};
-                }
-
-                let payload;
-                try {
-                    payload = JSON.parse(stdoutText);
-                } catch {
-                    return {ok: false, error: `invalid generator output (exit ${exitOk ? 0 : proc.get_exit_status()})`};
                 }
 
                 if (!payload.ok) {

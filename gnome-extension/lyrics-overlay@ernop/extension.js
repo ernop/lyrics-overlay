@@ -116,7 +116,8 @@ export default class LyricsOverlayExtension extends Extension {
         const pitchEnabled = this._settings.get_boolean('pitch-enabled');
         const active = Boolean(state?.active);
         const generating = state?.lyrics === 'generating';
-        this._overlay.setStatus(generating ? (state.generation?.message || 'Timing lyrics\u2026') : '');
+        const showStatus = generating && !state.generation?.previewing;
+        this._overlay.setStatus(showStatus ? (state.generation?.message || 'Timing lyrics\u2026') : '');
         this._overlay.setShown(enabled && active && (state.lyrics === 'timed' || generating));
         // The panel does not need timed lyrics: singing along to a song
         // without them still shows the pitch.

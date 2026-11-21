@@ -410,3 +410,158 @@ print(json.dumps({"first": first, "second": second, "sliceSizes": slice_sizes}))
         fs.rmSync(tmp, {recursive: true, force: true});
     }
 });
+
+test('download progress, GPU wait reason, playhead-first slice planning, and NDJSON partial streaming work end to end', async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'lyrics-gen-stream-test-'));
+    try {
+        const fakeBin = path.join(tmp, 'bin');
+        fs.mkdirSync(fakeBin);
+
+        // 1. Verify _plan_slices anchors near playhead and partitions [0, D) disjointly.
+        const {stdout: planOut} = await execFileAsync('python3', ['-c', `
+import importlib.util, json
+spec = importlib.util.spec_from_file_location("gl", ${JSON.stringify(scriptPath)})
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+print(json.dumps({
+    "mid": m._plan_slices(9171.0, 600.0, start_at=1835.0),
+    "nearStart": m._plan_slices(1800.0, 600.0, start_at=12.0),
+}))
+`], {timeout: 5000});
+        const plans = JSON.parse(planOut);
+        assert.equal(plans.mid[0][0], 1825);
+        assert.equal(plans.mid[0][1], 2425);
+        assert.equal(plans.mid.at(-1)[1], 1825);
+        const totalCovered = plans.mid.reduce((sum, [s, e]) => sum + (e - s), 0);
+        assert.equal(Math.round(totalCovered), 9171);
+        assert.deepEqual(plans.nearStart, [[0, 600], [600, 1200], [1200, 1800]]);
+
+        // 2. Fake yt-dlp emitting DL: byte progress + fake ffprobe + fake GPU gate
+        //    emitting a GPU wait reason and out-of-order NDJSON partial lines.
+        const fakeYtDlp = path.join(fakeBin, 'yt-dlp');
+        fs.writeFileSync(fakeYtDlp, `#!/usr/bin/env python3
+import sys
+from pathlib import Path
+args = sys.argv[1:]
+out_dir = Path(args[args.index("-o") + 1]).parent
+print("DL:12000000/73000000", flush=True)
+print("DL:73000000/73000000", flush=True)
+(out_dir / "audio.webm").write_bytes(b"fake-audio" * 512)
+`, {mode: 0o755});
+        const fakeFfprobe = path.join(fakeBin, 'ffprobe');
+        fs.writeFileSync(fakeFfprobe, '#!/usr/bin/env python3\nprint("7200.0")\n', {mode: 0o755});
+        const fakeGate = path.join(tmp, 'fake-gpu');
+        fs.writeFileSync(fakeGate, `#!/usr/bin/env python3
+import json, sys
+print("gpu: Whisper large-v3 waits for the GPU: another job holds 12 GB", file=sys.stderr, flush=True)
+print("stage:transcribe:600/7200", file=sys.stderr, flush=True)
+print(json.dumps({
+    "partial": True, "range": [1825.0, 2425.0], "duration": 7200.0,
+    "segments": [{"start": 1835.0, "end": 1838.0, "text": "Playhead line", "no_speech_prob": 0.01, "words": [
+        {"start": 1835.0, "end": 1836.5, "word": "Playhead", "probability": 0.95},
+        {"start": 1836.6, "end": 1838.0, "word": "line", "probability": 0.95},
+    ]}],
+}), flush=True)
+print(json.dumps({
+    "ok": True, "yielded": False, "language": "en", "duration": 7200.0, "device": "cuda",
+    "segments": [
+        {"start": 1835.0, "end": 1838.0, "text": "Playhead line", "no_speech_prob": 0.01, "words": []},
+        {"start": 10.0, "end": 12.0, "text": "Opening line", "no_speech_prob": 0.01, "words": []},
+    ],
+}), flush=True)
+`, {mode: 0o755});
+
+        const {stdout, stderr} = await execFileAsync('python3', [
+            scriptPath,
+            '--video-id', 'dQw4w9WgXcQ',
+            '--max-duration', '0',
+            '--start-at', '1835',
+            '--stream-partials',
+            '--gpu-gate-json', JSON.stringify({command: fakeGate, name: 'Lyrics overlay', what: 'Whisper', gb: 7, lane: 'now', minutes: 5}),
+        ], {
+            timeout: 8000,
+            env: {...process.env, PATH: `${fakeBin}:${process.env.PATH ?? '/usr/bin:/bin'}`},
+        });
+
+        assert.match(stderr, /stage:audio:12000000\/73000000/u);
+        assert.match(stderr, /stage:audio:73000000\/73000000/u);
+        assert.match(stderr, /stage:gpu-wait:another job holds 12 GB/u);
+        assert.doesNotMatch(stderr, /Playhead line|Opening line/u, 'never leak lyric text to stderr');
+        const lines = stdout.trim().split('\n').map(l => JSON.parse(l));
+        assert.equal(lines.length, 2);
+        assert.equal(lines[0].partial, true);
+        assert.deepEqual(lines[0].range, [1825, 2425]);
+        assert.equal(lines[1].ok, true);
+        assert.deepEqual(lines[1].segments.map(s => [s.start, s.text]), [[10, 'Opening line'], [1835, 'Playhead line']]);
+
+        // 3. Verify GJS createLyricGenerator consumes NDJSON partials and final payload cleanly.
+        const fakeWorker = path.join(tmp, 'fake-worker.py');
+        fs.writeFileSync(fakeWorker, `#!/usr/bin/env python3
+import json, sys
+print("stage:audio:36000000/72000000", file=sys.stderr, flush=True)
+print(json.dumps({
+    "partial": True, "range": [1825.0, 2425.0], "duration": 7200.0,
+    "segments": [
+        {"start": 1835.0, "end": 1837.5, "text": "First early line", "no_speech_prob": 0.01, "words": [
+            {"start": 1835.0, "end": 1836.0, "word": "First", "probability": 0.95},
+            {"start": 1836.1, "end": 1836.8, "word": "early", "probability": 0.95},
+            {"start": 1836.9, "end": 1837.5, "word": "line", "probability": 0.95},
+        ]},
+        {"start": 1839.0, "end": 1841.5, "text": "Second early line", "no_speech_prob": 0.01, "words": [
+            {"start": 1839.0, "end": 1840.0, "word": "Second", "probability": 0.95},
+            {"start": 1840.1, "end": 1840.8, "word": "early", "probability": 0.95},
+            {"start": 1840.9, "end": 1841.5, "word": "line", "probability": 0.95},
+        ]},
+    ],
+}), flush=True)
+print(json.dumps({
+    "ok": True, "language": "en", "duration": 7200.0, "device": "cuda",
+    "segments": [
+        {"start": 10.0, "end": 12.5, "text": "Opening complete line", "no_speech_prob": 0.01, "words": [
+            {"start": 10.0, "end": 11.0, "word": "Opening", "probability": 0.95},
+            {"start": 11.1, "end": 12.5, "word": "complete", "probability": 0.95},
+        ]},
+        {"start": 1835.0, "end": 1837.5, "text": "First early line", "no_speech_prob": 0.01, "words": [
+            {"start": 1835.0, "end": 1836.0, "word": "First", "probability": 0.95},
+            {"start": 1836.1, "end": 1837.5, "word": "early", "probability": 0.95},
+        ]},
+    ],
+}), flush=True)
+`, {mode: 0o755});
+        const gjsDriver = path.join(tmp, 'driver.js');
+        fs.writeFileSync(gjsDriver, `
+import GLib from 'gi://GLib';
+import {createLyricGenerator, validateGeneratorConfig} from ${JSON.stringify(`file://${path.join(root, 'service', 'lyric-generator.js')}`)};
+
+const loop = new GLib.MainLoop(null, false);
+const cfg = validateGeneratorConfig({command: ['python3', ${JSON.stringify(fakeWorker)}]}, 's.json');
+const gen = createLyricGenerator({config: cfg, projectDir: ${JSON.stringify(tmp)}, runtimeDir: ${JSON.stringify(tmp)}, ytarchiveUrl: null, log: () => {}});
+const stages = [];
+const partials = [];
+const handle = gen({
+    videoId: 'concert0001',
+    identity: {title: 'Concert', durationSeconds: 7200},
+    plainLyrics: '',
+    force: true,
+    startAt: 1835,
+    onStage: s => stages.push(s),
+    onPartial: p => partials.push(p),
+});
+handle.promise.then(res => {
+    print(JSON.stringify({stages, partials, res}));
+    loop.quit();
+});
+loop.run();
+`);
+        const {stdout: gjsOut} = await execFileAsync('gjs', ['-m', gjsDriver], {timeout: 8000});
+        const gjsRes = JSON.parse(gjsOut);
+        assert.deepEqual(gjsRes.stages, ['audio:36000000/72000000']);
+        assert.equal(gjsRes.partials.length, 1);
+        assert.deepEqual(gjsRes.partials[0].coveredRanges, [[1825, 2425]]);
+        assert.match(gjsRes.partials[0].lrc, /\[30:35\.00\] First early line/u);
+        assert.equal(gjsRes.res.ok, true);
+        assert.match(gjsRes.res.lrc, /\[00:10\.00\] Opening complete/u);
+    } finally {
+        fs.rmSync(tmp, {recursive: true, force: true});
+    }
+});

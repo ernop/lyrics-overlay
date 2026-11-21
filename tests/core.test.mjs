@@ -968,3 +968,104 @@ test('manual forced generation formats live progress, survives tab switches and 
     assert.equal(h.lastState().generation.background, undefined);
 });
 
+test('download progress, GPU wait reason, and streaming early subtitles preview cleanly without persisting partial lyrics', async () => {
+    const calls = [];
+    const h = harness({
+        answers: {
+            'Choir|Oratorio': [record(10, {
+                artistName: 'Choir',
+                trackName: 'Oratorio',
+                duration: 7200,
+                syncedLyrics: null,
+                plainLyrics: 'Comfort ye\nEvery valley',
+            })],
+        },
+        maxGenerateDurationSeconds: 1200,
+        generate: req => {
+            const entry = {
+                videoId: req.videoId,
+                startAt: req.startAt,
+                onStage: req.onStage,
+                onPartial: req.onPartial,
+                cancelled: false,
+                resolve: null,
+            };
+            calls.push(entry);
+            return {
+                promise: new Promise(resolve => { entry.resolve = resolve; }),
+                cancel: () => {
+                    entry.cancelled = true;
+                    entry.resolve?.({ok: false, cancelled: true});
+                },
+            };
+        },
+    });
+
+    const concert = metadata('oratorio001', {
+        title: 'Oratorio',
+        author: 'Choir',
+        lengthSeconds: 7200,
+        description: 'Provided to YouTube by Label\n\nOratorio \u00b7 Choir\n\nAlbum\n\n\u2117 2020 Label',
+    });
+    h.report(1, {sampledAt: h.now, media: media('oratorio001', {currentTime: 1835.5, duration: 7200}), metadata: concert});
+    await h.flush();
+
+    assert.deepEqual(h.core.command({op: 'generate'}), {ok: true});
+    assert.equal(calls.length, 1);
+    assert.equal(Math.round(calls[0].startAt), 1836);
+
+    // Subprocess download progress and GPU wait holder name format clearly.
+    calls[0].onStage('audio:34000000/73000000');
+    assert.equal(h.lastState().generation.message, 'Aligning lyrics \u00b7 loading audio 34 / 73 MB (47%)');
+    calls[0].onStage('audio:420000/950000');
+    assert.equal(h.lastState().generation.message, 'Aligning lyrics \u00b7 loading audio 420 / 950 kB (44%)');
+    calls[0].onStage('audio:18200000/0');
+    assert.equal(h.lastState().generation.message, 'Aligning lyrics \u00b7 loading audio 18.2 MB');
+    calls[0].onStage('gpu-wait:another job holds 12 GB');
+    assert.equal(h.lastState().generation.message, 'Aligning lyrics \u00b7 waiting for GPU (another job holds 12 GB)');
+
+    // Before partial subtitles arrive: overlay has no timed line yet and previewing is absent.
+    assert.equal(h.lastState().generation.previewing, undefined);
+    assert.equal(h.lastLine().text, '');
+
+    // Early partial covering playhead slice arrives -> displays immediately without writing to disk or archive.
+    calls[0].onPartial({
+        lrc: '[30:34.00] Early rough line\n[30:40.00] Next early line\n',
+        lineCount: 2,
+        duration: 7200,
+        coveredRanges: [[1825, 2425]],
+    });
+    assert.equal(h.lastState().lyrics, 'generating');
+    assert.equal(h.lastState().generation.previewing, true);
+    assert.equal(h.lastLine().text, 'Early rough line');
+    assert.equal(h.core.lyricsFor('oratorio001').timed, false, 'partial subtitles must never reach ytarchive as timed');
+    assert.equal(h.saved.videos.get('oratorio001').candidates.some(c => c.generated), false, 'partial subtitles must not persist');
+
+    // Seeking into an untranscribed region clears previewing so the quiet status pill can show again.
+    h.report(1, {sampledAt: h.now, media: media('oratorio001', {currentTime: 100, duration: 7200}), metadata: concert});
+    assert.equal(h.lastState().generation.previewing, undefined);
+    assert.equal(h.lastLine().text, '');
+
+    // Seeking back into covered region restores early subtitles; full Mode A completion swaps in aligned lyrics atomically.
+    h.report(1, {sampledAt: h.now, media: media('oratorio001', {currentTime: 1835.5, duration: 7200}), metadata: concert});
+    assert.equal(h.lastState().generation.previewing, true);
+    assert.equal(h.lastLine().text, 'Early rough line');
+
+    calls[0].resolve({
+        ok: true,
+        mode: 'aligned',
+        lrc: '[01:40.00] Comfort ye\n[30:34.00] Every valley\n',
+        plainText: 'Comfort ye\nEvery valley',
+        duration: 7200,
+        coverage: 0.95,
+        lineCount: 2,
+    });
+    await h.flush();
+    assert.equal(h.lastState().lyrics, 'timed');
+    assert.equal(h.lastState().generation.status, 'ready');
+    assert.equal(h.lastState().generation.previewing, undefined);
+    assert.equal(h.lastLine().text, 'Every valley');
+    assert.equal(h.core.lyricsFor('oratorio001').timed, true);
+    assert.deepEqual(h.updatedVideos, ['oratorio001']);
+});
+
