@@ -12,6 +12,7 @@ import GLib from 'gi://GLib';
 import Gio from 'gi://Gio';
 import Soup from 'gi://Soup?version=3.0';
 
+import {PAGE_COMMAND_OPS} from './core.js';
 import {readMonitors} from './monitors.js';
 import {isReportError, parseCommandResult, parseGone, parseReport} from './report-schema.js';
 import {isSettingsError} from './settings-store.js';
@@ -19,11 +20,8 @@ import {isSettingsError} from './settings-store.js';
 const MAX_BODY_BYTES = 256 * 1024;
 const EXTENSION_PATHS = new Set(['/api/report', '/api/gone', '/api/commands', '/api/command-result']);
 const PAGE_PATHS = new Set(['/api/settings', '/api/settings/reset', '/api/command', '/api/pitch/fit', '/api/publish-lrclib']);
-// The song controls the settings page offers (LyricsCore.command).
-const PAGE_COMMANDS = new Set([
-    'tooFast', 'tooSlow', 'resetOffset', 'choose', 'reject',
-    'searchAgain', 'lookUp', 'generate', 'cancelGenerate', 'searchQuery', 'importLyrics', 'saveEditedLyrics',
-]);
+// The song controls the settings page offers (exported alongside LyricsCore.command).
+const PAGE_COMMANDS = PAGE_COMMAND_OPS;
 // "Fit to my singing" leaves this much room around what was sung.
 const FIT_MARGIN = 1;
 const FIT_MIN_SPAN = 12;

@@ -144,16 +144,22 @@ from scratch when they are not.
   next video. A service-side player that always targets the song tab was
   offered and is not built.
 - **The settings page (owner, 2026-11-10; redesigned 2026-11-19/20/21).**
-  Every setting is on one full-width two-column page in Firefox,
+  Every setting is on one full-width, dense two-column studio page in Firefox,
   `http://localhost:8792/settings`: a compact top bar (title, active song
-  and status pill, `Lyrics: On/Off`, `Pitch: On/Off`), a sticky left Live
-  Stage (~42%) explicitly switching among `Lyrics preview` (over
-  Video/Dark/Light scenes), `Pitch preview`, and an interactive `Screen map`
-  (exact monitor aspect ratio,
-  8-handle drag/resize with magnetic snap, multi-monitor picker, placement
-  presets, pitch panel docking/resizing), beside one open borderless right
-  Inspector (~58%) containing the Lyrics, Pitch, and Song sections in one
-  continuous page with compact notched sliders. Its idle preview uses a
+  and status pill, `Full lyrics`, `Lyrics: On/Off`, `Pitch: On/Off`), a
+  sticky left column (~38%) holding the live preview (`Lyrics` over
+  Video/Dark/Light scenes, `Pitch`, or interactive `Screen map` with exact
+  monitor aspect ratio, 8-handle drag/resize with magnetic snap, multi-monitor
+  picker, placement presets, and pitch panel docking/resizing) **plus** the
+  pinned active-song deck right underneath (timing offset & nudges, song
+  actions including **Generate from scratch**, lyric sets list, manual LRCLIB
+  search, `.lrc`/`.txt` import, and 1-line Mic/Scale/Add-on status) so there
+  is no empty left-side void and everyday song controls stay visible while
+  scrolling; beside a compact 2-column right Inspector (~62%) with only two
+  top-level sections (`Lyrics` and `Pitch`), no nested subheadings, and
+  half-column notched sliders. Action errors appear in a sticky banner below
+  the top bar with a `Dismiss` button and are never cleared by background
+  status polling. Its idle preview uses a
   familiar English lyric even when furigana is enabled. A right press on the indicator, the lyric
   or the pitch panel shows it; each change applies live. There is one
   browser settings tab: a right press selects the open one and raises its window
@@ -225,12 +231,15 @@ from scratch when they are not.
     immediately via `SIGTERM` if the user skips songs or stops, persists the
     generated candidate per video (`gen:aligned:*` / `gen:transcribed:*`) so
     replays are instant, automatically forwards the generated LRC to
-    ytarchive when `ytarchiveUrl` is set, and offers manual `Time existing
-    lyrics` / `Retry timing` / `Regenerate timed lyrics`, **Generate from
-    scratch**, and `Cancel timing` in the settings page's Song section.
+    ytarchive when `ytarchiveUrl` is set, and offers manual `Time existing` /
+    `Retry timing` / `Regenerate` / `Generate timed`, **Generate from
+    scratch**, and `Cancel timing` in the pinned song deck.
     **Generate from scratch** deliberately withholds every existing lyric set
     from Whisper and directly transcribes the audio, for the case where the
-    only available lyrics belong to another song. Manual generation always
+    only available lyrics belong to another song; it preempts an in-flight
+    plain-lyric alignment on the same song and clears the old timed candidate
+    from the overlay right away so the quiet timing pill (and early
+    transcribed partials) show instead of stale wrong lyrics. Manual generation always
     bypasses `maxDurationSeconds` so long works can be timed on demand even
     above the automatic cap, and raising `maxDurationSeconds` re-enables
     automatic generation for tracks previously skipped only for duration.

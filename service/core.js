@@ -205,6 +205,13 @@ function generationStageMessage(hasPlain, stage) {
     }
 }
 
+// Song commands accepted from the settings page (/api/command) and D-Bus.
+export const PAGE_COMMAND_OPS = new Set([
+    'tooFast', 'tooSlow', 'resetOffset', 'choose', 'reject',
+    'searchAgain', 'lookUp', 'searchQuery', 'importLyrics', 'saveEditedLyrics',
+    'generate', 'generateFromScratch', 'cancelGenerate',
+]);
+
 export class LyricsCore {
     /**
      * @param {{
@@ -483,24 +490,30 @@ export class LyricsCore {
             return {ok: true, id: candidateId, timed: parsed.timed, lineCount: parsed.lineCount};
         }
         case 'generate':
-        case 'generateFromScratch':
+        case 'generateFromScratch': {
             if (!this._deps.generate)
                 return {ok: false, error: 'automatic lyric timing is not configured'};
             if (!record || !session.identity)
                 return {ok: false};
-            if (this._generating?.videoId === session.videoId)
-                return {ok: true};
-            if (this._generating)
+            const fromScratch = command.op === 'generateFromScratch';
+            if (this._generating?.videoId === session.videoId) {
+                if (fromScratch && this._generating.hasPlain)
+                    this._cancelGeneration('switched to transcribing from scratch');
+                else
+                    return {ok: true};
+            } else if (this._generating) {
                 this._cancelGeneration('replaced by user request');
+            }
             record.userRequested = true;
             this._deps.store.saveVideo(record);
             this._startGeneration(session.videoId, session.identity, record, {
                 force: true,
-                fromScratch: command.op === 'generateFromScratch',
+                fromScratch,
                 startAt: this._mediaTime(session, this._deps.clock.now()),
             });
             this._refresh();
             return {ok: true};
+        }
         case 'cancelGenerate': {
             if (!this._generating)
                 return {ok: true, cancelled: false};
@@ -1145,6 +1158,7 @@ export class LyricsCore {
             videoId,
             label: describeIdentity(identity) || videoId,
             force,
+            fromScratch: Boolean(fromScratch),
             hasPlain: Boolean(plainLyrics),
             stage: 'audio',
             partial: null,
@@ -1310,7 +1324,7 @@ export class LyricsCore {
         if (this._generating?.videoId === session.videoId) {
             const effective = this._effective(record);
             const previewing = Boolean(
-                !effective?.timed
+                (!effective?.timed || this._generating.fromScratch)
                 && this._generating.partial
                 && this._partialCovers(this._generating.partial, this._mediaTime(session, now)),
             );
@@ -1405,7 +1419,8 @@ export class LyricsCore {
         const record = this._video(session.videoId);
         const effective = this._effective(record);
         const mediaTime = this._mediaTime(session, now);
-        if (effective?.timed)
+        const scratchActive = this._generating?.videoId === session.videoId && this._generating.fromScratch;
+        if (effective?.timed && !scratchActive)
             return displayAt({lines: this._linesFor(effective), offsetSeconds: record.offsetSeconds, mediaTime});
         const partial = this._generating?.videoId === session.videoId ? this._generating.partial : null;
         if (partial && this._partialCovers(partial, mediaTime))

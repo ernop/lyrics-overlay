@@ -314,7 +314,8 @@ process.stdout.write(${JSON.stringify(JSON.stringify(makeFakeTranscript()))} + '
         const fontsLoaded = await Promise.race([document.fonts.ready.then(() => true),
             new Promise(resolve => setTimeout(() => resolve(false), ${FONTS_CHECK_MS}))]);
         const filled = fontsLoaded && Boolean(document.querySelector('#stage canvas')) &&
-            document.querySelectorAll('.settings-group').length === 3 &&
+            document.querySelectorAll('.settings-group').length === 2 &&
+            Boolean(document.getElementById('song')) &&
             document.querySelectorAll('.fonts button').length > 1 &&
             document.querySelectorAll('[aria-label="Microphones"] button').length === 3 &&
             document.querySelectorAll('.ring-chip').length === 3 &&
@@ -357,13 +358,13 @@ process.stdout.write(${JSON.stringify(JSON.stringify(makeFakeTranscript()))} + '
     await sleep(250);
     await capture(OUT_MAP);
 
-    // 3. Song section: auto-transcribed set, Full lyrics, Edit & publish, manual search, .lrc/.txt import
+    // 3. Pitch preview + lower Pitch & Microphone controls
     await session.send('script.evaluate', {
         target: {context},
         awaitPromise: true,
         expression: `(async () => {
-            [...document.querySelectorAll('#stage .stage-bar button')].find(b => b.textContent.trim() === 'Lyrics preview')?.click();
-            document.getElementById('song')?.scrollIntoView({block: 'start'});
+            [...document.querySelectorAll('#stage .stage-bar button')].find(b => b.textContent.trim() === 'Pitch')?.click();
+            window.scrollTo(0, document.body.scrollHeight);
             await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
             return true;
         })()`,

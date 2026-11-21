@@ -11,6 +11,7 @@ import {fileURLToPath} from 'node:url';
 import {promisify} from 'node:util';
 
 import {dconfServiceDir, isolatedEnv, realDconf, startBus} from './isolated-session.mjs';
+import {PAGE_COMMAND_OPS} from '../service/core.js';
 
 const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const run = promisify(execFile);
@@ -190,8 +191,15 @@ test('the gjs service looks up lyrics, serves state and accepts shell commands',
     assert.match(page.body, /<title>Lyrics overlay settings<\/title>/u, 'the shell raises the window by this title');
     assert.doesNotMatch(page.body, /role="tablist"/u, 'Lyrics, Pitch, and Song share one continuous page');
     const settingsScript = await request(port, {urlPath: '/settings.js'});
-    assert.match(settingsScript.body, /pageSection\('lyrics'.*pageSection\('pitch'.*pageSection\('song'/su);
+    assert.match(settingsScript.body, /pageSection\('lyrics'.*pageSection\('pitch'/su);
+    assert.match(settingsScript.body, /buildSongDeck\(\)/u);
     assert.match(settingsScript.body, /Generate from scratch/u);
+    // Every command the settings page posts must be accepted by /api/command
+    // (single allowlist shared with LyricsCore).
+    const pageOps = [...new Set([...settingsScript.body.matchAll(/\{op:\s*'([a-zA-Z]+)'/gu)].map(m => m[1]))];
+    assert.ok(pageOps.includes('generateFromScratch'), 'settings page wires generateFromScratch');
+    for (const op of pageOps)
+        assert.ok(PAGE_COMMAND_OPS.has(op), `PAGE_COMMAND_OPS must allow settings page command "${op}"`);
     for (const script of ['/preview.js', '/shared/scales.js', '/shared/text-ink.js',
         '/shared/lyrics-status.js', '/shared/overlay-geometry.js', '/shared/pitch-layout.js'])
         assert.match((await request(port, {urlPath: script})).headers['content-type'], /^text\/javascript/u, script);
@@ -344,6 +352,9 @@ test('the settings page reads and writes the settings the shell reads, and only 
     await waitFor(async () => await stored('font-size') === '48.0', 'the reset size in dconf');
 
     assert.deepEqual(JSON.parse((await pagePost(port, '/api/command', {op: 'tooSlow'})).body), {ok: false}, 'no song playing');
+    const freshIdle = await pagePost(port, '/api/command', {op: 'generateFromScratch'});
+    assert.equal(freshIdle.status, 200, 'generateFromScratch is accepted by /api/command');
+    assert.deepEqual(JSON.parse(freshIdle.body), {ok: false, error: 'automatic lyric timing is not configured'});
     assert.equal((await pagePost(port, '/api/command', {op: 'pitch', wanted: true})).status, 400, 'the microphone is the shell’s');
     assert.equal((await pagePost(port, '/api/pitch/fit', {})).status, 409, 'nothing sung yet');
 
@@ -464,8 +475,16 @@ setTimeout(() => {
     // ArchiveSync automatically sends the newly generated LRC to ytarchive.
     await waitFor(() => stub.archived.some(req => req.path === '/api/lyrics' && req.body.video_id === 'genvid12345' &&
         req.body.lrc?.includes('[00:02.00] Generated opening line')), 'generated LRC sent to ytarchive');
-    // Manual regenerate works through /api/command.
-    assert.deepEqual(JSON.parse((await pagePost(port, '/api/command', {op: 'generate'})).body), {ok: true});
+    // Manual regenerate and generate-from-scratch both work through /api/command.
+    const regen = await pagePost(port, '/api/command', {op: 'generate'});
+    assert.equal(regen.status, 200);
+    assert.deepEqual(JSON.parse(regen.body), {ok: true});
+    await waitFor(async () => JSON.parse((await request(port)).body).state.lyrics === 'timed', 'regenerated lyrics');
+    const fresh = await pagePost(port, '/api/command', {op: 'generateFromScratch'});
+    assert.equal(fresh.status, 200);
+    assert.deepEqual(JSON.parse(fresh.body), {ok: true});
+    await waitFor(async () => JSON.parse((await request(port)).body).state.lyrics === 'generating', 'from-scratch generation started');
+    await waitFor(async () => JSON.parse((await request(port)).body).state.lyrics === 'timed', 'from-scratch lyrics finished');
     assert.doesNotMatch(serviceLog, /Generated opening line/u, 'service logs must never print lyric text');
     assert.doesNotMatch(serviceLog, /CRITICAL|WARNING|Error/u, serviceLog);
 });

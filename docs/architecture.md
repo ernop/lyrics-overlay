@@ -183,16 +183,17 @@ below.
 The settings page's paths need the same Host. `GET /settings`, its
 scripts (`settings.js`, `preview.js`), its stylesheet, the shared modules
 it imports and the favicon are files read at start; `GET /` redirects to
-`/settings`. Its right inspector renders Lyrics, Pitch, and Song as one
-continuous page; the sticky stage independently selects the lyric preview,
-pitch preview, or Screen map. It reads `GET /api/state`, `/api/settings` (the schema and
+`/settings`. Its sticky left column pairs the live preview (`Lyrics`,
+`Pitch`, or `Screen map`) with the pinned active-song & lyric-sets deck;
+its right inspector renders `Lyrics` and `Pitch` in a compact 2-column grid.
+It reads `GET /api/state`, `/api/settings` (the schema and
 the values, including writable `box` and `pitch-box`), `/api/fonts`,
 `/api/microphones` and `/api/monitors` (logical monitor geometry from
 Mutter's `DisplayConfig` D-Bus interface, falling back to `1920x1080`
 when unavailable). Its POSTs (`/api/settings {changes}`,
-`/api/settings/reset {keys}`, `/api/command {op}` for the song's
-commands, `/api/pitch/fit`) need an Origin equal to `http://<Host>`, the
-page itself, and JSON.
+`/api/settings/reset {keys}`, `/api/command {op}` validated against
+`PAGE_COMMAND_OPS` exported from `service/core.js`, `/api/pitch/fit`) need
+an Origin equal to `http://<Host>`, the page itself, and JSON.
 
 libsoup (3.6, and its main branch as of 2026-11) closes the connection
 after every 204 without saying so: writing one drops the length header a
@@ -382,9 +383,11 @@ Active only when `lyricsGenerator` is configured in `settings.json`
   notifying `ArchiveSync.observeVideoLyrics`), are replaced by a new
   `generate`, or are cancelled explicitly via `Command {op: 'cancelGenerate'}`.
   `Command {op: 'generateFromScratch'}` has the same manual lifetime and
-  duration behavior but passes an empty `plainLyrics` input, guaranteeing
-  direct audio transcription instead of alignment against a possibly wrong
-  lyric set.
+  duration behavior, preempts any in-flight Mode A (`hasPlain`) alignment on
+  the same video, passes an empty `plainLyrics` input to guarantee direct
+  audio transcription instead of alignment against a possibly wrong lyric
+  set, and clears the stale timed candidate from `_lineAt()` so the quiet
+  timing status pill and early transcribed partials show immediately.
 - **Audio & transcription**: `generate-lyrics.py` acquires audio on its own
   (streaming an already-cached `<ytarchiveUrl>/media/<videoId>/_condensed/soundtrack.mp3`
   to disk only opportunistically when configured) via `yt-dlp --no-playlist

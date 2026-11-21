@@ -1,7 +1,7 @@
 // Lyrics overlay settings page (http://localhost:8792/settings):
-// Two-column pro studio layout with a sticky left live stage (switching
-// cleanly between lyric preview, pitch preview, and interactive Screen Map)
-// beside one calm borderless inspector containing Lyrics, Pitch, and Song.
+// Dense two-column studio layout: a sticky left stage holding the live
+// preview / screen map plus pinned active-song timing, actions, and lyric
+// sets, beside a compact 2-column Lyrics & Pitch control deck.
 
 import {LYRICS_STATUS_TEXT} from '/shared/lyrics-status.js';
 import {BORDER_DEFAULTS, PLACEMENT_PRESETS, borderSpec} from '/shared/overlay-geometry.js';
@@ -62,6 +62,8 @@ const model = {
     pitchPreview: null,
     stageSync: null,
     lyricsModal: null,
+    actionError: '',
+    connectionError: '',
 };
 
 // ----- service
@@ -79,10 +81,28 @@ async function call(method, path, body) {
     return json;
 }
 
-function showBanner(text) {
+function syncBanner() {
     const banner = document.getElementById('banner');
-    banner.textContent = text;
+    const text = model.connectionError || model.actionError;
     banner.hidden = !text;
+    if (!text) {
+        banner.replaceChildren();
+        return;
+    }
+    const dismiss = model.actionError && !model.connectionError
+        ? [pressButton('Dismiss', () => showBanner(''), {class: 'compact'})]
+        : [];
+    banner.replaceChildren(el('span', {}, text), ...dismiss);
+}
+
+function showBanner(text) {
+    model.actionError = text;
+    syncBanner();
+}
+
+function showConnectionBanner(text) {
+    model.connectionError = text;
+    syncBanner();
 }
 
 function activeMonitor(monitorKey = 'box-monitor') {
@@ -215,9 +235,9 @@ async function pollState() {
             fn(model.state, model.addon, model.line);
         if (lineChanged)
             render();
-        showBanner('');
+        showConnectionBanner('');
     } catch (error) {
-        showBanner(`Could not reach the service: ${error.message}`);
+        showConnectionBanner(`Could not reach the service: ${error.message}`);
     }
 }
 
@@ -241,21 +261,14 @@ function view(fn) {
     model.views.push(fn);
 }
 
-function section(title, headRight, ...rows) {
-    const head = el('div', {class: 'section-head'}, el('h3', {}, title));
-    if (headRight)
-        head.append(headRight);
-    return el('section', {class: 'section'}, head, ...rows);
-}
-
 function pageSection(id, title, panel) {
     return el('section', {id, class: 'settings-group'},
         el('h2', {class: 'settings-group-title'}, title),
         panel);
 }
 
-function row(label, ...controls) {
-    return el('div', {class: 'row'},
+function cell(label, {span = false} = {}, ...controls) {
+    return el('div', {class: span ? 'cell span-2' : 'cell'},
         el('div', {class: 'label'}, label),
         el('div', {class: 'controls'}, ...controls));
 }
@@ -273,25 +286,25 @@ function pressButton(text, onClick, attrs = {}) {
     return button;
 }
 
-function segmentedRow(key, label, choices) {
+function segmentedCell(key, label, choices, {span = false, compact = false, extra = []} = {}) {
     const buttons = Object.entries(choices).map(([value, text]) => {
         const button = pressButton(text, () => set(key, value));
         view(values => button.setAttribute('aria-pressed', String(values[key] === value)));
         return button;
     });
-    return row(label, el('div', {class: 'seg'}, ...buttons));
+    return cell(label, {span}, el('div', {class: compact ? 'seg compact' : 'seg'}, ...buttons), ...extra);
 }
 
-function switchRow(key, label) {
+function switchCell(key, label, {span = false, extra = []} = {}) {
     const button = pressButton('', () => set(key, !model.values[key]), {class: 'switch'});
     view(values => {
         button.setAttribute('aria-pressed', String(values[key]));
         button.textContent = values[key] ? 'On' : 'Off';
     });
-    return row(label, button);
+    return cell(label, {span}, button, ...extra);
 }
 
-function sliderRow(key, label, {ticks, format, log = false, integer = false, stepBy = null}) {
+function sliderCell(key, label, {ticks, format, log = false, integer = false, stepBy = null, span = false}) {
     const {min, max} = model.schema[key];
     const toPosition = value => (log ? Math.log(value / min) / Math.log(max / min) : (value - min) / (max - min));
     const fromPosition = position => {
@@ -332,10 +345,12 @@ function sliderRow(key, label, {ticks, format, log = false, integer = false, ste
             input.value = String(Math.round(toPosition(value) * SLIDER_STEPS));
         input.setAttribute('aria-valuetext', format(value));
     });
-    return row(label, el('div', {class: 'slider'},
-        shown,
-        el('div', {class: 'track'}, input, tickMarks),
-        el('div', {class: 'slider-steppers'}, minus, plus)));
+    return el('div', {class: span ? 'cell cell-slider span-2' : 'cell cell-slider'},
+        el('div', {class: 'slider-head'},
+            el('div', {class: 'label'}, label),
+            shown,
+            el('div', {class: 'slider-steppers'}, minus, plus)),
+        el('div', {class: 'track'}, input, tickMarks));
 }
 
 const unit = (suffix, decimals = 0) => value => `${decimals ? Number(value).toFixed(decimals).replace(/\.0$/u, '') : Math.round(value)} ${suffix}`;
@@ -397,17 +412,16 @@ function buildTopBar() {
     );
 }
 
-// ----- Left sticky Live Stage (unified Lyric/Pitch Preview + Screen Map)
+// ----- Left sticky Live Stage (Preview / Screen Map + Pinned Song Deck)
 
 function buildStage() {
     const stage = document.getElementById('stage');
 
-    // Explicit preview selector remains useful now all settings share one page.
-    const lyricModeBtn = pressButton('Lyrics preview', () => {
+    const lyricModeBtn = pressButton('Lyrics', () => {
         model.stageMode = 'lyric';
         model.stageSync();
     });
-    const pitchModeBtn = pressButton('Pitch preview', () => {
+    const pitchModeBtn = pressButton('Pitch', () => {
         model.stageMode = 'pitch';
         model.stageSync();
     });
@@ -439,7 +453,7 @@ function buildStage() {
     const lyricCanvas = el('canvas', {'aria-label': 'Live lyric preview'});
     const telemetryLine = el('span', {class: 'metric-value'}, '48 px');
     model.lyricPreview = new LyricPreviewCanvas(lyricCanvas, layout => {
-        telemetryLine.textContent = `${Math.round(layout.fontSize)} px \u00b7 ${layout.lines.length} ${layout.lines.length === 1 ? 'line' : 'lines'} \u00b7 ${layout.boxW}\u00d7${layout.boxH} px`;
+        telemetryLine.textContent = `${Math.round(layout.fontSize)} px \u00b7 ${layout.lines.length} ${layout.lines.length === 1 ? 'line' : 'lines'} \u00b7 ${layout.boxW}\u00d7${layout.boxH}`;
     });
 
     const sampleInput = el('input', {
@@ -461,7 +475,7 @@ function buildStage() {
         render();
     });
 
-    const lyricPane = el('div', {style: {display: 'flex', flexDirection: 'column', gap: '0.75rem'}},
+    const lyricPane = el('div', {class: 'stage-pane'},
         el('div', {class: 'stage-canvas-frame'}, lyricCanvas),
         el('div', {class: 'sample-row'},
             el('label', {class: 'sample-label', for: 'sample-input'}, 'Sample'),
@@ -469,7 +483,7 @@ function buildStage() {
             clearSampleBtn),
         el('div', {class: 'stage-meta'},
             telemetryLine,
-            el('span', {class: 'hint-line'}, 'Ctrl+drag lyric on desktop to move; resize here'),
+            el('span', {class: 'hint-line'}, 'Ctrl+drag on desktop to move'),
         ),
     );
 
@@ -483,11 +497,11 @@ function buildStage() {
             : `${values['pitch-follow-span']} st follow`;
         pitchMeta.textContent = `${rangeText} \u00b7 ${Number(values['pitch-window-seconds']).toFixed(1).replace(/\.0$/u, '')} s \u00b7 ${values['pitch-dock']}`;
     });
-    const pitchPane = el('div', {style: {display: 'flex', flexDirection: 'column', gap: '0.75rem'}, hidden: 'hidden'},
+    const pitchPane = el('div', {class: 'stage-pane', hidden: 'hidden'},
         el('div', {class: 'pitch-stage-frame'}, pitchCanvas),
         el('div', {class: 'stage-meta'},
             pitchMeta,
-            el('span', {class: 'hint-line'}, 'Ctrl+drag pitch panel edges on desktop to resize or dock'),
+            el('span', {class: 'hint-line'}, 'Ctrl+drag panel edges on desktop to resize or dock'),
         ),
     );
 
@@ -542,7 +556,7 @@ function buildStage() {
     const mapPane = el('div', {class: 'map-stage-wrap', hidden: 'hidden'},
         monitorBar,
         mapStage,
-        el('div', {class: 'stage-meta'}, mapMetrics, el('span', {class: 'hint-line'}, 'Drag box or any edge; hold Shift to disable snap')),
+        el('div', {class: 'stage-meta'}, mapMetrics, el('span', {class: 'hint-line'}, 'Drag box or edge; Shift disables snap')),
         snapBar,
     );
 
@@ -565,11 +579,12 @@ function buildStage() {
         lyricPane,
         pitchPane,
         mapPane,
+        buildSongDeck(),
     );
     model.stageSync();
 }
 
-// ----- Lyrics (clean 8-control pro inspector)
+// ----- Lyrics (compact 2-column inspector)
 
 function classifyFont(family) {
     const lower = family.toLowerCase();
@@ -582,21 +597,21 @@ function classifyFont(family) {
     return 'sans';
 }
 
-function fontPickerRow() {
+function fontPickerCells() {
     let families = [];
     let category = 'all';
     let expanded = false;
 
     const current = el('span', {class: 'font-current-name'});
-    const toggleBtn = pressButton('Choose font', () => {
+    const toggleBtn = pressButton('Choose', () => {
         expanded = !expanded;
         browser.hidden = !expanded;
         toggleBtn.setAttribute('aria-pressed', String(expanded));
-        toggleBtn.textContent = expanded ? 'Close list' : 'Choose font';
+        toggleBtn.textContent = expanded ? 'Close' : 'Choose';
         if (expanded)
             search.focus();
-    }, {class: 'compact'});
-    const defaultBtn = pressButton('Desktop default', () => set('font-family', ''), {class: 'compact'});
+    }, {class: 'compact', 'aria-label': 'Choose font'});
+    const defaultBtn = pressButton('Default', () => set('font-family', ''), {class: 'compact'});
 
     const search = el('input', {type: 'search', placeholder: 'Filter fonts...', 'aria-label': 'Filter fonts'});
     const countPill = el('span', {class: 'pill'}, 'Loading...');
@@ -665,13 +680,12 @@ function fontPickerRow() {
         list,
     );
 
-    return row('Font',
-        el('div', {class: 'font-summary-row'}, current, toggleBtn, defaultBtn),
-        browser,
-    );
+    const summaryCell = cell('Font', {},
+        el('div', {class: 'font-summary-row'}, current, toggleBtn, defaultBtn));
+    return [summaryCell, browser];
 }
 
-function textColorRow() {
+function textColorCell() {
     const swatches = Object.entries(TEXT_COLORS).map(([name, rgb]) => {
         const hex = hexColor(rgb);
         const label = name[0].toUpperCase() + name.slice(1);
@@ -701,13 +715,13 @@ function textColorRow() {
         hexOut.textContent = hex.toUpperCase();
     });
 
-    return row('Color', el('div', {class: 'swatch-strip'},
+    return cell('Color', {span: true}, el('div', {class: 'swatch-strip'},
         ...swatches,
         el('span', {class: 'color-custom-wrap'}, picker, hexOut),
     ));
 }
 
-function backdropColorRow() {
+function backdropColorCell() {
     const swatches = BACKDROP_SWATCHES.map(([hex, label]) => {
         const btn = pressButton('', () => set('text-backdrop-color', hex), {
             class: 'dot-swatch',
@@ -727,7 +741,7 @@ function backdropColorRow() {
         hexOut.textContent = hex.toUpperCase();
     });
     return whenVisible(
-        row('Backdrop color', el('div', {class: 'swatch-strip'},
+        cell('Backdrop color', {span: true}, el('div', {class: 'swatch-strip'},
             ...swatches,
             el('span', {class: 'color-custom-wrap'}, picker, hexOut),
         )),
@@ -735,7 +749,7 @@ function backdropColorRow() {
     );
 }
 
-const RING_TICKS = [0.02, 0.08, 0.15, 0.25, 0.35];
+const RING_TICKS = [0.02, 0.12, 0.24, 0.35];
 const RING_MIN = 0.02;
 const RING_MAX = 0.35;
 const RING_RESET_KEYS = [
@@ -746,52 +760,27 @@ const RING_RESET_KEYS = [
     'text-border-4-color', 'text-border-4-width',
 ];
 
-function borderRingsRows() {
+function borderCells() {
     let activeIdx = 0;
 
-    const ringChipsWrap = el('div', {class: 'ring-chips'});
     const cloudBtn = pressButton('', () => set('text-border-cloud', !model.values['text-border-cloud']), {class: 'compact'});
     const resetBtn = pressButton('Reset rings', () => post('/api/settings/reset', {keys: RING_RESET_KEYS}), {
         class: 'compact',
         hidden: 'hidden',
     });
-    const chipsRow = row('Rings', ringChipsWrap, cloudBtn, resetBtn);
+    const borderModeCell = segmentedCell('text-border', 'Border',
+        {none: 'None', single: 'Single', double: 'Double', triple: 'Triple', quad: 'Quad', glow: 'Glow'},
+        {span: true, extra: [cloudBtn, resetBtn]});
 
-    const colorLabel = el('div', {class: 'label'}, 'Ring 1 color');
-    const autoColorBtn = pressButton('Auto', () => set(`text-border-${activeIdx + 1}-color`, ''), {class: 'compact'});
-    const ringSwatches = [
-        ['#000000', 'Black'],
-        ['#ffffff', 'White'],
-        ...Object.entries(TEXT_COLORS)
-            .filter(([name]) => name !== 'black' && name !== 'white')
-            .map(([name, rgb]) => [hexColor(rgb), name[0].toUpperCase() + name.slice(1)]),
-    ].map(([hex, label]) => {
-        const btn = pressButton('', () => set(`text-border-${activeIdx + 1}-color`, hex), {
-            class: 'dot-swatch',
-            title: label,
-            'aria-label': `Ring color ${label}`,
-            style: {background: hex},
-        });
-        return {hex, btn};
-    });
-    const colorPicker = el('input', {type: 'color', 'aria-label': 'Custom ring color'});
-    const colorHex = el('span', {class: 'hex-readout'});
-    colorPicker.addEventListener('input', () => set(`text-border-${activeIdx + 1}-color`, colorPicker.value.toLowerCase()));
-    const colorRow = el('div', {class: 'row'},
-        colorLabel,
-        el('div', {class: 'controls'},
-            el('div', {class: 'swatch-strip'},
-                autoColorBtn,
-                ...ringSwatches.map(s => s.btn),
-                el('span', {class: 'color-custom-wrap'}, colorPicker, colorHex),
-            )));
+    const ringChipsWrap = el('div', {class: 'ring-chips'});
+    const chipsCell = cell('Rings', {}, ringChipsWrap);
 
     const widthLabel = el('div', {class: 'label'}, 'Ring 1 width');
     const widthVal = el('span', {class: 'value'});
     const widthInput = el('input', {type: 'range', min: '0', max: String(SLIDER_STEPS), step: '1', 'aria-label': 'Ring width'});
     const toPos = v => Math.round(((v - RING_MIN) / (RING_MAX - RING_MIN)) * SLIDER_STEPS);
     const fromPos = p => Number((RING_MIN + (p / SLIDER_STEPS) * (RING_MAX - RING_MIN)).toFixed(3));
-    const widthTicks = el('div', {class: 'ticks'}, ...RING_TICKS.map(tick => el('span', {
+    const widthTicks = el('div', {class: 'ticks', 'aria-hidden': 'true'}, ...RING_TICKS.map(tick => el('span', {
         class: 'tick',
         style: {left: `${((tick - RING_MIN) / (RING_MAX - RING_MIN)) * 100}%`},
     }, `${Math.round(tick * 100)}%`)));
@@ -826,13 +815,40 @@ function borderRingsRows() {
     widthInput.addEventListener('pointercancel', releaseWidth);
     widthInput.addEventListener('blur', releaseWidth);
     widthInput.addEventListener('input', () => set(`text-border-${activeIdx + 1}-width`, fromPos(Number(widthInput.value))));
-    const widthRow = el('div', {class: 'row'},
-        widthLabel,
+    const widthCell = el('div', {class: 'cell cell-slider'},
+        el('div', {class: 'slider-head'},
+            widthLabel,
+            widthVal,
+            el('div', {class: 'slider-steppers'}, downBtn, upBtn, autoWidthBtn)),
+        el('div', {class: 'track'}, widthInput, widthTicks));
+
+    const colorLabel = el('div', {class: 'label'}, 'Ring 1 color');
+    const autoColorBtn = pressButton('Auto', () => set(`text-border-${activeIdx + 1}-color`, ''), {class: 'compact'});
+    const ringSwatches = [
+        ['#000000', 'Black'],
+        ['#ffffff', 'White'],
+        ...Object.entries(TEXT_COLORS)
+            .filter(([name]) => name !== 'black' && name !== 'white')
+            .map(([name, rgb]) => [hexColor(rgb), name[0].toUpperCase() + name.slice(1)]),
+    ].map(([hex, label]) => {
+        const btn = pressButton('', () => set(`text-border-${activeIdx + 1}-color`, hex), {
+            class: 'dot-swatch',
+            title: label,
+            'aria-label': `Ring color ${label}`,
+            style: {background: hex},
+        });
+        return {hex, btn};
+    });
+    const colorPicker = el('input', {type: 'color', 'aria-label': 'Custom ring color'});
+    const colorHex = el('span', {class: 'hex-readout'});
+    colorPicker.addEventListener('input', () => set(`text-border-${activeIdx + 1}-color`, colorPicker.value.toLowerCase()));
+    const colorCell = el('div', {class: 'cell span-2'},
+        colorLabel,
         el('div', {class: 'controls'},
-            el('div', {class: 'slider'},
-                widthVal,
-                el('div', {class: 'track'}, widthInput, widthTicks),
-                el('span', {class: 'slider-steppers'}, downBtn, upBtn, autoWidthBtn),
+            el('div', {class: 'swatch-strip'},
+                autoColorBtn,
+                ...ringSwatches.map(s => s.btn),
+                el('span', {class: 'color-custom-wrap'}, colorPicker, colorHex),
             )));
 
     const ringName = (border, idx) => (border === 'glow' && idx === 1 ? 'Halo' : `Ring ${idx + 1}`);
@@ -842,11 +858,14 @@ function borderRingsRows() {
         const defs = BORDER_DEFAULTS[border] ?? [];
         const count = defs.length;
         const hidden = count === 0;
-        chipsRow.hidden = hidden;
-        colorRow.hidden = hidden;
-        widthRow.hidden = hidden;
-        if (hidden)
+        cloudBtn.hidden = hidden;
+        chipsCell.hidden = hidden;
+        widthCell.hidden = hidden;
+        colorCell.hidden = hidden;
+        if (hidden) {
+            resetBtn.hidden = true;
             return;
+        }
         if (activeIdx >= count)
             activeIdx = count - 1;
 
@@ -899,10 +918,10 @@ function borderRingsRows() {
     };
 
     view(syncUI);
-    return [chipsRow, colorRow, widthRow];
+    return [borderModeCell, chipsCell, widthCell, colorCell];
 }
 
-function furiganaRow() {
+function furiganaCell() {
     const toggle = pressButton('', () => set('text-furigana', !model.values['text-furigana']), {class: 'switch'});
     const statusPill = el('span', {class: 'pill pill-alert', hidden: 'hidden'});
     const syncStatus = () => {
@@ -916,46 +935,39 @@ function furiganaRow() {
         syncStatus();
     });
     model.stateViews.push(syncStatus);
-    return row('Furigana', toggle, statusPill);
+    return cell('Furigana', {}, toggle, statusPill);
 }
 
-function buildLyricsTab() {
+function buildLyricsGrid() {
     const boldBtn = pressButton('Bold', () => set('font-bold', !model.values['font-bold']));
     const italicBtn = pressButton('Italic', () => set('font-italic', !model.values['font-italic']));
     view(v => {
         boldBtn.setAttribute('aria-pressed', String(v['font-bold']));
         italicBtn.setAttribute('aria-pressed', String(v['font-italic']));
     });
+    const [fontCell, fontBrowser] = fontPickerCells();
 
-    const typography = section('Typography', null,
-        fontPickerRow(),
-        sliderRow('font-size', 'Size', {ticks: [16, 28, 48, 84, 144, 256], format: unit('px'), log: true}),
-        row('Style', el('div', {class: 'seg'}, boldBtn, italicBtn)),
-        furiganaRow(),
-    );
-
-    const appearance = section('Appearance', null,
-        textColorRow(),
-        segmentedRow('text-border', 'Border', {none: 'None', single: 'Single', double: 'Double', triple: 'Triple', quad: 'Quad', glow: 'Glow'}),
-        ...borderRingsRows(),
-        segmentedRow('text-backdrop', 'Backdrop', {none: 'None', pill: 'Behind text', box: 'Full bar'}),
-        backdropColorRow(),
-        whenVisible(sliderRow('text-backdrop-opacity', 'Backdrop opacity', {
+    return el('div', {class: 'grid-2'},
+        fontCell,
+        sliderCell('font-size', 'Size', {ticks: [16, 48, 128, 256], format: unit('px'), log: true}),
+        fontBrowser,
+        textColorCell(),
+        ...borderCells(),
+        cell('Style', {}, el('div', {class: 'seg'}, boldBtn, italicBtn)),
+        furiganaCell(),
+        segmentedCell('text-align', 'Alignment', {left: 'Left', center: 'Center', right: 'Right'}),
+        segmentedCell('transition', 'Transition', {'fade-in': 'Fade (0.15 s)', instant: 'Instant'}),
+        segmentedCell('text-backdrop', 'Backdrop', {none: 'None', pill: 'Behind text', box: 'Full bar'}),
+        whenVisible(sliderCell('text-backdrop-opacity', 'Backdrop opacity', {
             ticks: [0, 0.25, 0.5, 0.75, 1], format: percent, stepBy: 0.05,
         }), v => v['text-backdrop'] !== 'none'),
+        backdropColorCell(),
     );
-
-    const layoutMotion = section('Layout & motion', null,
-        segmentedRow('text-align', 'Alignment', {left: 'Left', center: 'Center', right: 'Right'}),
-        segmentedRow('transition', 'Transition', {'fade-in': 'Fade (0.15 s)', instant: 'Instant'}),
-    );
-
-    return el('div', {class: 'panel'}, typography, appearance, layoutMotion);
 }
 
-// ----- Pitch
+// ----- Pitch (compact 2-column inspector)
 
-function lineColorRow() {
+function lineColorCell() {
     const swatches = LINE_COLORS.map(([hex, label]) => {
         const btn = pressButton('', () => set('pitch-line-color', hex), {
             class: 'dot-swatch',
@@ -974,13 +986,13 @@ function lineColorRow() {
         custom.value = hex;
         hexOut.textContent = hex.toUpperCase();
     });
-    return row('Line color', el('div', {class: 'swatch-strip'},
+    return cell('Line color', {span: true}, el('div', {class: 'swatch-strip'},
         ...swatches,
         el('span', {class: 'color-custom-wrap'}, custom, hexOut),
     ));
 }
 
-function noteRow(key, label) {
+function noteCell(key, label) {
     const {min, max} = model.schema[key];
     const shown = el('span', {class: 'value'});
     const other = key === 'pitch-range-bottom' ? 'pitch-range-top' : 'pitch-range-bottom';
@@ -999,10 +1011,10 @@ function noteRow(key, label) {
     view(values => {
         shown.textContent = noteLabel(values[key], SHARPS);
     });
-    return row(label, steps[0], steps[1], shown, steps[2], steps[3]);
+    return cell(label, {}, steps[0], steps[1], shown, steps[2], steps[3]);
 }
 
-function rootRow() {
+function rootCell() {
     const buttons = Array.from({length: 12}, (_, root) => {
         const button = pressButton('', () => set('pitch-scale-root', root), {class: 'compact'});
         view(values => {
@@ -1011,10 +1023,10 @@ function rootRow() {
         });
         return button;
     });
-    return whenVisible(row('Scale root', el('div', {class: 'seg compact'}, ...buttons)), values => values['pitch-scale'] === 'fixed');
+    return whenVisible(cell('Scale root', {span: true}, el('div', {class: 'seg compact'}, ...buttons)), values => values['pitch-scale'] === 'fixed');
 }
 
-function microphoneRows() {
+function microphoneBand() {
     const list = el('div', {class: 'list short', role: 'listbox', 'aria-label': 'Microphones', style: {width: '100%'}});
     let found = {microphones: [], defaultName: ''};
     const buildList = () => {
@@ -1037,99 +1049,119 @@ function microphoneRows() {
     view(buildList);
     refresh();
     setInterval(refresh, MICROPHONE_POLL_MS);
-    return [row('Microphone', list), switchRow('pitch-echo-cancel', 'Echo cancelling')];
+
+    const echoBtn = pressButton('', () => set('pitch-echo-cancel', !model.values['pitch-echo-cancel']), {class: 'switch'});
+    view(values => {
+        echoBtn.setAttribute('aria-pressed', String(values['pitch-echo-cancel']));
+        echoBtn.textContent = values['pitch-echo-cancel'] ? 'On' : 'Off';
+    });
+
+    return el('div', {class: 'mic-band'},
+        el('div', {class: 'mic-col'}, el('div', {class: 'label'}, 'Microphone'), list),
+        el('div', {class: 'mic-col'}, el('div', {class: 'label'}, 'Echo cancel'), echoBtn),
+    );
 }
 
-function buildPitchTab() {
-    const placement = section('Placement', null,
-        segmentedRow('pitch-dock', 'Dock', {below: 'Below', above: 'Above', left: 'Left', right: 'Right', separate: 'Separate'}),
-        whenVisible(sliderRow('pitch-docked-height', 'Docked height', {
-            ticks: [0.03, 0.15, 0.3, 0.45, 0.6], format: percent, stepBy: 0.02,
+function buildPitchGrid() {
+    const scaleTypes = Object.fromEntries(Object.entries(SCALES).map(([type, scale]) => [type, scale.name[0].toUpperCase() + scale.name.slice(1)]));
+    const centsBtn = pressButton('', () => set('pitch-readout-cents', !model.values['pitch-readout-cents']), {class: 'compact'});
+    view(values => {
+        centsBtn.hidden = values['pitch-readout'] === 'off';
+        centsBtn.setAttribute('aria-pressed', String(values['pitch-readout-cents']));
+        centsBtn.textContent = values['pitch-readout-cents'] ? 'Cents: On' : 'Cents: Off';
+    });
+
+    return el('div', {class: 'grid-2'},
+        segmentedCell('pitch-dock', 'Dock', {below: 'Below', above: 'Above', left: 'Left', right: 'Right', separate: 'Separate'}),
+        whenVisible(sliderCell('pitch-docked-height', 'Docked height', {
+            ticks: [0.03, 0.2, 0.4, 0.6], format: percent, stepBy: 0.02,
         }), v => v['pitch-dock'] === 'below' || v['pitch-dock'] === 'above'),
-        whenVisible(sliderRow('pitch-docked-width', 'Docked width', {
-            ticks: [0.05, 0.18, 0.32, 0.46, 0.6], format: percent, stepBy: 0.02,
+        whenVisible(sliderCell('pitch-docked-width', 'Docked width', {
+            ticks: [0.05, 0.2, 0.4, 0.6], format: percent, stepBy: 0.02,
         }), v => v['pitch-dock'] === 'left' || v['pitch-dock'] === 'right'),
-        whenVisible(row('Separate box',
-            el('span', {class: 'note'}, 'Switch the stage to Screen map to place it.'),
+        whenVisible(cell('Separate box', {},
+            pressButton('Place on Screen map', () => {
+                model.stageMode = 'map';
+                model.stageSync();
+            }, {class: 'compact'}),
             pressButton('Reset box', () => post('/api/settings/reset', {keys: ['pitch-box', 'pitch-box-monitor']}), {class: 'compact'}),
         ), v => v['pitch-dock'] === 'separate'),
-    );
 
-    const range = section('Note range & timing', null,
-        segmentedRow('pitch-range', 'Notes shown', {fixed: 'Fixed range', follow: 'Follow voice'}),
-        whenVisible(noteRow('pitch-range-top', 'Highest note'), v => v['pitch-range'] === 'fixed'),
-        whenVisible(noteRow('pitch-range-bottom', 'Lowest note'), v => v['pitch-range'] === 'fixed'),
-        whenVisible(row('Auto-fit', pressButton('Fit to my last 30 s of singing', () => post('/api/pitch/fit', {}))), v => v['pitch-range'] === 'fixed'),
-        whenVisible(sliderRow('pitch-follow-span', 'Voice span', {
-            ticks: [6, 12, 18, 24, 36], format: unit('semitones'), integer: true, stepBy: 1,
+        segmentedCell('pitch-range', 'Notes', {fixed: 'Fixed', follow: 'Follow voice'}),
+        whenVisible(cell('Auto-fit', {},
+            pressButton('Fit to last 30 s', () => post('/api/pitch/fit', {}), {class: 'compact'}),
+        ), v => v['pitch-range'] === 'fixed'),
+        whenVisible(sliderCell('pitch-follow-span', 'Voice span', {
+            ticks: [6, 12, 24, 36], format: unit('st'), integer: true, stepBy: 1,
         }), v => v['pitch-range'] === 'follow'),
-        sliderRow('pitch-window-seconds', 'Time across', {ticks: [2, 5, 10, 20, 45, 120], format: unit('s', 1), log: true}),
-        switchRow('pitch-time-in-silence', 'Scroll in silence'),
-        sliderRow('pitch-rate', 'Analyses per s', {ticks: [10, 25, 50, 75, 100], format: unit('per s'), integer: true, stepBy: 5}),
-    );
+        whenVisible(noteCell('pitch-range-top', 'Highest'), v => v['pitch-range'] === 'fixed'),
+        whenVisible(noteCell('pitch-range-bottom', 'Lowest'), v => v['pitch-range'] === 'fixed'),
 
-    const scaleTypes = Object.fromEntries(Object.entries(SCALES).map(([type, scale]) => [type, scale.name[0].toUpperCase() + scale.name.slice(1)]));
-    const trace = section('Trace & readout', null,
-        sliderRow('pitch-line-width', 'Line thickness', {ticks: [0.5, 1, 2, 4, 8, 12], format: unit('px', 1), log: true}),
-        lineColorRow(),
-        sliderRow('pitch-background-opacity', 'Background', {ticks: [0, 0.25, 0.5, 0.75, 1], format: percent, stepBy: 0.05}),
-        segmentedRow('pitch-labels', 'Note names', {all: 'All', scale: 'Scale', c: 'C only', none: 'None'}),
-        whenVisible(sliderRow('pitch-label-size', 'Note name size', {
-            ticks: [8, 12, 16, 24, 32], format: unit('px'), stepBy: 1,
+        sliderCell('pitch-window-seconds', 'Time across', {ticks: [2, 5, 15, 45, 120], format: unit('s', 1), log: true}),
+        sliderCell('pitch-rate', 'Analyses', {ticks: [10, 40, 70, 100], format: v => `${Math.round(v)}/s`, integer: true, stepBy: 5}),
+
+        sliderCell('pitch-line-width', 'Line width', {ticks: [0.5, 1.5, 4, 12], format: unit('px', 1), log: true}),
+        sliderCell('pitch-background-opacity', 'Background', {ticks: [0, 0.25, 0.5, 0.75, 1], format: percent, stepBy: 0.05}),
+        lineColorCell(),
+
+        segmentedCell('pitch-labels', 'Note names', {all: 'All', scale: 'Scale', c: 'C only', none: 'None'}),
+        whenVisible(sliderCell('pitch-label-size', 'Name size', {
+            ticks: [8, 16, 24, 32], format: unit('px'), stepBy: 1,
         }), v => v['pitch-labels'] !== 'none'),
-        segmentedRow('pitch-readout', 'Current note', {
+
+        segmentedCell('pitch-readout', 'Current note', {
             'right': 'Right', 'left': 'Left', 'top-right': 'Top R',
             'top-left': 'Top L', 'bottom-right': 'Bot R', 'bottom-left': 'Bot L', 'off': 'Off',
-        }),
-        whenVisible(sliderRow('pitch-readout-size', 'Readout size', {
-            ticks: [0.15, 0.35, 0.55, 0.75, 1], format: percent, stepBy: 0.05,
+        }, {span: true, compact: true, extra: [centsBtn]}),
+        whenVisible(sliderCell('pitch-readout-size', 'Readout size', {
+            ticks: [0.15, 0.4, 0.7, 1], format: percent, stepBy: 0.05,
         }), v => v['pitch-readout'] !== 'off'),
-        whenVisible(switchRow('pitch-readout-cents', 'Show cents'), v => v['pitch-readout'] !== 'off'),
-    );
+        switchCell('pitch-time-in-silence', 'Scroll in silence'),
 
-    const scaleMic = section('Scale & microphone', null,
-        segmentedRow('pitch-scale', 'Scale', {detect: 'Detect from song', fixed: 'Fixed', none: 'None'}),
-        rootRow(),
-        whenVisible(segmentedRow('pitch-scale-type', 'Scale type', scaleTypes), v => v['pitch-scale'] === 'fixed'),
-        whenVisible(switchRow('pitch-show-key', 'Name scale'), v => v['pitch-scale'] !== 'none'),
-        ...microphoneRows(),
+        segmentedCell('pitch-scale', 'Scale', {detect: 'Detect', fixed: 'Fixed', none: 'None'}),
+        whenVisible(switchCell('pitch-show-key', 'Name scale'), v => v['pitch-scale'] !== 'none'),
+        rootCell(),
+        whenVisible(segmentedCell('pitch-scale-type', 'Scale type', scaleTypes, {span: true, compact: true}), v => v['pitch-scale'] === 'fixed'),
+        microphoneBand(),
     );
-
-    return el('div', {class: 'panel'}, placement, range, trace, scaleMic);
 }
 
-// ----- Song & Lyrics
+// ----- Pinned Song & Lyric Sets Deck (lives in sticky left stage)
 
-function buildSongTab() {
-    const playing = el('span', {class: 'value'});
-    const lyrics = el('span', {class: 'value'});
+function buildSongDeck() {
     const timing = el('span', {class: 'value'});
-    const microphone = el('span', {class: 'value'});
-    const heardKey = el('span', {class: 'value'});
-    const addonVersion = el('span', {class: 'value'});
-    const install = el('a', {class: 'button primary', href: ADDON_DOWNLOAD});
-    const updateService = el('span', {class: 'note'}, 'Update the service: ', el('kbd', {}, 'git pull && scripts/install.sh'));
-    const sets = el('div', {class: 'list short', role: 'listbox', 'aria-label': 'Lyric sets'});
+    const statusNote = el('div', {class: 'song-status-note', hidden: 'hidden'});
+    const microphone = el('span', {class: 'foot-stat-value'});
+    const heardKey = el('span', {class: 'foot-stat-value'});
+    const addonVersion = el('span', {class: 'foot-stat-value'});
+    const install = el('a', {class: 'button primary compact', href: ADDON_DOWNLOAD, hidden: 'hidden'});
+    const updateService = el('span', {class: 'note', hidden: 'hidden'}, 'Update service: ', el('kbd', {}, 'git pull && scripts/install.sh'));
+    const sets = el('div', {class: 'list deck-sets-list', role: 'listbox', 'aria-label': 'Lyric sets'});
     const setsCount = el('span', {class: 'pill'}, '0 sets');
     const emptySets = el('p', {class: 'note'}, 'No lyric candidates loaded for the current video.');
 
     const command = body => post('/api/command', body);
-    const markMusic = pressButton('This is a music video', () => command({op: 'lookUp'}), {class: 'primary', hidden: 'hidden'});
-    const fullLyrics = pressButton('Full lyrics', () => model.lyricsModal?.open('read'));
-    const publishBtn = pressButton('Edit & publish to LRCLIB', () => model.lyricsModal?.open('edit'));
-    const wrong = pressButton('Wrong lyrics: hide this set', () => command({op: 'reject'}));
-    const again = pressButton('Search again', () => command({op: 'searchAgain'}));
-    const generate = pressButton('Generate timed lyrics', () => command({op: 'generate'}), {hidden: 'hidden'});
-    const generateFresh = pressButton('Generate from scratch', () => command({op: 'generateFromScratch'}), {hidden: 'hidden'});
-    const cancelGenerate = pressButton('Cancel timing', () => command({op: 'cancelGenerate'}), {hidden: 'hidden'});
+    const markMusic = pressButton('This is a music video', () => command({op: 'lookUp'}), {class: 'primary compact', hidden: 'hidden'});
+    const publishBtn = pressButton('Edit & publish', () => model.lyricsModal?.open('edit'), {
+        class: 'compact',
+        title: 'Edit & publish to LRCLIB',
+    });
+    const wrong = pressButton('Hide wrong set', () => command({op: 'reject'}), {
+        class: 'compact',
+        title: 'Wrong lyrics: hide this set',
+    });
+    const again = pressButton('Search again', () => command({op: 'searchAgain'}), {class: 'compact'});
+    const generate = pressButton('Generate timed', () => command({op: 'generate'}), {class: 'compact', hidden: 'hidden'});
+    const generateFresh = pressButton('Generate from scratch', () => command({op: 'generateFromScratch'}), {class: 'compact', hidden: 'hidden'});
+    const cancelGenerate = pressButton('Cancel timing', () => command({op: 'cancelGenerate'}), {class: 'compact', hidden: 'hidden'});
     const timingButtons = [
-        pressButton('Too fast (\u22120.5 s)', () => command({op: 'tooFast'})),
-        pressButton('Too slow (+0.5 s)', () => command({op: 'tooSlow'})),
-        pressButton('Reset', () => command({op: 'resetOffset'})),
+        pressButton('Too fast (\u22120.5 s)', () => command({op: 'tooFast'}), {class: 'compact'}),
+        pressButton('Too slow (+0.5 s)', () => command({op: 'tooSlow'}), {class: 'compact'}),
+        pressButton('Reset', () => command({op: 'resetOffset'}), {class: 'compact'}),
     ];
 
     const fileInput = el('input', {type: 'file', accept: '.lrc,.txt,text/plain', hidden: 'hidden'});
-    const loadFileBtn = pressButton('Load .lrc / .txt file', () => fileInput.click(), {class: 'compact'});
+    const loadFileBtn = pressButton('Load .lrc / .txt', () => fileInput.click(), {class: 'compact'});
     fileInput.addEventListener('change', async () => {
         const file = fileInput.files?.[0];
         fileInput.value = '';
@@ -1145,7 +1177,7 @@ function buildSongTab() {
 
     const artistInput = el('input', {type: 'text', class: 'search-input', 'aria-label': 'LRCLIB artist'});
     const titleInput = el('input', {type: 'text', class: 'search-input', 'aria-label': 'LRCLIB song title'});
-    const manualSearchBtn = el('button', {type: 'submit', class: 'compact'}, 'Search LRCLIB');
+    const manualSearchBtn = el('button', {type: 'submit', class: 'compact'}, 'Search');
     const manualSearchForm = el('form', {class: 'manual-search-bar'},
         el('span', {class: 'manual-search-label'}, 'Artist'), artistInput,
         el('span', {class: 'manual-search-label'}, 'Title'), titleInput,
@@ -1161,7 +1193,6 @@ function buildSongTab() {
         install.textContent = `Install ${addon.current}`;
         install.hidden = addon.status !== 'unnamed' && addon.status !== 'older';
         updateService.hidden = addon.status !== 'newer';
-        playing.textContent = state.active ? state.identityText || state.videoId : 'Nothing on YouTube';
         if (state.videoId !== lastVideoId) {
             lastVideoId = state.videoId;
             artistInput.value = '';
@@ -1169,62 +1200,66 @@ function buildSongTab() {
         }
         const gen = state.generation;
         const bgGen = gen?.background ?? null;
-        let lyricsText;
+        let detail = '';
         if (state.lyrics === 'generating' && gen?.message)
-            lyricsText = gen.previewing ? `${gen.message} \u00b7 showing early subtitles` : gen.message;
+            detail = gen.previewing ? `${gen.message} \u00b7 showing early subtitles` : gen.message;
         else if ((gen?.status === 'error' || gen?.status === 'skipped') && gen.message && state.lyrics !== 'timed')
-            lyricsText = `${LYRICS_STATUS_TEXT[state.lyrics]} (${gen.message})`;
-        else
-            lyricsText = LYRICS_STATUS_TEXT[state.lyrics] ?? state.lyrics;
+            detail = `${LYRICS_STATUS_TEXT[state.lyrics]} (${gen.message})`;
         if (bgGen?.message) {
-            lyricsText = state.active
-                ? `${lyricsText} \u00b7 Background: ${bgGen.message} (${bgGen.label})`
-                : `${bgGen.message} (${bgGen.label})`;
+            detail = detail
+                ? `${detail} \u00b7 Background: ${bgGen.message} (${bgGen.label})`
+                : `Background: ${bgGen.message} (${bgGen.label})`;
         }
-        lyrics.textContent = lyricsText;
+        statusNote.textContent = detail;
+        statusNote.hidden = !detail;
+
         timing.textContent = `${state.offsetSeconds > 0 ? '+' : ''}${state.offsetSeconds.toFixed(1)} s`;
         for (const button of timingButtons)
             button.disabled = !state.active;
         const notMusic = state.active && state.lyrics === 'not-music';
         markMusic.hidden = !notMusic;
         markMusic.disabled = !notMusic;
-        fullLyrics.disabled = !(state.active && state.chosen);
         publishBtn.disabled = !(state.active && state.chosen);
         publishBtn.hidden = state.publishAvailable === false;
-        publishBtn.textContent = state.publishedAt ? 'Edit & publish (published)' : 'Edit & publish to LRCLIB';
+        publishBtn.textContent = state.publishedAt ? 'Edit & publish (published)' : 'Edit & publish';
         wrong.disabled = !state.chosen;
         again.disabled = !state.active;
         loadFileBtn.disabled = !state.active;
         artistInput.disabled = !state.active;
         titleInput.disabled = !state.active;
         manualSearchBtn.disabled = !state.active;
+
         const canGenerate = Boolean(gen?.available);
         const timingActive = state.lyrics === 'generating' || Boolean(bgGen);
+        const transcribingNow = state.lyrics === 'generating' && gen?.mode === 'transcribed';
         generate.hidden = !canGenerate;
         generate.disabled = !state.active || state.lyrics === 'generating';
         generateFresh.hidden = !canGenerate;
-        generateFresh.disabled = !state.active || state.lyrics === 'generating';
+        generateFresh.disabled = !state.active || transcribingNow;
         cancelGenerate.hidden = !canGenerate || !timingActive;
         cancelGenerate.disabled = !timingActive;
-        if (state.lyrics === 'generating')
-            generate.textContent = 'Timing lyrics\u2026';
+
+        if (state.lyrics === 'generating' && !transcribingNow)
+            generate.textContent = 'Timing\u2026';
         else if (state.lyrics === 'plain')
-            generate.textContent = 'Time existing lyrics';
+            generate.textContent = 'Time existing';
         else if (gen?.status === 'error')
             generate.textContent = 'Retry timing';
         else if (state.candidates.some(c => c.generated))
-            generate.textContent = 'Regenerate timed lyrics';
+            generate.textContent = 'Regenerate';
         else
-            generate.textContent = 'Generate timed lyrics';
+            generate.textContent = 'Generate timed';
+        generateFresh.textContent = transcribingNow ? 'Generating from scratch\u2026' : 'Generate from scratch';
+
         microphone.textContent = state.pitch.error ? `Stopped: ${state.pitch.error}`
             : state.pitch.capturing ? state.pitch.microphone || 'On' : 'Off';
         const scale = model.values['pitch-scale'];
         if (scale === 'detect')
-            heardKey.textContent = state.key ? `${keyName(state.key)}, heard in the song` : 'Not heard yet';
+            heardKey.textContent = state.key ? keyName(state.key) : 'Not heard';
         else if (scale === 'fixed')
-            heardKey.textContent = `${keyName({root: model.values['pitch-scale-root'], type: model.values['pitch-scale-type']})}, fixed`;
+            heardKey.textContent = `${keyName({root: model.values['pitch-scale-root'], type: model.values['pitch-scale-type']})} (fixed)`;
         else
-            heardKey.textContent = 'None';
+            heardKey.textContent = 'Off';
 
         const timedCount = state.candidates.filter(c => c.timed).length;
         const n = state.candidates.length;
@@ -1251,25 +1286,35 @@ function buildSongTab() {
         emptySets.hidden = Boolean(state.candidates.length);
     });
 
-    const songSection = section('Active song & timing', null,
-        row('Playing', playing),
-        row('Lyrics', lyrics),
-        row('Timing offset', timing, ...timingButtons),
-        row('Microphone', microphone),
-        row('Detected scale', heardKey),
-        row('Firefox add-on', addonVersion, install, updateService),
-    );
+    const offsetRow = el('div', {class: 'deck-offset-row'},
+        el('span', {class: 'deck-label'}, 'Offset'),
+        timing,
+        ...timingButtons);
 
-    const actionsSection = section('Actions', null,
-        row('Read & edit', fullLyrics, publishBtn),
-        row('Lyric source', markMusic, wrong, again),
-        row('Local timing', generate, generateFresh, cancelGenerate),
-    );
+    const actionsBar = el('div', {class: 'deck-actions'},
+        markMusic, publishBtn, wrong, again, generate, generateFresh, cancelGenerate);
 
-    const setsHeadRight = el('div', {class: 'section-head-actions'}, setsCount, loadFileBtn, fileInput);
-    const setsSection = section('Lyric sets', setsHeadRight, manualSearchForm, emptySets, sets);
+    const setsBlock = el('div', {class: 'deck-sets'},
+        el('div', {class: 'deck-sets-head'},
+            el('h3', {class: 'deck-sets-title'}, 'Lyric sets'),
+            el('div', {class: 'section-head-actions'}, setsCount, loadFileBtn, fileInput)),
+        manualSearchForm,
+        emptySets,
+        sets);
 
-    return el('div', {class: 'panel'}, songSection, actionsSection, setsSection);
+    const foot = el('div', {class: 'deck-foot'},
+        el('span', {class: 'foot-stat'}, el('span', {class: 'foot-stat-label'}, 'Mic:'), microphone),
+        el('span', {class: 'foot-stat'}, el('span', {class: 'foot-stat-label'}, 'Scale:'), heardKey),
+        el('span', {class: 'foot-stat'}, el('span', {class: 'foot-stat-label'}, 'Add-on:'), addonVersion),
+        install,
+        updateService);
+
+    return el('div', {class: 'song-deck', id: 'song'},
+        offsetRow,
+        actionsBar,
+        statusNote,
+        setsBlock,
+        foot);
 }
 
 // ----- Full Lyrics Reader & Review/Publish to LRCLIB Modal
@@ -1762,9 +1807,8 @@ function buildLyricsModal() {
 function buildWorkspace() {
     const workspace = document.getElementById('workspace');
     workspace.replaceChildren(
-        pageSection('lyrics', 'Lyrics', buildLyricsTab()),
-        pageSection('pitch', 'Pitch', buildPitchTab()),
-        pageSection('song', 'Song', buildSongTab()),
+        pageSection('lyrics', 'Lyrics', buildLyricsGrid()),
+        pageSection('pitch', 'Pitch', buildPitchGrid()),
     );
 }
 

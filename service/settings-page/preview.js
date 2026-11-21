@@ -624,6 +624,7 @@ export class ScreenPlacementMap {
         this._monitor = monitor;
         this._sampleText = sampleText || 'Amazing grace';
         this._stage.style.aspectRatio = `${monitor.width} / ${monitor.height}`;
+        this._stage.style.setProperty('--map-aspect', String(monitor.width / Math.max(1, monitor.height)));
         this._paint();
     }
 

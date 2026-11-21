@@ -68,20 +68,21 @@ Right-click the lyric, pitch panel, or top-bar note to open the single settings
 page (`http://localhost:8792/settings`). Every change updates the live overlay
 immediately.
 
-![Settings page — combined Lyrics, Pitch, and Song page with live preview](docs/settings.png)
+![Settings page — live preview, pinned active song & lyric sets, and Lyrics/Pitch controls](docs/settings.png)
 
 Arrange the lyric box and pitch panel directly on a map of your monitor, dock
 the pitch panel on any side (or detach it), and adjust note range, scale
 highlighting, and microphone choice:
 
-![Settings page — Screen map and Pitch section](docs/settings-map.png)
+![Settings page — Screen map and Pitch controls](docs/settings-map.png)
 
-For the current song, open full lyrics, nudge timing, switch lyric sets
-(including locally transcribed ones), time existing words or **Generate from
-scratch** when those words are wrong, search by artist and title, load a local
-`.lrc` or `.txt` file, or edit and publish to LRCLIB:
+The active song controls stay pinned under the preview as you switch between
+the **Lyrics**, **Pitch**, and **Screen map** views: nudge timing, switch lyric
+sets (including locally transcribed ones), time existing words or **Generate
+from scratch** when those words are wrong, search by artist and title, load a
+local `.lrc` or `.txt` file, or edit and publish to LRCLIB:
 
-![Settings page — Song section with local transcription, timing nudges, search, and file import](docs/settings-song.png)
+![Settings page — Pitch preview, pinned song controls, and microphone settings](docs/settings-song.png)
 
 ## Everyday controls
 

@@ -524,12 +524,28 @@ test('auto-generates timed lyrics when LRCLIB returns only plain text, updates s
     await h.flush();
 
     // "Generate from scratch" deliberately ignores even the selected plain
-    // lyrics, so Whisper directly transcribes audio from a blank lyric input.
-    assert.deepEqual(h.core.command({op: 'generateFromScratch'}), {ok: true});
+    // lyrics, hides the stale timed candidate while transcribing, previews
+    // early transcribed lines, and can preempt an in-flight Mode A alignment.
+    assert.deepEqual(h.core.command({op: 'generate'}), {ok: true});
     assert.equal(calls.length, 3);
-    assert.equal(calls[2].plainLyrics, '');
-    assert.equal(calls[2].force, true);
+    assert.equal(h.lastState().generation.mode, 'aligned');
+
+    assert.deepEqual(h.core.command({op: 'generateFromScratch'}), {ok: true});
+    assert.equal(calls[2].cancelled, true, 'preempts in-flight alignment on the same song');
+    assert.equal(calls.length, 4);
+    assert.equal(calls[3].plainLyrics, '');
+    assert.equal(calls[3].force, true);
+    assert.equal(h.lastState().lyrics, 'generating');
     assert.equal(h.lastState().generation.mode, 'transcribed');
+    assert.equal(h.lastLine().text, '', 'old timed lines clear while transcribing from scratch');
+
+    calls[3].onPartial?.({
+        lrc: '[00:10.00] Fresh transcribed opening\n',
+        coveredRanges: [[0, 30]],
+        lineCount: 1,
+    });
+    assert.equal(h.lastState().generation.previewing, true);
+    assert.equal(h.lastLine().text, 'Fresh transcribed opening');
 });
 
 test('auto-generation cancels when switching songs, skips instrumentals and long videos, and ignores next preloads', async () => {
