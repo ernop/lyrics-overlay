@@ -7,7 +7,7 @@
 // LRCLIB is reached only through `search`, behind the shared budget.
 
 import {LRCLIB_WINDOWS, ProviderRateLimit, loadedBudgetState, pauseBudget, takeBudget} from '../shared/budget.js';
-import {parseSyncedLyrics} from '../shared/lrc.js';
+import {parseSyncedLyrics, plainLyricsFromSynced, shiftSyncedLyrics} from '../shared/lrc.js';
 import {OFFSET_STEP_SECONDS, displayAt, nudgedOffset} from '../shared/lyric-display.js';
 import {
     buildLookupCandidates, candidateKey, chooseAutomatic, rankRecords, searchSettlesLookup,
@@ -34,6 +34,34 @@ export const MAX_STORED_CANDIDATES = 20;
 
 const LRC_META_TAG = /^\s*\[(ar|ti|al|length|by|re|ve|offset):([^\]]*)\]\s*$/iu;
 const KANJI_RE = /[\u4e00-\u9fff\u3400-\u4dbf\u3005]/u;
+const SYNTHETIC_ALBUM_RE = /^(?:Auto-transcribed from audio|Auto-timed from lyrics|Local file|Edited lyrics|File:\s.*)$/iu;
+
+function realAlbumName(candidateAlbum, identityAlbum) {
+    const clean = String(candidateAlbum ?? '').trim();
+    if (clean && !SYNTHETIC_ALBUM_RE.test(clean))
+        return clean;
+    return String(identityAlbum ?? '').trim();
+}
+
+function parseEditedText(rawText) {
+    const normalized = String(rawText ?? '').replace(/\r\n?/gu, '\n').trim();
+    if (!normalized)
+        return {ok: false, error: 'Lyrics cannot be empty'};
+    const bodyLines = normalized.split('\n').filter(line => !LRC_META_TAG.test(line));
+    const body = bodyLines.join('\n').trim();
+    if (!body)
+        return {ok: false, error: 'Lyrics cannot be empty'};
+    const timedLines = parseSyncedLyrics(body);
+    const timed = timedLines.length > 0;
+    const syncedLyrics = timed ? shiftSyncedLyrics(body, 0) : '';
+    const plainLyrics = timed ? plainLyricsFromSynced(syncedLyrics) : body;
+    if (!plainLyrics.trim())
+        return {ok: false, error: 'Lyrics have no sung lines'};
+    const lineCount = timed
+        ? timedLines.filter(line => line.text.trim()).length
+        : plainLyrics.split('\n').filter(line => line.trim()).length;
+    return {ok: true, timed, syncedLyrics, plainLyrics, lineCount};
+}
 
 function parseLrcLengthTag(value) {
     const match = /^(\d+):(\d{1,2})(?:\.\d+)?$/u.exec(String(value ?? '').trim());
@@ -363,6 +391,50 @@ export class LyricsCore {
             this._refresh();
             return {ok: true, id: candidateId, timed: parsed.timed};
         }
+        case 'saveEditedLyrics': {
+            if (!record)
+                return {ok: false, error: 'No active video'};
+            const parsed = parseEditedText(command.text);
+            if (!parsed.ok)
+                return parsed;
+            const now = this._deps.clock.now();
+            const candidateId = `edit:${now}-${++this._customSeq}`;
+            const current = this._effective(record);
+            const trackName = String(command.trackName ?? '').trim()
+                || current?.trackName || session.identity?.title || session.identity?.videoTitle || 'Edited lyrics';
+            const artistName = String(command.artistName ?? '').trim()
+                || current?.artistName || session.identity?.artist || '';
+            const albumName = String(command.albumName ?? '').trim()
+                || realAlbumName(current?.albumName, session.identity?.album) || 'Edited lyrics';
+            const rawDuration = Number(command.duration);
+            const duration = Number.isFinite(rawDuration) && rawDuration > 0
+                ? Math.round(rawDuration)
+                : Math.round(Number(current?.duration) || Number(session.identity?.durationSeconds) || 0);
+            const candidate = {
+                id: candidateId,
+                trackName,
+                artistName,
+                albumName,
+                duration,
+                instrumental: false,
+                plainLyrics: parsed.plainLyrics,
+                syncedLyrics: parsed.timed ? parsed.syncedLyrics : null,
+                score: 1,
+                matches: true,
+                timed: parsed.timed,
+                custom: true,
+            };
+            record.candidates = [candidate, ...record.candidates];
+            record.chosenId = candidateId;
+            record.rejectedIds = record.rejectedIds.filter(id => id !== candidateId);
+            record.offsetSeconds = 0;
+            record.userRequested = true;
+            if (this._generating?.videoId === session.videoId)
+                this._cancelGeneration('edited lyrics saved');
+            this._deps.store.saveVideo(record);
+            this._refresh();
+            return {ok: true, id: candidateId, timed: parsed.timed, lineCount: parsed.lineCount};
+        }
         case 'generate':
             if (!this._deps.generate)
                 return {ok: false, error: 'automatic lyric timing is not configured'};
@@ -406,6 +478,180 @@ export class LyricsCore {
         if (!next)
             this._furiganaWarmedKey = '';
         this._refresh();
+    }
+
+    /**
+     * Complete active lyric set for the Full Lyrics reader and Review/Publish
+     * editor (`GET /api/lyrics`).
+     */
+    activeLyrics() {
+        const session = this._activeSession();
+        if (!session)
+            return {active: false, videoId: null, identity: null, offsetSeconds: 0, currentLineKey: 'none', currentLineIndex: -1, publishedAt: null, candidate: null};
+        const record = this._video(session.videoId);
+        const effective = this._effective(record);
+        const currentLineKey = this._lastLine?.key ?? 'none';
+        const indexMatch = /:line:(\d+)$/u.exec(currentLineKey);
+        const currentLineIndex = indexMatch ? Number(indexMatch[1]) : -1;
+        const identity = session.identity ? {
+            artist: session.identity.artist || '',
+            title: session.identity.title || session.identity.videoTitle || '',
+            album: session.identity.album || '',
+            durationSeconds: Math.round(Number(session.identity.durationSeconds) || Number(session.media?.duration) || 0),
+        } : null;
+        if (!effective) {
+            return {
+                active: true,
+                videoId: session.videoId,
+                identity,
+                offsetSeconds: record.offsetSeconds,
+                currentLineKey,
+                currentLineIndex,
+                publishedAt: record.publishedAt ?? null,
+                candidate: null,
+            };
+        }
+        const rubyFor = text => (this._furiganaEnabled && this._deps.furigana && text && KANJI_RE.test(text)
+            ? this._deps.furigana.cached(text)
+            : null);
+        let lines;
+        if (effective.timed) {
+            lines = this._linesFor(effective).map((entry, index) => {
+                const ruby = rubyFor(entry.text);
+                return {
+                    index,
+                    time: entry.time,
+                    effectiveTime: Math.max(0, entry.time - record.offsetSeconds),
+                    text: entry.text,
+                    ...(ruby ? {ruby} : {}),
+                };
+            });
+        } else {
+            const plainLines = String(effective.plainLyrics ?? '')
+                .replace(/\r\n?/gu, '\n')
+                .split('\n')
+                .map(text => text.trim());
+            if (this._furiganaEnabled && this._deps.furigana) {
+                const warmKey = `${session.videoId}:${effective.id}:plain`;
+                if (warmKey !== this._furiganaWarmedKey) {
+                    this._furiganaWarmedKey = warmKey;
+                    this._deps.furigana.warm(plainLines.filter(Boolean)).then(added => {
+                        if (added && this._furiganaEnabled)
+                            this._refresh();
+                    }).catch(() => {});
+                }
+            }
+            lines = plainLines.map((text, index) => {
+                const ruby = rubyFor(text);
+                return {
+                    index,
+                    time: null,
+                    effectiveTime: null,
+                    text,
+                    ...(ruby ? {ruby} : {}),
+                };
+            });
+        }
+        const bakedSyncedLyrics = effective.timed && effective.syncedLyrics
+            ? shiftSyncedLyrics(effective.syncedLyrics, record.offsetSeconds)
+            : '';
+        return {
+            active: true,
+            videoId: session.videoId,
+            identity,
+            offsetSeconds: record.offsetSeconds,
+            currentLineKey,
+            currentLineIndex,
+            publishedAt: record.publishedAt ?? null,
+            candidate: {
+                id: effective.id,
+                label: candidateLabel(effective),
+                artistName: effective.artistName || identity?.artist || '',
+                trackName: effective.trackName || identity?.title || '',
+                albumName: effective.albumName || '',
+                realAlbumName: realAlbumName(effective.albumName, identity?.album),
+                duration: Math.round(Number(effective.duration) || identity?.durationSeconds || 0),
+                timed: Boolean(effective.timed),
+                custom: Boolean(effective.custom),
+                generated: effective.generated ?? null,
+                syncedLyrics: effective.syncedLyrics ?? '',
+                bakedSyncedLyrics,
+                plainLyrics: effective.plainLyrics || (bakedSyncedLyrics ? plainLyricsFromSynced(bakedSyncedLyrics) : ''),
+                lines,
+            },
+        };
+    }
+
+    /**
+     * Publishes user-reviewed lyrics anonymously to LRCLIB behind the shared
+     * persistent rate-limit budget. Never called automatically.
+     */
+    async publishToLrclib(input) {
+        if (!this._deps.publish)
+            return {ok: false, status: 501, error: 'LRCLIB publishing is not configured'};
+        const trackName = String(input?.trackName ?? '').trim();
+        const artistName = String(input?.artistName ?? '').trim();
+        const albumName = String(input?.albumName ?? '').trim();
+        const duration = Math.round(Number(input?.duration));
+        if (!artistName)
+            return {ok: false, status: 400, error: 'Enter the artist name before publishing to LRCLIB'};
+        if (!trackName)
+            return {ok: false, status: 400, error: 'Enter the track title before publishing to LRCLIB'};
+        if (!albumName)
+            return {ok: false, status: 400, error: 'Enter the album (or single) name before publishing to LRCLIB'};
+        if (SYNTHETIC_ALBUM_RE.test(albumName))
+            return {ok: false, status: 400, error: 'Replace the placeholder album name with the real release or single name'};
+        if (!Number.isFinite(duration) || duration <= 0)
+            return {ok: false, status: 400, error: 'Duration must be a positive number of seconds'};
+        const parsed = parseEditedText(input?.text ?? input?.syncedLyrics ?? input?.plainLyrics);
+        if (!parsed.ok)
+            return {ok: false, status: 400, error: parsed.error};
+
+        const {store, clock, log} = this._deps;
+        const now = clock.now();
+        // Publishing sends two HTTP requests (/api/request-challenge + /api/publish).
+        for (let i = 0; i < 2; i++) {
+            const decision = takeBudget(this._budget, this._budgetWindows, now);
+            this._budget = decision.state;
+            store.saveBudget(this._budget);
+            if (!decision.allowed) {
+                const waitSec = Math.max(1, Math.ceil((decision.retryAtMs - now) / 1000));
+                return {ok: false, status: 429, error: `LRCLIB request budget spent; try again in ${waitSec} s`};
+            }
+        }
+
+        const startedAt = clock.now();
+        try {
+            await this._deps.publish({
+                trackName,
+                artistName,
+                albumName,
+                duration,
+                plainLyrics: parsed.plainLyrics,
+                syncedLyrics: parsed.timed ? parsed.syncedLyrics : '',
+            });
+        } catch (error) {
+            if (error instanceof ProviderRateLimit) {
+                this._budget = pauseBudget(this._budget, error.retryAtMs);
+                store.saveBudget(this._budget);
+                const waitSec = Math.max(1, Math.ceil((error.retryAtMs - clock.now()) / 1000));
+                return {ok: false, status: 429, error: `LRCLIB rate-limited the publish request; try again in ${waitSec} s`};
+            }
+            log(`lrclib: publish failed: ${error.message}`);
+            return {ok: false, status: 502, error: error.message};
+        }
+
+        const publishedAt = clock.now();
+        const session = this._activeSession();
+        const videoId = session?.videoId ?? null;
+        if (videoId) {
+            const record = this._video(videoId);
+            record.publishedAt = publishedAt;
+            store.saveVideo(record);
+            this._refresh();
+        }
+        log(`lrclib: published ${videoId ?? 'manual'} (${parsed.timed ? 'timed' : 'plain'}, ${parsed.lineCount} lines, ${publishedAt - startedAt} ms)`);
+        return {ok: true, status: 201, timed: parsed.timed, lineCount: parsed.lineCount, publishedAt};
     }
 
     state() {
@@ -969,6 +1215,7 @@ export class LyricsCore {
         if (!session) {
             return JSON.stringify({active: false, sounding: false, videoId: null, identityText: '', musical: false,
                 lyrics: 'idle', chosen: null, userChose: false, offsetSeconds: 0, candidates: [],
+                publishAvailable: Boolean(this._deps.publish), publishedAt: null,
                 generation: this._generationState(null, null), pitch: this._pitch, key: null});
         }
         const record = this._video(session.videoId);
@@ -984,6 +1231,8 @@ export class LyricsCore {
             chosen: effective ? {id: effective.id, label: candidateLabel(effective), timed: effective.timed} : null,
             userChose: record.chosenId !== null && effective?.id === record.chosenId,
             offsetSeconds: record.offsetSeconds,
+            publishAvailable: Boolean(this._deps.publish),
+            publishedAt: record.publishedAt ?? null,
             candidates: record.candidates.map(candidate => ({
                 id: candidate.id,
                 label: candidateLabel(candidate),

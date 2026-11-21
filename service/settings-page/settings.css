@@ -854,3 +854,317 @@ kbd {
     font-size: 0.92rem;
     font-weight: 600;
 }
+
+/* ----- Full Lyrics Reader & Review/Publish Modal */
+
+.modal-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 60;
+    background: rgba(5, 7, 12, 0.78);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 1rem;
+}
+
+.modal-backdrop[hidden] {
+    display: none;
+}
+
+.lyrics-modal {
+    width: min(94vw, 68rem);
+    height: min(88vh, 56rem);
+    min-width: min(92vw, 24rem);
+    min-height: 20rem;
+    max-width: 96vw;
+    max-height: 92vh;
+    resize: both;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    background: var(--bg);
+    border: 1px solid var(--border-strong);
+    border-radius: 12px;
+    box-shadow: 0 24px 72px rgba(0, 0, 0, 0.75);
+}
+
+.modal-head {
+    flex: none;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+    flex-wrap: wrap;
+    padding: 0.8rem 1.1rem;
+    background: var(--stage-bg);
+    border-bottom: 1px solid var(--hairline);
+}
+
+.modal-head-left {
+    display: flex;
+    align-items: center;
+    gap: 0.65rem;
+    min-width: 0;
+    flex: 1 1 18rem;
+}
+
+.modal-title {
+    margin: 0;
+    font-size: 1.15rem;
+    font-weight: 800;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.modal-head-right {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.55rem;
+    flex: none;
+}
+
+.modal-toolbar {
+    flex: none;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.65rem;
+    flex-wrap: wrap;
+    padding: 0.55rem 1.1rem;
+    background: var(--surface);
+    border-bottom: 1px solid var(--hairline);
+}
+
+.modal-toolbar-group {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.45rem;
+    flex-wrap: wrap;
+}
+
+.modal-body {
+    flex: 1 1 auto;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+
+.lyrics-reader {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+    padding: 0.75rem 1.1rem 2.2rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.22rem;
+    font-size: var(--reader-size, 1.15rem);
+}
+
+.lyrics-reader-empty {
+    padding: 2rem 0.5rem;
+    font-size: 1.05rem;
+    font-weight: 700;
+}
+
+.lyric-line-row {
+    display: flex;
+    align-items: baseline;
+    gap: 0.9rem;
+    padding: 0.38rem 0.75rem;
+    border-left: 4px solid transparent;
+    border-radius: 6px;
+    line-height: 1.48;
+}
+
+.lyric-line-row.is-current {
+    background: #142544;
+    border-left-color: var(--accent-bright);
+    font-weight: 800;
+}
+
+.lyric-line-row.is-gap {
+    padding: 0.12rem 0.75rem;
+}
+
+.lyric-time {
+    flex: none;
+    width: 3.6rem;
+    font-size: 0.84rem;
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: 0.02em;
+}
+
+.lyric-line-row.is-current .lyric-time {
+    font-weight: 800;
+}
+
+.lyric-words {
+    flex: 1 1 auto;
+    min-width: 0;
+    word-break: break-word;
+}
+
+.lyric-words ruby {
+    ruby-align: center;
+}
+
+.lyric-words rt {
+    font-size: 0.52em;
+    font-weight: 700;
+    color: #fff;
+}
+
+.lyric-now-pill {
+    flex: none;
+    margin-left: auto;
+}
+
+/* ----- Review, Edit & Publish pane */
+
+.lyrics-editor-pane {
+    flex: 1 1 auto;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.7rem;
+    padding: 0.9rem 1.1rem;
+    overflow-y: auto;
+}
+
+.meta-grid {
+    flex: none;
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr));
+    gap: 0.55rem 0.85rem;
+}
+
+.meta-field {
+    display: flex;
+    flex-direction: column;
+    gap: 0.28rem;
+    min-width: 0;
+}
+
+.meta-field label {
+    font-size: 0.9rem;
+    font-weight: 800;
+}
+
+.meta-duration-row {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.meta-duration-row .search-input {
+    max-width: 7.5rem;
+}
+
+.duration-formatted {
+    font-size: 0.92rem;
+    font-weight: 800;
+    font-variant-numeric: tabular-nums;
+}
+
+.lyrics-textarea-wrap {
+    flex: 1 1 16rem;
+    min-height: 11rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.32rem;
+}
+
+.lyrics-textarea-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.6rem;
+    flex-wrap: wrap;
+}
+
+.lyrics-textarea-head label {
+    font-size: 0.95rem;
+    font-weight: 800;
+}
+
+.lyrics-textarea {
+    flex: 1 1 auto;
+    width: 100%;
+    min-height: 10rem;
+    resize: none;
+    font-family: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+    font-size: 0.94rem;
+    line-height: 1.5;
+    color: #fff;
+    background: var(--track-bg);
+    border: 1px solid var(--border-strong);
+    border-radius: 8px;
+    padding: 0.65rem 0.8rem;
+}
+
+.lyrics-textarea:focus {
+    outline: none;
+    border-color: var(--accent-bright);
+}
+
+.search-input::placeholder,
+.lyrics-textarea::placeholder {
+    color: #fff;
+    opacity: 1;
+}
+
+.publish-notice {
+    flex: none;
+    padding: 0.5rem 0.75rem;
+    border-radius: 7px;
+    border: 1px solid var(--hairline);
+    background: var(--surface);
+    font-size: 0.88rem;
+    font-weight: 600;
+}
+
+.publish-status {
+    flex: none;
+    padding: 0.5rem 0.75rem;
+    border-radius: 7px;
+    font-size: 0.92rem;
+    font-weight: 700;
+}
+
+.publish-status.is-ok {
+    background: #0d2b1d;
+    border: 1px solid var(--good);
+}
+
+.publish-status.is-error {
+    background: #361316;
+    border: 1px solid var(--alert);
+}
+
+.publish-status.is-busy {
+    background: #142544;
+    border: 1px solid var(--accent-bright);
+}
+
+.modal-foot {
+    flex: none;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+    flex-wrap: wrap;
+    padding: 0.7rem 1.1rem;
+    background: var(--stage-bg);
+    border-top: 1px solid var(--hairline);
+}
+
+.modal-foot-actions {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.55rem;
+    flex-wrap: wrap;
+}

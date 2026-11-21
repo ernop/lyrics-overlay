@@ -44,6 +44,41 @@ export function parseSyncedLyrics(lrcText) {
     return withoutCredits(lines.sort((a, b) => a.time - b.time));
 }
 
+/** Formats seconds as an LRC `[mm:ss.xx]` tag without 60-second rollover bugs. */
+export function formatLrcTime(seconds) {
+    const totalCs = Math.max(0, Math.round((Number(seconds) || 0) * 100));
+    const cs = totalCs % 100;
+    const totalSec = Math.floor(totalCs / 100);
+    const sec = totalSec % 60;
+    const min = Math.floor(totalSec / 60);
+    return `[${String(min).padStart(2, '0')}:${String(sec).padStart(2, '0')}.${String(cs).padStart(2, '0')}]`;
+}
+
+/**
+ * Rewrites synced LRC timestamps with `offsetSeconds` baked in, using
+ * displayAt's sign convention (`effectiveTime = max(0, time - offsetSeconds)`).
+ */
+export function shiftSyncedLyrics(lrcText, offsetSeconds) {
+    const lines = parseSyncedLyrics(lrcText);
+    if (!lines.length)
+        return '';
+    const shift = Number(offsetSeconds) || 0;
+    return lines
+        .map(line => {
+            const tag = formatLrcTime(Math.max(0, line.time - shift));
+            return line.text ? `${tag} ${line.text}` : tag;
+        })
+        .join('\n');
+}
+
+/** Extracts plain lyric text (one non-empty line per row) from synced LRC. */
+export function plainLyricsFromSynced(lrcText) {
+    return parseSyncedLyrics(lrcText)
+        .map(line => line.text.trim())
+        .filter(Boolean)
+        .join('\n');
+}
+
 /** Blanks credit lines, and the names under a bare heading up to the next blank line. */
 function withoutCredits(lines) {
     let underHeading = false;

@@ -396,6 +396,18 @@ Active only when `lyricsGenerator` is configured in `settings.json`
   'transcribed'`) is persisted in `videos/<id>.json`, immediately replaces
   the status pill on screen, and is handed to ytarchive by `ArchiveSync`
   through the same `lyricsKey` flow as LRCLIB lyrics.
+- **Full lyrics endpoint and anonymous LRCLIB publishing**: `GET /api/lyrics`
+  returns the active song's full structured lyric set (`lines` with
+  effective offset-adjusted times and cached furigana segments,
+  `realAlbumName`, and `bakedSyncedLyrics`). `Command {op: 'saveEditedLyrics'}`
+  saves user-edited LRC or plain text as a custom candidate (`edit:*`),
+  resets `offsetSeconds` to `0`, and updates the overlay and ytarchive.
+  `POST /api/publish-lrclib` (settings-page `Origin`-guarded) validates
+  metadata and non-empty lyrics, consumes from `LyricsCore`'s persistent
+  LRCLIB budget, calls `createLrclibPublisher` (`service/lrclib.js`), solves
+  LRCLIB's SHA-256 proof-of-work challenge out-of-process via
+  `service/lrclib-pow.py` (4 bounded Python workers, never blocking GJS),
+  and submits to `POST /api/publish` with the generic `User-Agent`.
 
 ## D-Bus interface
 

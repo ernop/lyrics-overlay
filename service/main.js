@@ -13,7 +13,7 @@ import {LyricsCore} from './core.js';
 import {exportService} from './dbus.js';
 import {FuriganaWorker} from './furigana.js';
 import {loadStaticFiles, startHttp} from './http.js';
-import {createLrclibSearch} from './lrclib.js';
+import {createLrclibPublisher, createLrclibSearch} from './lrclib.js';
 import {createLyricGenerator, validateGeneratorConfig} from './lyric-generator.js';
 import {PitchCapture} from './pitch-capture.js';
 import {SettingsStore} from './settings-store.js';
@@ -89,6 +89,7 @@ const furigana = new FuriganaWorker({projectDir, log});
 const core = new LyricsCore({
     store,
     search: createLrclibSearch(settings.lrclibBaseUrl),
+    publish: createLrclibPublisher(settings.lrclibBaseUrl, {projectDir}),
     generate: generator ?? undefined,
     maxGenerateDurationSeconds: settings.lyricsGenerator?.maxDurationSeconds,
     furigana,

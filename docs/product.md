@@ -203,6 +203,28 @@ indicator changes quietly.
   directly (persisted per video and forwarded to ytarchive; plain `.txt`
   files can be aligned automatically onto the song's audio). Choices,
   imported files, and rejections are remembered per video.
+- **Full lyrics modal view (owner, 2026-11-20).** A **Full lyrics** button
+  in the settings page header bar and Song tab (and keyboard shortcut `L`)
+  opens a resizable full-lyrics modal (`?lyrics=read`) showing every line
+  of the active lyric set (timed or untimed) with tabular timestamps,
+  optional Japanese furigana, adjustable reading size, inline timing nudges,
+  and live current-line highlighting (`Now`) with smooth auto-scroll (which
+  pauses automatically if the user scrolls manually, with a one-click
+  **Jump to current** button), so you can read and follow the whole song
+  without watching the video window.
+- **Manual review, local editing, and anonymous LRCLIB publishing (owner,
+  2026-11-20).** Switching the Full lyrics modal to **Edit & publish**
+  (`?lyrics=edit`, or clicking **Edit & publish to LRCLIB** on the Song
+  tab) pre-fills artist, track, real album (never placeholder labels like
+  `Auto-transcribed from audio`), duration, and full lyrics with any active
+  timing offset already baked into the timestamps (`max(0, t - offset)`).
+  The owner can fix misheard words or timestamps and **Save local edits**
+  directly onto the video (updating the overlay and ytarchive and resetting
+  the offset to `0`), or explicitly click **Publish to LRCLIB** to submit
+  anonymously via LRCLIB's proof-of-work challenge (`POST /api/request-challenge`
+  + `POST /api/publish` — no account required). Publishing is strictly
+  manual (never automatic), shares LRCLIB's persistent request budget and
+  generic User-Agent, and never logs lyric text.
 - **The icon says the state quietly.** A note beside three text lines: a
   filled note with bold lines while the overlay is on, a hollow note with
   thin lines while it is off. Only these two (owner, 2026-11-10: "just

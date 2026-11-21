@@ -18,9 +18,12 @@ import {isSettingsError} from './settings-store.js';
 
 const MAX_BODY_BYTES = 256 * 1024;
 const EXTENSION_PATHS = new Set(['/api/report', '/api/gone', '/api/commands', '/api/command-result']);
-const PAGE_PATHS = new Set(['/api/settings', '/api/settings/reset', '/api/command', '/api/pitch/fit']);
+const PAGE_PATHS = new Set(['/api/settings', '/api/settings/reset', '/api/command', '/api/pitch/fit', '/api/publish-lrclib']);
 // The song controls the settings page offers (LyricsCore.command).
-const PAGE_COMMANDS = new Set(['tooFast', 'tooSlow', 'resetOffset', 'choose', 'reject', 'searchAgain', 'lookUp', 'generate', 'searchQuery', 'importLyrics']);
+const PAGE_COMMANDS = new Set([
+    'tooFast', 'tooSlow', 'resetOffset', 'choose', 'reject',
+    'searchAgain', 'lookUp', 'generate', 'searchQuery', 'importLyrics', 'saveEditedLyrics',
+]);
 // "Fit to my singing" leaves this much room around what was sung.
 const FIT_MARGIN = 1;
 const FIT_MIN_SPAN = 12;
@@ -221,7 +224,26 @@ export function startHttp({port, hostname, files, core, browser, addon, settings
                 cmd = {op: 'searchQuery', artist: json.artist, title: json.title};
             else if (json.op === 'importLyrics')
                 cmd = {op: 'importLyrics', filename: json.filename, text: json.text};
+            else if (json.op === 'saveEditedLyrics')
+                cmd = {
+                    op: 'saveEditedLyrics',
+                    artistName: json.artistName,
+                    trackName: json.trackName,
+                    albumName: json.albumName,
+                    duration: json.duration,
+                    text: json.text,
+                };
             respondJson(message, 200, core.command(cmd));
+            return;
+        }
+        case '/api/publish-lrclib': {
+            message.pause();
+            core.publishToLrclib(json).then(outcome => {
+                respondJson(message, outcome.status ?? (outcome.ok ? 201 : 400), outcome);
+            }, error => {
+                log(`${path} failed: ${error.message}`);
+                respondJson(message, 500, {ok: false, error: error.message});
+            }).finally(() => message.unpause());
             return;
         }
         case '/api/pitch/fit': {
@@ -261,6 +283,9 @@ export function startHttp({port, hostname, files, core, browser, addon, settings
                     addon: addon.describe(),
                     furigana: furigana?.status() ?? {available: false, dict: '', error: ''},
                 });
+                return;
+            case '/api/lyrics':
+                respondJson(message, 200, core.activeLyrics());
                 return;
             case '/api/settings':
                 respondJson(message, 200, {schema: settings.describe(), values: settings.values()});

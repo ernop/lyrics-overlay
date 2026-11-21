@@ -69,6 +69,7 @@ const model = {
     placementMap: null,
     pitchPreview: null,
     stageSync: null,
+    lyricsModal: null,
 };
 
 // ----- service
@@ -354,6 +355,10 @@ function buildTopBar() {
         hidden: 'hidden',
     });
 
+    const fullLyricsBtn = pressButton('Full lyrics', () => model.lyricsModal?.open('read'), {
+        class: 'compact',
+        disabled: 'disabled',
+    });
     const overlayBtn = pressButton('', () => set('overlay-enabled', !model.values['overlay-enabled']), {class: 'switch'});
     const pitchBtn = pressButton('', () => set('pitch-enabled', !model.values['pitch-enabled']), {class: 'switch'});
 
@@ -378,6 +383,7 @@ function buildTopBar() {
         else if (state.lyrics === 'error')
             statusPill.classList.add('pill-alert');
         markMusicBtn.hidden = !(state.active && state.lyrics === 'not-music');
+        fullLyricsBtn.disabled = !(state.active && state.chosen);
     });
 
     const header = document.getElementById('topbar');
@@ -387,7 +393,7 @@ function buildTopBar() {
             el('span', {class: 'topbar-sep', 'aria-hidden': 'true'}),
             el('div', {class: 'topbar-song'}, songTitle, statusPill, markMusicBtn),
         ),
-        el('div', {class: 'topbar-actions'}, overlayBtn, pitchBtn),
+        el('div', {class: 'topbar-actions'}, fullLyricsBtn, overlayBtn, pitchBtn),
     );
 }
 
@@ -1105,6 +1111,8 @@ function buildSongTab() {
 
     const command = body => post('/api/command', body);
     const markMusic = pressButton('This is a music video', () => command({op: 'lookUp'}), {class: 'primary', hidden: 'hidden'});
+    const fullLyrics = pressButton('Full lyrics', () => model.lyricsModal?.open('read'));
+    const publishBtn = pressButton('Edit & publish to LRCLIB', () => model.lyricsModal?.open('edit'));
     const wrong = pressButton('Wrong lyrics: hide this set', () => command({op: 'reject'}));
     const again = pressButton('Search again', () => command({op: 'searchAgain'}));
     const generate = pressButton('Generate timed lyrics', () => command({op: 'generate'}), {hidden: 'hidden'});
@@ -1167,6 +1175,10 @@ function buildSongTab() {
         const notMusic = state.active && state.lyrics === 'not-music';
         markMusic.hidden = !notMusic;
         markMusic.disabled = !notMusic;
+        fullLyrics.disabled = !(state.active && state.chosen);
+        publishBtn.disabled = !(state.active && state.chosen);
+        publishBtn.hidden = state.publishAvailable === false;
+        publishBtn.textContent = state.publishedAt ? 'Edit & publish (published)' : 'Edit & publish to LRCLIB';
         wrong.disabled = !state.chosen;
         again.disabled = !state.active;
         loadFileBtn.disabled = !state.active;
@@ -1195,7 +1207,8 @@ function buildSongTab() {
             heardKey.textContent = 'None';
 
         const timedCount = state.candidates.filter(c => c.timed).length;
-        setsCount.textContent = `${state.candidates.length} sets (${timedCount} timed)`;
+        const n = state.candidates.length;
+        setsCount.textContent = `${n} ${n === 1 ? 'set' : 'sets'} (${timedCount} timed)`;
         sets.replaceChildren(...state.candidates.map(candidate => {
             const timedText = candidate.timed
                 ? (candidate.lineCount ? `Timed \u00b7 ${candidate.lineCount} lines` : 'Timed')
@@ -1222,7 +1235,7 @@ function buildSongTab() {
         row('Playing', playing),
         row('Lyrics', lyrics),
         row('Timing offset', timing, ...timingButtons),
-        row('Actions', markMusic, wrong, again, generate),
+        row('Actions', markMusic, fullLyrics, publishBtn, wrong, again, generate),
         row('Microphone', microphone),
         row('Detected scale', heardKey),
         row('Firefox add-on', addonVersion, install, updateService),
@@ -1232,6 +1245,491 @@ function buildSongTab() {
     const setsSection = section('Lyric sets', setsHeadRight, manualSearchForm, emptySets, sets);
 
     return el('div', {class: 'panel'}, songSection, setsSection);
+}
+
+// ----- Full Lyrics Reader & Review/Publish to LRCLIB Modal
+
+function formatClock(seconds) {
+    if (!Number.isFinite(seconds) || seconds < 0)
+        return '';
+    const whole = Math.floor(seconds);
+    return `${String(Math.floor(whole / 60)).padStart(2, '0')}:${String(whole % 60).padStart(2, '0')}`;
+}
+
+function buildRubyFragment(text, ruby) {
+    if (!Array.isArray(ruby) || !ruby.length)
+        return document.createTextNode(text);
+    const frag = document.createDocumentFragment();
+    for (const [surface, reading] of ruby) {
+        if (reading) {
+            const r = document.createElement('ruby');
+            r.append(document.createTextNode(surface), el('rt', {}, reading));
+            frag.append(r);
+        } else {
+            frag.append(document.createTextNode(surface));
+        }
+    }
+    return frag;
+}
+
+function buildLyricsModal() {
+    const backdrop = document.getElementById('lyrics-modal-backdrop');
+    let open = false;
+    let mode = 'read'; // 'read' | 'edit'
+    let autoScroll = true;
+    let readerPx = 18;
+    let loadedKey = '';
+    let loading = false;
+    let payload = null;
+    let editorDirty = false;
+    let publishing = false;
+    let rowEls = new Map();
+    let currentRowIndex = -1;
+
+    const modalTitle = el('h2', {class: 'modal-title'}, 'Full lyrics');
+    const metaPill = el('span', {class: 'pill'}, '');
+    const publishedPill = el('span', {class: 'pill pill-good', hidden: 'hidden'}, 'Published to LRCLIB');
+
+    const readTabBtn = pressButton('Read', () => setMode('read'));
+    const editTabBtn = pressButton('Edit & publish', () => setMode('edit'));
+    const modeSeg = el('div', {class: 'seg compact'}, readTabBtn, editTabBtn);
+    const closeBtn = pressButton('Close', () => close(), {class: 'compact'});
+
+    // Read mode toolbar
+    const autoScrollBtn = pressButton('Auto-scroll: On', () => {
+        autoScroll = !autoScroll;
+        syncToolbar();
+        if (autoScroll)
+            scrollToCurrent(true);
+    }, {class: 'compact'});
+    const jumpBtn = pressButton('Jump to current', () => {
+        autoScroll = true;
+        syncToolbar();
+        scrollToCurrent(true);
+    }, {class: 'compact', hidden: 'hidden'});
+    const sizeReadout = el('span', {class: 'metric-value'}, `${readerPx} px`);
+    const sizeDownBtn = pressButton('A\u2212', () => {
+        readerPx = Math.max(14, readerPx - 2);
+        reader.style.setProperty('--reader-size', `${readerPx}px`);
+        sizeReadout.textContent = `${readerPx} px`;
+    }, {class: 'compact', 'aria-label': 'Smaller lyrics text'});
+    const sizeUpBtn = pressButton('A+', () => {
+        readerPx = Math.min(30, readerPx + 2);
+        reader.style.setProperty('--reader-size', `${readerPx}px`);
+        sizeReadout.textContent = `${readerPx} px`;
+    }, {class: 'compact', 'aria-label': 'Larger lyrics text'});
+    const nudgeFastBtn = pressButton('\u22120.5 s', () => post('/api/command', {op: 'tooFast'}), {class: 'compact', title: 'Lyrics too fast'});
+    const nudgeSlowBtn = pressButton('+0.5 s', () => post('/api/command', {op: 'tooSlow'}), {class: 'compact', title: 'Lyrics too slow'});
+    const offsetReadout = el('span', {class: 'pill'}, '0.0 s');
+    const timingGroup = el('div', {class: 'modal-toolbar-group'}, offsetReadout, nudgeFastBtn, nudgeSlowBtn);
+    const readToolbar = el('div', {class: 'modal-toolbar'},
+        el('div', {class: 'modal-toolbar-group'}, autoScrollBtn, jumpBtn),
+        el('div', {class: 'modal-toolbar-group'}, timingGroup, sizeDownBtn, sizeReadout, sizeUpBtn),
+    );
+
+    const reader = el('div', {class: 'lyrics-reader', role: 'region', 'aria-label': 'Full song lyrics'});
+    reader.style.setProperty('--reader-size', `${readerPx}px`);
+    let programmaticScrollUntil = 0;
+    reader.addEventListener('wheel', () => {
+        if (autoScroll && currentRowIndex >= 0) {
+            autoScroll = false;
+            syncToolbar();
+        }
+    }, {passive: true});
+    reader.addEventListener('touchstart', () => {
+        if (autoScroll && currentRowIndex >= 0) {
+            autoScroll = false;
+            syncToolbar();
+        }
+    }, {passive: true});
+    reader.addEventListener('scroll', () => {
+        if (Date.now() < programmaticScrollUntil)
+            return;
+        // Keep Jump to current visible whenever auto-scroll is off.
+        syncToolbar();
+    }, {passive: true});
+
+    // Edit & publish pane
+    const artistField = el('input', {id: 'pub-artist', type: 'text', class: 'search-input', autocomplete: 'off'});
+    const trackField = el('input', {id: 'pub-track', type: 'text', class: 'search-input', autocomplete: 'off'});
+    const albumField = el('input', {id: 'pub-album', type: 'text', class: 'search-input', autocomplete: 'off'});
+    const durationField = el('input', {id: 'pub-duration', type: 'number', min: '1', step: '1', class: 'search-input'});
+    const durationFmt = el('span', {class: 'duration-formatted'}, '00:00');
+    const offsetBakedNotice = el('div', {class: 'publish-notice', hidden: 'hidden'});
+    const editorLinesPill = el('span', {class: 'pill'}, '');
+    const lyricsArea = el('textarea', {
+        id: 'pub-lyrics',
+        class: 'lyrics-textarea',
+        spellcheck: 'false',
+        'aria-label': 'Synced or plain lyrics',
+    });
+    const publishStatus = el('div', {class: 'publish-status', role: 'status', hidden: 'hidden'});
+
+    const updateDurationFmt = () => {
+        const secs = Number(durationField.value);
+        durationFmt.textContent = Number.isFinite(secs) && secs > 0 ? formatClock(secs) : '\u2014';
+    };
+    const updateEditorCount = () => {
+        const lines = lyricsArea.value.replace(/\r\n?/gu, '\n').split('\n').filter(l => l.trim());
+        const timed = lines.some(l => /^\s*\[\d{1,3}:\d{1,2}(?:[.:]\d{1,3})?\]/u.test(l));
+        editorLinesPill.textContent = `${lines.length} lines \u00b7 ${timed ? 'Timed LRC' : 'Plain text'}`;
+    };
+    for (const input of [artistField, trackField, albumField, durationField, lyricsArea]) {
+        input.addEventListener('input', () => {
+            editorDirty = true;
+            updateDurationFmt();
+            updateEditorCount();
+        });
+    }
+
+    const metaGrid = el('div', {class: 'meta-grid'},
+        el('div', {class: 'meta-field'}, el('label', {for: 'pub-artist'}, 'Artist'), artistField),
+        el('div', {class: 'meta-field'}, el('label', {for: 'pub-track'}, 'Track'), trackField),
+        el('div', {class: 'meta-field'}, el('label', {for: 'pub-album'}, 'Album or single'), albumField),
+        el('div', {class: 'meta-field'}, el('label', {for: 'pub-duration'}, 'Duration (seconds)'),
+            el('div', {class: 'meta-duration-row'}, durationField, durationFmt)),
+    );
+    const editorPane = el('div', {class: 'lyrics-editor-pane', hidden: 'hidden'},
+        metaGrid,
+        offsetBakedNotice,
+        el('div', {class: 'lyrics-textarea-wrap'},
+            el('div', {class: 'lyrics-textarea-head'},
+                el('label', {for: 'pub-lyrics'}, 'Lyrics (LRC timestamps or plain text)'),
+                editorLinesPill),
+            lyricsArea),
+        el('div', {class: 'publish-notice'},
+            'Anonymous LRCLIB upload: no account needed (solves a quick local proof-of-work challenge). Check artist, track, album, duration, and words before publishing \u2014 LRCLIB has no delete button.'),
+        publishStatus,
+    );
+
+    const setStatus = (kind, text) => {
+        publishStatus.textContent = text;
+        publishStatus.className = `publish-status${kind ? ` is-${kind}` : ''}`;
+        publishStatus.hidden = !text;
+    };
+
+    const saveLocalBtn = pressButton('Save local edits', async () => {
+        setStatus('busy', 'Saving edits locally\u2026');
+        try {
+            const answer = await call('POST', '/api/command', {
+                op: 'saveEditedLyrics',
+                artistName: artistField.value,
+                trackName: trackField.value,
+                albumName: albumField.value,
+                duration: Number(durationField.value) || 0,
+                text: lyricsArea.value,
+            });
+            if (!answer?.ok)
+                throw new Error(answer?.error ?? 'Could not save edits');
+            editorDirty = false;
+            setStatus('ok', `Saved locally (${answer.lineCount} ${answer.timed ? 'timed' : 'plain'} lines) \u2014 desktop overlay updated.`);
+            loadedKey = '';
+            await pollState();
+            await refreshLyrics(true);
+        } catch (error) {
+            setStatus('error', error.message);
+        }
+    });
+
+    const doPublishBtn = pressButton('Publish to LRCLIB', async () => {
+        if (publishing)
+            return;
+        publishing = true;
+        doPublishBtn.disabled = true;
+        saveLocalBtn.disabled = true;
+        setStatus('busy', 'Solving LRCLIB proof-of-work challenge & publishing\u2026');
+        try {
+            const body = {
+                artistName: artistField.value.trim(),
+                trackName: trackField.value.trim(),
+                albumName: albumField.value.trim(),
+                duration: Number(durationField.value) || 0,
+                text: lyricsArea.value,
+            };
+            const answer = await call('POST', '/api/publish-lrclib', body);
+            if (!answer?.ok)
+                throw new Error(answer?.error ?? 'Publish failed');
+            if (editorDirty && model.state?.active) {
+                // Keep the local overlay aligned with the cleaned text just published.
+                await call('POST', '/api/command', {op: 'saveEditedLyrics', ...body}).catch(() => {});
+                editorDirty = false;
+            }
+            setStatus('ok', `Published to LRCLIB (${answer.lineCount} ${answer.timed ? 'timed' : 'plain'} lines).`);
+            loadedKey = '';
+            await pollState();
+            await refreshLyrics(true);
+        } catch (error) {
+            setStatus('error', error.message);
+        } finally {
+            publishing = false;
+            doPublishBtn.disabled = false;
+            saveLocalBtn.disabled = false;
+        }
+    }, {class: 'primary'});
+
+    const reloadFromActiveBtn = pressButton('Reset to current set', () => {
+        editorDirty = false;
+        populateEditor();
+        setStatus('', '');
+    }, {class: 'compact'});
+
+    const modalFoot = el('div', {class: 'modal-foot', hidden: 'hidden'},
+        reloadFromActiveBtn,
+        el('div', {class: 'modal-foot-actions'}, saveLocalBtn, doPublishBtn),
+    );
+
+    const dialog = el('div', {class: 'lyrics-modal', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Full lyrics'},
+        el('div', {class: 'modal-head'},
+            el('div', {class: 'modal-head-left'}, modalTitle, metaPill, publishedPill),
+            el('div', {class: 'modal-head-right'}, modeSeg, closeBtn),
+        ),
+        readToolbar,
+        el('div', {class: 'modal-body'}, reader, editorPane),
+        modalFoot,
+    );
+    backdrop.replaceChildren(dialog);
+
+    backdrop.addEventListener('click', event => {
+        if (event.target === backdrop)
+            close();
+    });
+
+    const syncUrl = () => {
+        const url = new URL(window.location.href);
+        if (open)
+            url.searchParams.set('lyrics', mode);
+        else
+            url.searchParams.delete('lyrics');
+        history.replaceState(null, '', url.pathname + url.search + url.hash);
+    };
+
+    const syncToolbar = () => {
+        autoScrollBtn.textContent = autoScroll ? 'Auto-scroll: On' : 'Auto-scroll: Off';
+        autoScrollBtn.setAttribute('aria-pressed', String(autoScroll));
+        const timed = Boolean(payload?.candidate?.timed);
+        autoScrollBtn.hidden = !timed;
+        timingGroup.hidden = !timed;
+        jumpBtn.hidden = !timed || autoScroll || currentRowIndex < 0;
+        const off = Number(payload?.offsetSeconds ?? model.state?.offsetSeconds ?? 0);
+        offsetReadout.textContent = `${off > 0 ? '+' : ''}${off.toFixed(1)} s`;
+    };
+
+    const scrollToCurrent = (smooth = true) => {
+        if (!open || mode !== 'read')
+            return;
+        const rowEl = rowEls.get(currentRowIndex);
+        if (!rowEl)
+            return;
+        programmaticScrollUntil = Date.now() + 450;
+        rowEl.scrollIntoView({block: 'center', behavior: smooth ? 'smooth' : 'instant'});
+    };
+
+    const updateActiveLine = (forceScroll = false) => {
+        const key = model.line?.key ?? 'none';
+        const match = /:line:(\d+)$/u.exec(key);
+        const nextIdx = match ? Number(match[1]) : (payload?.currentLineIndex ?? -1);
+        if (nextIdx === currentRowIndex && !forceScroll)
+            return;
+        const prevEl = rowEls.get(currentRowIndex);
+        if (prevEl) {
+            prevEl.classList.remove('is-current');
+            prevEl.querySelector('.lyric-now-pill')?.remove();
+        }
+        currentRowIndex = nextIdx;
+        const nextEl = rowEls.get(currentRowIndex);
+        if (nextEl) {
+            nextEl.classList.add('is-current');
+            if (!nextEl.querySelector('.lyric-now-pill'))
+                nextEl.append(el('span', {class: 'pill pill-good lyric-now-pill'}, 'Now'));
+            if (autoScroll || forceScroll)
+                scrollToCurrent(!forceScroll);
+        }
+        syncToolbar();
+    };
+
+    const renderReader = () => {
+        rowEls = new Map();
+        currentRowIndex = -1;
+        const candidate = payload?.candidate;
+        if (!candidate || !candidate.lines?.length) {
+            reader.replaceChildren(el('p', {class: 'lyrics-reader-empty'},
+                payload?.active ? 'No lyrics loaded for the current song yet.' : 'No song is playing right now.'));
+            syncToolbar();
+            return;
+        }
+        const frag = document.createDocumentFragment();
+        for (const entry of candidate.lines) {
+            if (!entry.text) {
+                const gap = el('div', {class: 'lyric-line-row is-gap', 'aria-hidden': 'true'});
+                rowEls.set(entry.index, gap);
+                frag.append(gap);
+                continue;
+            }
+            const rowEl = el('div', {class: 'lyric-line-row'});
+            if (candidate.timed && entry.effectiveTime !== null)
+                rowEl.append(el('span', {class: 'lyric-time'}, formatClock(entry.effectiveTime)));
+            const words = el('span', {class: 'lyric-words'});
+            words.append(buildRubyFragment(entry.text, entry.ruby));
+            rowEl.append(words);
+            rowEls.set(entry.index, rowEl);
+            frag.append(rowEl);
+        }
+        reader.replaceChildren(frag);
+        updateActiveLine(true);
+    };
+
+    const populateEditor = () => {
+        const candidate = payload?.candidate;
+        if (!candidate) {
+            artistField.value = payload?.identity?.artist ?? '';
+            trackField.value = payload?.identity?.title ?? '';
+            albumField.value = payload?.identity?.album ?? '';
+            durationField.value = payload?.identity?.durationSeconds ? String(payload.identity.durationSeconds) : '';
+            lyricsArea.value = '';
+            offsetBakedNotice.hidden = true;
+            updateDurationFmt();
+            updateEditorCount();
+            return;
+        }
+        artistField.value = candidate.artistName || payload?.identity?.artist || '';
+        trackField.value = candidate.trackName || payload?.identity?.title || '';
+        albumField.value = candidate.realAlbumName || '';
+        durationField.value = candidate.duration ? String(candidate.duration) : '';
+        lyricsArea.value = candidate.timed
+            ? (candidate.bakedSyncedLyrics || candidate.syncedLyrics || '')
+            : (candidate.plainLyrics || '');
+        const off = Number(payload?.offsetSeconds ?? 0);
+        if (candidate.timed && Math.abs(off) >= 0.05) {
+            offsetBakedNotice.textContent = `Your ${off > 0 ? '+' : ''}${off.toFixed(1)} s timing offset has already been applied to the timestamps below.`;
+            offsetBakedNotice.hidden = false;
+        } else {
+            offsetBakedNotice.hidden = true;
+        }
+        updateDurationFmt();
+        updateEditorCount();
+    };
+
+    const syncHeader = () => {
+        const candidate = payload?.candidate;
+        modalTitle.textContent = candidate
+            ? [candidate.artistName, candidate.trackName].filter(Boolean).join(' \u2014 ') || 'Full lyrics'
+            : (model.state?.identityText || 'Full lyrics');
+        if (candidate) {
+            const spokenCount = candidate.lines.filter(l => l.text).length;
+            metaPill.textContent = candidate.timed ? `Timed \u00b7 ${spokenCount} lines` : `Untimed \u00b7 ${spokenCount} lines`;
+            metaPill.className = `pill ${candidate.timed ? 'pill-good' : 'pill-warn'}`;
+            metaPill.hidden = false;
+        } else {
+            metaPill.hidden = true;
+        }
+        publishedPill.hidden = !payload?.publishedAt;
+        const publishAllowed = model.state?.publishAvailable !== false;
+        doPublishBtn.hidden = !publishAllowed;
+    };
+
+    const refreshLyrics = async (force = false) => {
+        if (!open || loading)
+            return;
+        const key = [
+            model.state?.videoId ?? '',
+            model.state?.chosen?.id ?? '',
+            model.state?.offsetSeconds ?? 0,
+            model.values?.['text-furigana'] ? 'f1' : 'f0',
+            model.state?.publishedAt ?? '',
+        ].join('|');
+        if (!force && key === loadedKey) {
+            updateActiveLine(false);
+            return;
+        }
+        loading = true;
+        try {
+            payload = await call('GET', '/api/lyrics');
+            loadedKey = key;
+            syncHeader();
+            renderReader();
+            if (!editorDirty)
+                populateEditor();
+        } catch (error) {
+            showBanner(`Could not load full lyrics: ${error.message}`);
+        } finally {
+            loading = false;
+        }
+    };
+
+    const setMode = next => {
+        mode = next === 'edit' ? 'edit' : 'read';
+        readTabBtn.setAttribute('aria-pressed', String(mode === 'read'));
+        editTabBtn.setAttribute('aria-pressed', String(mode === 'edit'));
+        readToolbar.hidden = mode !== 'read';
+        reader.hidden = mode !== 'read';
+        editorPane.hidden = mode !== 'edit';
+        modalFoot.hidden = mode !== 'edit';
+        if (mode === 'read')
+            scrollToCurrent(false);
+        else if (!editorDirty)
+            populateEditor();
+        syncUrl();
+    };
+
+    const openModal = (initialMode = 'read') => {
+        open = true;
+        autoScroll = true;
+        backdrop.hidden = false;
+        setStatus('', '');
+        setMode(initialMode);
+        refreshLyrics(true);
+    };
+
+    const close = () => {
+        if (!open)
+            return;
+        open = false;
+        backdrop.hidden = true;
+        syncUrl();
+    };
+
+    window.addEventListener('keydown', event => {
+        if (event.key === 'Escape' && open) {
+            event.preventDefault();
+            close();
+            return;
+        }
+        const tag = event.target?.tagName;
+        const typing = tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || event.target?.isContentEditable;
+        if (!typing && !event.ctrlKey && !event.altKey && !event.metaKey && event.key.toLowerCase() === 'l') {
+            if (open) {
+                event.preventDefault();
+                close();
+            } else if (model.state?.active && model.state?.chosen) {
+                event.preventDefault();
+                openModal('read');
+            }
+        }
+    });
+
+    model.stateViews.push(() => {
+        if (!open)
+            return;
+        refreshLyrics(false);
+    });
+    view(() => {
+        if (open)
+            refreshLyrics(false);
+    });
+
+    const controller = {
+        open: openModal,
+        close,
+        isOpen: () => open,
+    };
+    model.lyricsModal = controller;
+
+    // Restore modal directly from URL (?lyrics=read or ?lyrics=edit).
+    const initialParam = new URLSearchParams(window.location.search).get('lyrics');
+    if (initialParam === 'read' || initialParam === 'edit')
+        openModal(initialParam);
+
+    return controller;
 }
 
 // ----- Tabs & page lifecycle
@@ -1294,6 +1792,7 @@ async function start() {
     model.values = answer.values;
     buildTopBar();
     buildStage();
+    buildLyricsModal();
     buildWorkspace();
     render();
     pollState();
