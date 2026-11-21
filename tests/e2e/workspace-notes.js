@@ -1,5 +1,5 @@
 // A light-mode notes window for the README's multi-workspace desktop picture
-// (tests/e2e/readme-desktop.mjs). Pure fictional travel notes; no personal data.
+// (tests/e2e/readme-desktop.mjs). Pure fictional trail notes; no personal data.
 //
 //   gjs -m workspace-notes.js <title>
 
@@ -12,20 +12,20 @@ import System from 'system';
 const TITLE = System.programArgs[0] || 'Notes';
 
 const NOTES_LIST = [
-    ['Kyoto in April', 'Today · 6 items', true],
+    ['Autumn river loop', 'Today · 6 items', true],
     ['Packing checklist', 'Yesterday', false],
-    ['Rail routes', 'Apr 2', false],
-    ['Tea & coffee spots', 'Mar 28', false],
-    ['Reading list', 'Mar 19', false],
+    ['Trailhead maps', 'Oct 12', false],
+    ['Camp stove notes', 'Oct 4', false],
+    ['Reading list', 'Sep 29', false],
 ];
 
 const CHECKLIST = [
-    [true, 'Walk Philosopher\u2019s Path early before the crowds (06:45)'],
-    [true, 'Book scenic train seats along the Hozugawa river'],
-    [false, 'Cross Togetsukyo Bridge and wander the bamboo grove'],
-    [false, 'Stop by a small roastery near Sanjo for afternoon hojicha'],
-    [false, 'Evening stroll along the Kamo River steps at sunset'],
-    [false, 'Pack a light rain shell and folding umbrella'],
+    [true, 'Start at the ridge overlook right after sunrise (06:45)'],
+    [true, 'Download offline topographic map tiles for the valley loop'],
+    [false, 'Cross the wooden footbridge and follow the river bend north'],
+    [false, 'Stop by the small general store in town for hot cider'],
+    [false, 'Catch the golden-hour light from the west meadow before dusk'],
+    [false, 'Pack a warm wool layer and light rain shell'],
 ];
 
 const CSS = `
@@ -40,7 +40,7 @@ headerbar { background: #f5f7fa; border-bottom: 1px solid #e1e6ee; }
 .doc { background: #ffffff; padding: 26px 32px; }
 .doc-title { font-size: 26px; font-weight: 800; color: #0f172a; }
 .tag { background: #eef2ff; color: #3730a3; border-radius: 999px; padding: 3px 10px; font-size: 12px; font-weight: 700; }
-.tag-spring { background: #fce7f3; color: #9d174d; }
+.tag-amber { background: #fef3c7; color: #92400e; }
 .doc-body { font-size: 15px; color: #1e293b; }
 .section-head { font-size: 14px; font-weight: 800; color: #0f172a; margin-top: 8px; }
 .check-box { font-size: 15px; font-weight: 700; color: #2563eb; min-width: 20px; }
@@ -71,16 +71,16 @@ function buildSidebar() {
 
 function buildDocument() {
     const doc = new Gtk.Box({orientation: Gtk.Orientation.VERTICAL, spacing: 14, hexpand: true, css_classes: ['doc']});
-    doc.append(label('Kyoto in April', 'doc-title'));
+    doc.append(label('Autumn river loop', 'doc-title'));
 
     const tags = new Gtk.Box({spacing: 8});
-    tags.append(label('Spring', ['tag', 'tag-spring'], {wrap: false}));
-    tags.append(label('Itinerary', 'tag', {wrap: false}));
-    tags.append(label('Walking', 'tag', {wrap: false}));
+    tags.append(label('Weekend', ['tag', 'tag-amber'], {wrap: false}));
+    tags.append(label('Trail plan', 'tag', {wrap: false}));
+    tags.append(label('River valley', 'tag', {wrap: false}));
     doc.append(tags);
 
     doc.append(label(
-        'Keep the mornings unhurried and mostly on foot. Cherry trees along the canal usually peak in the first week of April, and the side streets stay quiet until mid-morning.',
+        'Keep the morning easy and mostly along the water. The valley trail stays quiet until mid-morning, and the ridge switchbacks dry out quickly once the sun clears the trees.',
         'doc-body',
     ));
 
@@ -95,7 +95,7 @@ function buildDocument() {
     doc.append(list);
 
     const callout = new Gtk.Box({orientation: Gtk.Orientation.VERTICAL, spacing: 4, css_classes: ['callout']});
-    callout.append(label('Note: early buses to Ginkaku-ji run every 10 minutes from Kyoto Station; walking south along the canal takes about 40 minutes at an easy pace.', 'callout-text'));
+    callout.append(label('Note: the lower bridge trail adds about 25 minutes on the return leg and avoids the steep gravel road.', 'callout-text'));
     doc.append(callout);
     return doc;
 }

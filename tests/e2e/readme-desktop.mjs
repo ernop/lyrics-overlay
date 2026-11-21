@@ -25,29 +25,29 @@ const LRC = [
     '[00:44.00] Was blind, but now I see',
 ].join('\n');
 
-const SAKURA_VIDEO = 'sakurasakura1';
-const SAKURA_TITLE = 'Sakura Sakura';
-const SAKURA_ARTIST = 'Traditional Ensemble';
-const SAKURA_LINE = '\u685c \u5f25\u751f\u306e\u7a7a\u306f \u898b\u6e21\u3059\u9650\u308a';
-const SAKURA_LRC = [
-    `[00:05.00] ${SAKURA_LINE}`,
-    '[00:18.00] \u971e\u304b\u96f2\u304b \u671d\u65e5\u306b\u5302\u3046',
-    '[00:31.00] \u685c \u685c \u82b1\u3056\u304b\u308a',
-    '[00:44.00] \u3044\u3056\u3084 \u3044\u3056\u3084 \u898b\u306b\u3086\u304b\u3093',
+const SHENANDOAH_VIDEO = 'shenandoah1';
+const SHENANDOAH_TITLE = 'Shenandoah';
+const SHENANDOAH_ARTIST = 'Riverside Folk';
+const SHENANDOAH_LINE = 'Oh Shenandoah, I long to hear you';
+const SHENANDOAH_LRC = [
+    `[00:05.00] ${SHENANDOAH_LINE}`,
+    '[00:14.00] Away, you rolling river',
+    '[00:22.00] Oh Shenandoah, I long to hear you',
+    '[00:31.00] Away, we\'re bound away, \'cross the wide Missouri',
 ].join('\n');
 
 const ANSWERS = {
     [`${ARTIST}|${TITLE}`]: [{id: 1, trackName: TITLE, artistName: ARTIST, albumName: 'Live at the Chapel', duration: 222,
         instrumental: false, plainLyrics: FIRST_LINE, syncedLyrics: LRC}],
-    [`${SAKURA_ARTIST}|${SAKURA_TITLE}`]: [{id: 2, trackName: SAKURA_TITLE, artistName: SAKURA_ARTIST, albumName: 'Spring Folk Songs', duration: 168,
-        instrumental: false, plainLyrics: SAKURA_LINE, syncedLyrics: SAKURA_LRC}],
+    [`${SHENANDOAH_ARTIST}|${SHENANDOAH_TITLE}`]: [{id: 2, trackName: SHENANDOAH_TITLE, artistName: SHENANDOAH_ARTIST, albumName: 'River Songs', duration: 214,
+        instrumental: false, plainLyrics: SHENANDOAH_LINE, syncedLyrics: SHENANDOAH_LRC}],
 };
 const METADATA = {host: 'www.youtube.com', videoId: VIDEO, title: TITLE, author: `${ARTIST} - Topic`, lengthSeconds: 222,
     category: 'Music', musicVideoType: '', musicCards: [], mediaSession: null, ytmByline: '',
     description: `Provided to YouTube by Label\n\n${TITLE} · ${ARTIST}\n\nLive at the Chapel\n\n℗ 2026 Label`};
-const SAKURA_METADATA = {host: 'www.youtube.com', videoId: SAKURA_VIDEO, title: SAKURA_TITLE, author: `${SAKURA_ARTIST} - Topic`, lengthSeconds: 168,
+const SHENANDOAH_METADATA = {host: 'www.youtube.com', videoId: SHENANDOAH_VIDEO, title: SHENANDOAH_TITLE, author: `${SHENANDOAH_ARTIST} - Topic`, lengthSeconds: 214,
     category: 'Music', musicVideoType: '', musicCards: [], mediaSession: null, ytmByline: '',
-    description: `Provided to YouTube by Label\n\n${SAKURA_TITLE} · ${SAKURA_ARTIST}\n\nSpring Folk Songs\n\n℗ 2026 Label`};
+    description: `Provided to YouTube by Label\n\n${SHENANDOAH_TITLE} · ${SHENANDOAH_ARTIST}\n\nRiver Songs\n\n℗ 2026 Label`};
 
 // The first line's tune (New Britain, in G from D4), one entry per sung
 // pitch; a slurred pitch continues its syllable without a break.
@@ -64,21 +64,19 @@ const TUNE = [
     {midi: 62, beats: 2}, // sound
 ];
 
-// Traditional Sakura Sakura melody (Miyako-bushi on A/E): A4-A4-B4, A4-B4-C5-B4-A4-B4-A4-F4-E4
-const SAKURA_BEAT_MS = 460;
-const SAKURA_TUNE = [
-    {midi: 69, beats: 1}, // Sa-
-    {midi: 69, beats: 1}, // ku-
-    {midi: 71, beats: 2}, // ra
-    {midi: 69, beats: 1}, // Ya-
-    {midi: 71, beats: 1}, // yo-
-    {midi: 72, beats: 1}, // i
-    {midi: 71, beats: 1}, // no
-    {midi: 69, beats: 1}, // so-
-    {midi: 71, beats: 0.5}, // ra
-    {midi: 69, beats: 0.5, slurred: true},
-    {midi: 65, beats: 1.5}, // wa
-    {midi: 64, beats: 2.5}, // (sustained E4)
+// Traditional Shenandoah opening phrase in G major: D4 - G4 - G4 - G4 - A4 - B4 - D5 - B4 - A4 - G4
+const SHENANDOAH_BEAT_MS = 500;
+const SHENANDOAH_TUNE = [
+    {midi: 62, beats: 1}, // Oh
+    {midi: 67, beats: 1.5}, // She-
+    {midi: 67, beats: 0.75}, // nan-
+    {midi: 67, beats: 1.25}, // do-
+    {midi: 69, beats: 0.75}, // ah,
+    {midi: 71, beats: 1}, // I
+    {midi: 74, beats: 1.5}, // long
+    {midi: 71, beats: 1}, // to
+    {midi: 69, beats: 1}, // hear
+    {midi: 67, beats: 2.5}, // you (sustained G4)
 ];
 const SAMPLE_MS = 20;
 const CONSONANT_MS = 60;
@@ -182,8 +180,8 @@ try {
 
     // Second desktop picture: singing along while working in other apps
     // (a bright light-mode notes window + a dark code editor, with YouTube
-    // hidden on another workspace), showing offline Japanese furigana and a
-    // 4-ring pink telop border crisp across both bright and dark windows.
+    // hidden on another workspace), showing a 4-ring yellow/gold border crisp
+    // across both bright and dark windows alongside the live pitch meter.
     firstPlay.stop();
     await h.evalJs(`(() => {
         const win = global.display.list_all_windows().find(w => w.get_title() === ${JSON.stringify(TITLE)});
@@ -196,14 +194,14 @@ try {
     for (const [key, value] of [['primary-color', '#1a273a'], ['secondary-color', '#263a52']])
         await h.gsettings.setDesktop('org.gnome.desktop.background', key, value);
     for (const [key, value] of [
-        ['font-size', '58'],
-        ['text-color', "'pink'"],
+        ['font-size', '56'],
+        ['text-color', "'yellow'"],
         ['text-border', "'quad'"],
-        ['text-furigana', 'true'],
+        ['text-furigana', 'false'],
         ['pitch-scale', "'fixed'"],
-        ['pitch-scale-root', '9'],
-        ['pitch-scale-type', "'minor'"],
-        ['pitch-range-bottom', '57'],
+        ['pitch-scale-root', '7'],
+        ['pitch-scale-type', "'major'"],
+        ['pitch-range-bottom', '60'],
         ['pitch-range-top', '76'],
         ['pitch-line-color', "'#5eead4'"],
         ['pitch-background-opacity', '0.82'],
@@ -222,20 +220,19 @@ try {
         return true;
     })()`);
 
-    const secondPlay = await h.play({tabId: 5, heartbeatMs: 5000, metadata: SAKURA_METADATA, next: null,
-        media: {videoId: SAKURA_VIDEO, currentTime: 7, duration: 168, paused: false, ended: false, stalled: false,
+    const secondPlay = await h.play({tabId: 5, heartbeatMs: 5000, metadata: SHENANDOAH_METADATA, next: null,
+        media: {videoId: SHENANDOAH_VIDEO, currentTime: 7, duration: 214, paused: false, ended: false, stalled: false,
             playbackRate: 1, muted: false, volume: 1, adShowing: false}});
     await h.waitFor(async () => (await h.evalJs(`(() => {
         const {_overlay: overlay, _pitchPanel: panel} = ${EXTENSION}.stateObj;
         return overlay._root.visible && panel._frame.visible &&
-            overlay._line?.text === ${JSON.stringify(SAKURA_LINE)} &&
-            Array.isArray(overlay._line?.ruby) && overlay._line.ruby.length > 0;
-    })()`)), 'Sakura Sakura line with offline furigana');
+            overlay._line?.text === ${JSON.stringify(SHENANDOAH_LINE)};
+    })()`)), 'Shenandoah line');
 
-    const sakuraBatches = frameBatches(sungSamples(SAKURA_TUNE, SAKURA_BEAT_MS, 19), 6300, 2_000_000);
+    const folkBatches = frameBatches(sungSamples(SHENANDOAH_TUNE, SHENANDOAH_BEAT_MS, 19), 5900, 2_000_000);
     await h.evalJs(`(() => {
         ${EXTENSION}.stateObj._pitchPanel._view.clear();
-        for (const frames of ${JSON.stringify(sakuraBatches)})
+        for (const frames of ${JSON.stringify(folkBatches)})
             ${EXTENSION}.stateObj._pitchPanel.pushFrames(frames);
         return true;
     })()`);

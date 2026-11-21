@@ -10,13 +10,17 @@ timed to the music, and an optional pitch meter beside or below it draws the
 notes you sing into your microphone against the song's scale.
 
 Lyrics are matched automatically, and your choices and timing adjustments are
-remembered per video. If a track is slightly off or missing, you can nudge the
-timing in half-second steps, search by artist and title, load your own `.lrc`
-or `.txt` file, or let an optional local tool time the lyrics directly from the
-audio. Layered borders keep the text legible over bright and dark windows
-without a solid background bar, optional offline Japanese furigana places
-hiragana readings above kanji, and clicking a lyric jumps straight back to the
-playing tab while empty space passes clicks through to whatever sits behind it.
+remembered per video. Even for rare recordings or brand-new uploads that have
+no lyrics anywhere online, optional local audio timing listens to the track and
+builds timed lyrics automatically — usually in about 5 seconds once the song
+starts playing on a local GPU — and saves them for instant replays. You can
+also open a full-song lyrics view that tracks your place live, nudge timing in
+half-second steps, search or load your own `.lrc`/`.txt` file, or edit and
+anonymously publish verified lyrics back to LRCLIB. Layered borders keep lines
+legible over bright and dark windows alike, optional offline Japanese furigana
+places hiragana readings above kanji, and clicking a lyric jumps straight back
+to the playing tab while empty space passes clicks through to whatever sits
+behind it.
 
 ![Desktop with a song video playing; timed lyrics and the live pitch trace float at the bottom](docs/desktop.png)
 
@@ -26,7 +30,17 @@ YouTube does not need to stay on screen. While you read, write, or code in
 other windows, the lyrics and pitch meter float unobtrusively over both bright
 and dark apps, with a small note icon in the top bar whenever music is playing.
 
-![Working across a light notes window and a dark code editor while Japanese lyrics with furigana and the live pitch trace float above](docs/workspace.png)
+![Working across a light notes window and a dark code editor while timed lyrics and the live pitch trace float above](docs/workspace.png)
+
+## Full lyrics view, local timing, and sharing back
+
+Click **Full lyrics** (or press `L`) whenever you want to read the whole song
+and follow along live without watching the video. If a track had no lyrics
+online, local timing transcribes and saves it automatically — and the **Edit &
+publish** tab lets you fix any words and optionally publish verified lyrics
+anonymously to LRCLIB.
+
+![Full lyrics modal tracking the active line live, with auto-scroll, timing nudges, and Edit & publish tab](docs/full-lyrics.png)
 
 ## Readable over bright and dark scenes
 
@@ -42,7 +56,7 @@ Right-click the lyric, pitch panel, or top-bar note to open the single settings
 page (`http://localhost:8792/settings`). Every change updates the live overlay
 immediately.
 
-![Settings page — Lyrics tab with live Japanese furigana preview and multi-ring border controls](docs/settings.png)
+![Settings page — Lyrics tab with live preview and multi-ring border controls](docs/settings.png)
 
 Arrange the lyric box and pitch panel directly on a map of your monitor, dock
 the pitch panel on any side (or detach it), and adjust note range, scale
@@ -50,10 +64,11 @@ highlighting, and microphone choice:
 
 ![Settings page — Screen map and Pitch tab](docs/settings-map.png)
 
-For the current song, nudge timing, switch between lyric sets, search LRCLIB by
-artist and title, load a local `.lrc` or `.txt` file, or trigger local timing:
+For the current song, open full lyrics, nudge timing, switch lyric sets
+(including locally transcribed ones), search by artist and title, load a local
+`.lrc` or `.txt` file, or edit and publish to LRCLIB:
 
-![Settings page — Song tab with timing nudges, manual search, and local file import](docs/settings-song.png)
+![Settings page — Song tab with locally transcribed lyrics, timing nudges, manual search, and local file import](docs/settings-song.png)
 
 ## Everyday controls
 
@@ -65,6 +80,7 @@ artist and title, load a local `.lrc` or `.txt` file, or trigger local timing:
 | `Ctrl+drag` pitch panel | Moves, resizes from any edge, or docks against a side of the lyric |
 | Click top-bar note | Toggles the overlay on or off |
 | Right-click lyric, pitch panel, or note | Opens or raises the settings page |
+| **Full lyrics** button (or `L`) | Opens the live full-song lyrics view and **Edit & publish** editor |
 
 ---
 
@@ -104,7 +120,8 @@ it.
 
 - The Firefox add-on talks only to the local service on this computer.
 - Lyric lookups go to [LRCLIB](https://lrclib.net) with a generic User-Agent,
-  cached for 7 days and strictly rate-limited.
+  cached for 7 days and strictly rate-limited. Publishing back to LRCLIB is
+  strictly manual and anonymous (no account needed).
 - Offline Japanese furigana and optional local audio timing run on this
   computer; temporary audio is deleted immediately and lyric text is never
   written to logs.

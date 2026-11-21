@@ -1,10 +1,11 @@
 // Draws the README's pictures of the settings page: the real page in a
 // signed-out, headless Firefox with a throwaway profile, driven over
 // WebDriver BiDi with Node's own WebSocket. A private service on its own
-// session bus, local mock LRCLIB server, and port serves it with a public-
-// domain song and made-up microphones (a stand-in pw-dump), so nothing of
-// this computer's devices or listening shows. Every temporary file is deleted
-// at the end. Run by scripts/update-readme-pictures.sh:
+// session bus, local mock LRCLIB server, stand-in local lyric generator, and
+// port serves it with a public-domain English folk song ("Shenandoah") and
+// made-up microphones (a stand-in pw-dump), so nothing of this computer's
+// devices or listening shows. Every temporary file is deleted at the end.
+// Run by scripts/update-readme-pictures.sh:
 //
 //   node scripts/settings-page-picture.mjs [--firefox PATH]
 import {execFileSync, spawn} from 'node:child_process';
@@ -21,6 +22,7 @@ const ARTIFACTS = path.join(root, 'build', 'e2e-artifacts');
 const OUT_LYRICS = path.join(ARTIFACTS, 'readme-settings.png');
 const OUT_MAP = path.join(ARTIFACTS, 'readme-settings-map.png');
 const OUT_SONG = path.join(ARTIFACTS, 'readme-settings-song.png');
+const OUT_FULL = path.join(ARTIFACTS, 'readme-full-lyrics.png');
 
 const args = process.argv.slice(2);
 const firefox = args[0] === '--firefox' ? args[1] : execFileSync('sh', ['-c', 'command -v firefox'], {encoding: 'utf8'}).trim();
@@ -39,52 +41,47 @@ const PW_DUMP = [
     node(46, 'Audio/Source', 'alsa_input.pci-0000_00_1f.3.analog-stereo', 'Built-in Audio Analog Stereo'),
 ];
 
-const VIDEO_ID = 'sakurasakura1';
-const SAKURA_LRC = [
-    '[00:05.00] 桜 弥生の空は 見渡す限り',
-    '[00:18.00] 霞か雲か 朝日に匂う',
-    '[00:31.00] 桜 桜 花ざかり',
-    '[00:44.00] いざや いざや 見にゆかん',
-].join('\n');
-const SAKURA_PLAIN = [
-    '桜 弥生の空は 見渡す限り',
-    '霞か雲か 朝日に匂う',
-    '桜 桜 花ざかり',
-    'いざや いざや 見にゆかん',
-].join('\n');
-
-const MOCK_LRCLIB = [
-    {
-        id: 101,
-        trackName: 'Sakura Sakura',
-        artistName: 'Traditional Ensemble',
-        albumName: 'Spring Folk Songs',
-        duration: 168,
-        instrumental: false,
-        plainLyrics: SAKURA_PLAIN,
-        syncedLyrics: SAKURA_LRC,
-    },
-    {
-        id: 102,
-        trackName: 'Sakura Sakura (Acoustic)',
-        artistName: 'Traditional Ensemble',
-        albumName: 'Koto & Voice',
-        duration: 170,
-        instrumental: false,
-        plainLyrics: SAKURA_PLAIN,
-        syncedLyrics: SAKURA_LRC,
-    },
-    {
-        id: 103,
-        trackName: 'Sakura Sakura',
-        artistName: 'Traditional Ensemble',
-        albumName: 'Anthology',
-        duration: 168,
-        instrumental: false,
-        plainLyrics: SAKURA_PLAIN,
-        syncedLyrics: null,
-    },
+const VIDEO_ID = 'shenandoah1';
+const SHENANDOAH_LINES = [
+    [6.0, 'Oh Shenandoah, I long to hear you'],
+    [13.5, 'Away, you rolling river'],
+    [20.5, 'Oh Shenandoah, I long to hear you'],
+    [28.0, "Away, we're bound away, 'cross the wide Missouri"],
+    [39.0, 'Oh Shenandoah, I love your daughter'],
+    [46.5, 'Away, you rolling river'],
+    [53.5, 'I will take her across the rolling water'],
+    [61.0, "Away, we're bound away, 'cross the wide Missouri"],
+    [72.0, "'Tis seven long years since last I saw you"],
+    [79.5, 'Away, you rolling river'],
+    [86.5, "'Tis seven long years since last I saw you"],
+    [94.0, "Away, we're bound away, 'cross the wide Missouri"],
 ];
+
+function makeFakeTranscript() {
+    return {
+        ok: true,
+        language: 'en',
+        duration: 214,
+        device: 'cuda',
+        segments: SHENANDOAH_LINES.map(([start, text]) => {
+            const parts = text.split(' ');
+            const step = 4.2 / Math.max(1, parts.length);
+            const words = parts.map((w, i) => ({
+                start: +(start + i * step).toFixed(2),
+                end: +(start + (i + 0.85) * step).toFixed(2),
+                word: i === 0 ? w : ` ${w}`,
+                probability: 0.96,
+            }));
+            return {
+                start,
+                end: +(start + 4.4).toFixed(2),
+                text,
+                no_speech_prob: 0.01,
+                words,
+            };
+        }),
+    };
+}
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
@@ -141,10 +138,12 @@ async function bidi(url) {
     };
 }
 
+// LRCLIB returns no lyrics for this folk recording so the local automatic
+// lyric timer runs and produces a clean "Transcribed" set in seconds.
 async function startMockLrclib() {
     const server = http.createServer((_req, res) => {
         res.writeHead(200, {'Content-Type': 'application/json'});
-        res.end(JSON.stringify(MOCK_LRCLIB));
+        res.end('[]');
     });
     await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
     const {port} = server.address();
@@ -166,6 +165,11 @@ try {
     fs.mkdirSync(bin);
     fs.writeFileSync(path.join(bin, 'pw-dump.json'), JSON.stringify(PW_DUMP));
     fs.writeFileSync(path.join(bin, 'pw-dump'), `#!/bin/sh\nexec cat '${path.join(bin, 'pw-dump.json')}'\n`, {mode: 0o755});
+    const fakeGen = path.join(bin, 'fake-gen.mjs');
+    fs.writeFileSync(fakeGen, `#!/usr/bin/env node
+process.stderr.write('stage:transcribe\\n');
+process.stdout.write(${JSON.stringify(JSON.stringify(makeFakeTranscript()))} + '\\n');
+`, {mode: 0o755});
     env.PATH = `${bin}:${env.PATH}`;
 
     const port = 20000 + Math.floor(Math.random() * 20000);
@@ -176,13 +180,20 @@ try {
         lrclibBaseUrl: mockLrclib.url,
         ytarchiveUrl: null,
         stateDir: path.join(tmp, 'state', 'lyrics'),
+        lyricsGenerator: {
+            command: ['node', fakeGen],
+            model: 'large-v3',
+            device: 'cuda',
+            computeType: 'float16',
+            maxDurationSeconds: 1200,
+            gpuGate: null,
+        },
     }));
     const service = spawn('gjs', ['-m', path.join(root, 'service', 'main.js'), '--settings', settingsPath],
         {env, stdio: ['ignore', 'pipe', 'pipe']});
     processes.push(service);
     await printed(service, /listening on/u, 'the service');
 
-    // Configure showcase settings and report a live public-domain Japanese song.
     const api = async (method, apiPath, body, headers = {}) => {
         const res = await fetch(`http://localhost:${port}${apiPath}`, {
             method,
@@ -198,21 +209,22 @@ try {
             'overlay-enabled': true,
             'pitch-enabled': true,
             'font-size': 56,
-            'text-color': 'pink',
+            'text-color': 'yellow',
             'text-border': 'triple',
-            'text-furigana': true,
+            'text-furigana': false,
             'text-backdrop': 'none',
         },
     }, {Origin: `http://localhost:${port}`});
-    await api('POST', '/api/report', {
+
+    const reportTrack = () => api('POST', '/api/report', {
         tabId: 1,
         addonVersion: manifest.version,
         sampledAt: Date.now(),
         heartbeatMs: 60_000,
         media: {
             videoId: VIDEO_ID,
-            currentTime: 7,
-            duration: 168,
+            currentTime: 29,
+            duration: 214,
             playbackRate: 1,
             paused: false,
             ended: false,
@@ -224,26 +236,61 @@ try {
         metadata: {
             host: 'www.youtube.com',
             videoId: VIDEO_ID,
-            title: 'Sakura Sakura',
-            author: 'Traditional Ensemble - Topic',
-            lengthSeconds: 168,
+            title: 'Shenandoah',
+            author: 'Riverside Folk - Topic',
+            lengthSeconds: 214,
             category: 'Music',
             musicVideoType: '',
             musicCards: [],
             mediaSession: null,
             ytmByline: '',
-            description: 'Provided to YouTube by Label\n\nSakura Sakura · Traditional Ensemble\n\nSpring Folk Songs\n\n℗ 2026 Label',
+            description: 'Provided to YouTube by Label\n\nShenandoah · Riverside Folk\n\nRiver Songs\n\n℗ 2026 Label',
         },
         next: null,
     });
+    await reportTrack();
 
-    // Wait until LRCLIB lookup + offline SudachiPy furigana have populated the active line.
-    for (let i = 0; i < 40; i++) {
+    // Wait until automatic local timing produces the timed candidate.
+    for (let i = 0; i < 60; i++) {
         const st = await api('GET', '/api/state');
-        if (st.state.lyrics === 'timed' && Array.isArray(st.line?.ruby))
+        if (st.state.lyrics === 'timed' && st.state.candidates.some(c => c.generated === 'transcribed'))
             break;
         await sleep(100);
     }
+    // Freeze at line 4 ("Away, we're bound away, 'cross the wide Missouri") so the
+    // Full Lyrics modal highlights a mid-song line cleanly.
+    await api('POST', '/api/report', {
+        tabId: 1,
+        addonVersion: manifest.version,
+        sampledAt: Date.now(),
+        heartbeatMs: 60_000,
+        media: {
+            videoId: VIDEO_ID,
+            currentTime: 29.5,
+            duration: 214,
+            playbackRate: 1,
+            paused: true,
+            ended: false,
+            muted: false,
+            volume: 1,
+            stalled: false,
+            adShowing: false,
+        },
+        metadata: {
+            host: 'www.youtube.com',
+            videoId: VIDEO_ID,
+            title: 'Shenandoah',
+            author: 'Riverside Folk - Topic',
+            lengthSeconds: 214,
+            category: 'Music',
+            musicVideoType: '',
+            musicCards: [],
+            mediaSession: null,
+            ytmByline: '',
+            description: 'Provided to YouTube by Label\n\nShenandoah · Riverside Folk\n\nRiver Songs\n\n℗ 2026 Label',
+        },
+        next: null,
+    });
 
     const profile = path.join(tmp, 'profile');
     fs.mkdirSync(profile);
@@ -293,7 +340,7 @@ try {
         console.log(`wrote ${path.relative(root, outPath)}`);
     };
 
-    // 1. Lyrics tab: Furigana preview + Triple ring chips + per-ring controls
+    // 1. Lyrics tab: live English preview + Triple ring controls
     await capture(OUT_LYRICS);
 
     // 2. Pitch tab + Screen map on the sticky left stage
@@ -301,8 +348,7 @@ try {
         target: {context},
         awaitPromise: true,
         expression: `(async () => {
-            document.querySelector('#tabs button[aria-controls="panel-pitch"]')?.click() ||
-                [...document.querySelectorAll('#tabs button[role="tab"]')].find(b => b.textContent.includes('Pitch'))?.click();
+            [...document.querySelectorAll('#tabs button[role="tab"]')].find(b => b.textContent.includes('Pitch'))?.click();
             [...document.querySelectorAll('#stage .stage-bar button')].find(b => b.textContent.trim() === 'Screen map')?.click();
             await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
             return true;
@@ -311,7 +357,7 @@ try {
     await sleep(250);
     await capture(OUT_MAP);
 
-    // 3. Song tab + live preview: timing nudges, manual LRCLIB search, .lrc/.txt import, lyric sets
+    // 3. Song tab: auto-transcribed set, Full lyrics, Edit & publish, manual search, .lrc/.txt import
     await session.send('script.evaluate', {
         target: {context},
         awaitPromise: true,
@@ -324,6 +370,24 @@ try {
     });
     await sleep(250);
     await capture(OUT_SONG);
+
+    // 4. Full lyrics modal open in Read mode with active line highlighted
+    await session.send('script.evaluate', {
+        target: {context},
+        awaitPromise: true,
+        expression: `(async () => {
+            [...document.querySelectorAll('#topbar button')].find(b => b.textContent.trim() === 'Full lyrics')?.click();
+            for (let i = 0; i < 30; i++) {
+                if (document.querySelector('.lyric-line-row.is-current'))
+                    break;
+                await new Promise(r => setTimeout(r, 80));
+            }
+            await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+            return true;
+        })()`,
+    });
+    await sleep(350);
+    await capture(OUT_FULL);
 
     await session.send('session.end', {});
     session.close();

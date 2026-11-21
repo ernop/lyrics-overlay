@@ -12,12 +12,12 @@ import System from 'system';
 const TITLE = System.programArgs[0] || 'melody.py — Code';
 
 const CODE_LINES = [
-    '<span foreground="#7c88a1"># Compute frequencies and cents for a traditional pentatonic scale.</span>',
+    '<span foreground="#7c88a1"># Compute frequencies and cents for an equal-temperament major scale.</span>',
     '<span foreground="#7aa2f7">from</span> dataclasses <span foreground="#7aa2f7">import</span> dataclass',
     '<span foreground="#7aa2f7">import</span> math',
     '',
     'A4_HZ = <span foreground="#ff9e64">440.0</span>',
-    'MIYAKO_BUSHI = (<span foreground="#ff9e64">0</span>, <span foreground="#ff9e64">1</span>, <span foreground="#ff9e64">5</span>, <span foreground="#ff9e64">7</span>, <span foreground="#ff9e64">8</span>)  <span foreground="#7c88a1"># semitones from tonic</span>',
+    'MAJOR_STEPS = (<span foreground="#ff9e64">0</span>, <span foreground="#ff9e64">2</span>, <span foreground="#ff9e64">4</span>, <span foreground="#ff9e64">5</span>, <span foreground="#ff9e64">7</span>, <span foreground="#ff9e64">9</span>, <span foreground="#ff9e64">11</span>)  <span foreground="#7c88a1"># semitones from tonic</span>',
     '',
     '<span foreground="#bb9af7">@dataclass</span>(frozen=<span foreground="#ff9e64">True</span>)',
     '<span foreground="#7aa2f7">class</span> <span foreground="#7dcfff">Note</span>:',
@@ -29,7 +29,7 @@ const CODE_LINES = [
     '    <span foreground="#9ece6a">&quot;&quot;&quot;Equal-temperament frequency in Hz for a MIDI note number.&quot;&quot;&quot;</span>',
     '    <span foreground="#7aa2f7">return</span> A4_HZ * (<span foreground="#ff9e64">2.0</span> ** ((midi - <span foreground="#ff9e64">69.0</span>) / <span foreground="#ff9e64">12.0</span>))',
     '',
-    '<span foreground="#7aa2f7">def</span> <span foreground="#7dcfff">build_scale</span>(root_midi: <span foreground="#7dcfff">int</span>, intervals=MIYAKO_BUSHI) -&gt; <span foreground="#7dcfff">list</span>[Note]:',
+    '<span foreground="#7aa2f7">def</span> <span foreground="#7dcfff">build_scale</span>(root_midi: <span foreground="#7dcfff">int</span>, intervals=MAJOR_STEPS) -&gt; <span foreground="#7dcfff">list</span>[Note]:',
     '    names = (<span foreground="#9ece6a">&quot;C&quot;</span>, <span foreground="#9ece6a">&quot;C#&quot;</span>, <span foreground="#9ece6a">&quot;D&quot;</span>, <span foreground="#9ece6a">&quot;D#&quot;</span>, <span foreground="#9ece6a">&quot;E&quot;</span>, <span foreground="#9ece6a">&quot;F&quot;</span>, <span foreground="#9ece6a">&quot;F#&quot;</span>, <span foreground="#9ece6a">&quot;G&quot;</span>, <span foreground="#9ece6a">&quot;G#&quot;</span>, <span foreground="#9ece6a">&quot;A&quot;</span>, <span foreground="#9ece6a">&quot;A#&quot;</span>, <span foreground="#9ece6a">&quot;B&quot;</span>)',
     '    notes = []',
     '    <span foreground="#7aa2f7">for</span> step <span foreground="#7aa2f7">in</span> intervals:',
@@ -39,7 +39,7 @@ const CODE_LINES = [
     '    <span foreground="#7aa2f7">return</span> notes',
     '',
     '<span foreground="#7aa2f7">if</span> __name__ == <span foreground="#9ece6a">&quot;__main__&quot;</span>:',
-    '    <span foreground="#7aa2f7">for</span> note <span foreground="#7aa2f7">in</span> build_scale(<span foreground="#ff9e64">64</span>):  <span foreground="#7c88a1"># E4 tonic</span>',
+    '    <span foreground="#7aa2f7">for</span> note <span foreground="#7aa2f7">in</span> build_scale(<span foreground="#ff9e64">67</span>):  <span foreground="#7c88a1"># G4 tonic</span>',
     '        print(<span foreground="#9ece6a">f&quot;{note.name:&lt;4}  {note.hz:&gt;7.2f} Hz&quot;</span>)',
 ];
 

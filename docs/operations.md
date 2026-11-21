@@ -151,9 +151,9 @@ overlay, and the testing lessons behind the rules. What it is for:
   draws `docs/indicator-icons.png` after an icon changes;
   `scripts/update-readme-pictures.sh` runs `tests/e2e/readme-desktop.mjs`
   (`docs/desktop.png` and `docs/workspace.png`), `scripts/styles-picture.mjs`
-  (`docs/styles.png`), and `scripts/settings-page-picture.mjs`
-  (`docs/settings.png`, `docs/settings-map.png`, `docs/settings-song.png` in
-  headless Firefox with made-up microphones) and copies each picture into
+  (`docs/styles.png`), and   `scripts/settings-page-picture.mjs` (`docs/settings.png`,
+  `docs/settings-map.png`, `docs/settings-song.png`, and `docs/full-lyrics.png`
+  in headless Firefox with made-up microphones) and copies each picture into
   `docs/` without PNG text chunks so an unchanged picture stays the same file.
 
 ## Release the Firefox extension
