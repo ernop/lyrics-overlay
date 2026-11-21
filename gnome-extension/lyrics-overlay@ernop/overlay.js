@@ -44,7 +44,7 @@ export const TRANSITIONS = Object.freeze({
 const GEOMETRY_KEYS = ['cx', 'cy', 'width', 'height'];
 
 const LOOK_KEYS = new Set([
-    'font-size', 'font-family', 'font-bold', 'font-italic',
+    'font-size', 'font-family', 'font-bold', 'font-italic', 'text-furigana',
     'text-color', 'text-custom-color', 'text-border', 'text-border-cloud',
     'text-border-1-color', 'text-border-1-width',
     'text-border-2-color', 'text-border-2-width',
@@ -482,13 +482,14 @@ export class LyricsOverlay {
         return this._monitorIndex;
     }
 
-    /** @param {{text: string, key: string}} line */
+    /** @param {{text: string, key: string, ruby?: Array<[string, string]>}} line */
     setLine(line) {
         const previous = this._line;
         this._line = line;
         if (line.key !== previous.key)
             this._crossTo(line.text);
-        else if (line.text !== this._layers[this._current].text)
+        else if (line.text !== this._layers[this._current].text
+            || JSON.stringify(line.ruby ?? null) !== JSON.stringify(previous.ruby ?? null))
             this._fitAndResize(this._layers[this._current], line.text);
         this._syncStatusPill();
         this._placeGrip();
@@ -619,6 +620,7 @@ export class LyricsOverlay {
             backdropOpacity: s.get_double('text-backdrop-opacity'),
             align: s.get_string('text-align'),
             anchor: this._anchor(),
+            ruby: s.get_boolean('text-furigana') ? (this._line.ruby ?? null) : null,
             width,
             height,
         };

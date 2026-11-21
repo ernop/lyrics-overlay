@@ -33,6 +33,7 @@ export const GENERATED_CANDIDATE_SCORE = 0.62;
 export const MAX_STORED_CANDIDATES = 20;
 
 const LRC_META_TAG = /^\s*\[(ar|ti|al|length|by|re|ve|offset):([^\]]*)\]\s*$/iu;
+const KANJI_RE = /[\u4e00-\u9fff\u3400-\u4dbf\u3005]/u;
 
 function parseLrcLengthTag(value) {
     const match = /^(\d+):(\d{1,2})(?:\.\d+)?$/u.exec(String(value ?? '').trim());
@@ -140,9 +141,14 @@ export class LyricsCore {
      *   generate?: (request: {videoId: string, identity: object, plainLyrics: string,
      *                         onStage: (stage: string) => void}) => {promise: Promise<object>, cancel: () => void},
      *   maxGenerateDurationSeconds?: number,
+     *   furigana?: {cached(text: string): Array<[string, string]>|null,
+     *               annotate(text: string): Promise<Array<[string, string]>|null>,
+     *               warm(lines: string[]): Promise<boolean>},
+     *   furiganaEnabled?: boolean,
      *   clock: {now(): number},
      *   timers: {set(callback: () => void, delayMs: number): unknown, clear(handle: unknown): void},
-     *   emit: {state(state: object): void, line(line: {text: string, key: string}): void},
+     *   emit: {state(state: object): void, line(line: {text: string, key: string, ruby?: Array<[string, string]>}): void,
+     *          presence?: (presence: {sounding: string[], open: string[]}) => void},
      *   log: (message: string) => void,
      *   budgetWindows?: ReadonlyArray<{seconds: number, limit: number}>,
      * }} deps
@@ -155,6 +161,8 @@ export class LyricsCore {
         this._deps = deps;
         this._budgetWindows = deps.budgetWindows ?? LRCLIB_WINDOWS;
         this._maxGenerateDurationSeconds = deps.maxGenerateDurationSeconds ?? DEFAULT_MAX_GENERATE_DURATION_SECONDS;
+        this._furiganaEnabled = Boolean(deps.furiganaEnabled);
+        this._furiganaWarmedKey = '';
         this._budget = loadedBudgetState(deps.store.loadBudget());
         this._sessions = new Map();
         this._videos = new Map();
@@ -168,7 +176,9 @@ export class LyricsCore {
         this._waitingUntil = 0;
         this._timers = {line: null, activity: null, budget: null};
         this._lastState = '';
+        this._lastPresence = '';
         this._lastLine = {text: '', key: 'none'};
+        this._lastLineJson = JSON.stringify(this._lastLine);
         this._pitch = {capturing: false, error: '', microphone: ''};
         /** @type {{videoId: string, root: number, type: 'major'|'minor'}|null} */
         this._songKey = null;
@@ -384,6 +394,17 @@ export class LyricsCore {
     /** The key heard in a video's sound (song-key.js), or null when nothing is listening. */
     setSongKey(key) {
         this._songKey = key && {videoId: key.videoId, root: key.root, type: key.type};
+        this._refresh();
+    }
+
+    /** Turns offline Japanese furigana annotation on or off for emitted lyric lines. */
+    setFuriganaEnabled(enabled) {
+        const next = Boolean(enabled);
+        if (this._furiganaEnabled === next)
+            return;
+        this._furiganaEnabled = next;
+        if (!next)
+            this._furiganaWarmedKey = '';
         this._refresh();
     }
 
@@ -980,6 +1001,20 @@ export class LyricsCore {
         });
     }
 
+    _presenceJson() {
+        const sounding = new Set();
+        const open = new Set();
+        for (const session of this._sessions.values()) {
+            open.add(session.videoId);
+            if (this._sounding(session))
+                sounding.add(session.videoId);
+        }
+        return JSON.stringify({
+            sounding: [...sounding].sort(),
+            open: [...open].sort(),
+        });
+    }
+
     _lineAt(session, now) {
         if (!session || session.media.adShowing || session.media.ended)
             return {text: '', key: 'none', nextChangeAt: Infinity};
@@ -1003,10 +1038,39 @@ export class LyricsCore {
         }
 
         const line = this._lineAt(session, now);
+        let ruby = null;
+        if (this._furiganaEnabled && this._deps.furigana) {
+            if (session) {
+                const effective = this._effective(this._video(session.videoId));
+                if (effective?.timed) {
+                    const warmKey = `${session.videoId}:${effective.id}`;
+                    if (warmKey !== this._furiganaWarmedKey) {
+                        this._furiganaWarmedKey = warmKey;
+                        const texts = this._linesFor(effective).map(entry => entry.text).filter(Boolean);
+                        this._deps.furigana.warm(texts).then(added => {
+                            if (added && this._furiganaEnabled)
+                                this._refresh();
+                        }).catch(() => {});
+                    }
+                }
+            }
+            if (line.text && KANJI_RE.test(line.text)) {
+                ruby = this._deps.furigana.cached(line.text);
+                if (!ruby) {
+                    this._deps.furigana.annotate(line.text).then(segments => {
+                        if (segments && this._furiganaEnabled)
+                            this._refresh();
+                    }).catch(() => {});
+                }
+            }
+        }
         // A line is keyed by the session so a new video always transitions.
         const key = session ? `${session.videoId}:${line.key}` : 'none';
-        if (line.text !== this._lastLine.text || key !== this._lastLine.key) {
-            this._lastLine = {text: line.text, key};
+        const nextLine = ruby ? {text: line.text, key, ruby} : {text: line.text, key};
+        const nextLineJson = JSON.stringify(nextLine);
+        if (nextLineJson !== this._lastLineJson) {
+            this._lastLine = nextLine;
+            this._lastLineJson = nextLineJson;
             emit.line({...this._lastLine});
         }
 

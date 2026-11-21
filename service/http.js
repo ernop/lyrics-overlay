@@ -104,6 +104,24 @@ function fittedRange(sung, limits) {
     return {bottom: bottom + shift, top: top + shift};
 }
 
+function queryParam(message, name) {
+    const query = message.get_uri()?.get_query() ?? '';
+    for (const part of query.split('&')) {
+        if (!part)
+            continue;
+        const eq = part.indexOf('=');
+        const rawKey = eq >= 0 ? part.slice(0, eq) : part;
+        const rawVal = eq >= 0 ? part.slice(eq + 1) : '';
+        try {
+            if (decodeURIComponent(rawKey.replace(/\+/gu, ' ')) === name)
+                return decodeURIComponent(rawVal.replace(/\+/gu, ' '));
+        } catch {
+            // Malformed percent-encoding; skip this pair.
+        }
+    }
+    return '';
+}
+
 /**
  * The caller must keep the returned server until shutdown: only this
  * JavaScript reference holds it, and once collected it stops listening.
@@ -113,10 +131,11 @@ function fittedRange(sung, limits) {
  *          addon: import('./addon-version.js').AddonVersion,
  *          settings: import('./settings-store.js').SettingsStore,
  *          pitch: import('./pitch-capture.js').PitchCapture,
+ *          furigana?: import('./furigana.js').FuriganaWorker,
  *          log: (message: string) => void}} options
  * @returns {Soup.Server}
  */
-export function startHttp({port, hostname, files, core, browser, addon, settings, pitch, log}) {
+export function startHttp({port, hostname, files, core, browser, addon, settings, pitch, furigana, log}) {
     // lyrics.localhost:<port> is the browser add-on's address; `hostname` is an extra name, such as a proxy's.
     const allowedHosts = new Set([`127.0.0.1:${port}`, `localhost:${port}`, `lyrics.localhost:${port}`, hostname]);
     const server = new Soup.Server({});
@@ -236,11 +255,28 @@ export function startHttp({port, hostname, files, core, browser, addon, settings
             }
             switch (path) {
             case '/api/state':
-                respondJson(message, 200, {state: core.state(), line: core.line(), addon: addon.describe()});
+                respondJson(message, 200, {
+                    state: core.state(),
+                    line: core.line(),
+                    addon: addon.describe(),
+                    furigana: furigana?.status() ?? {available: false, dict: '', error: ''},
+                });
                 return;
             case '/api/settings':
                 respondJson(message, 200, {schema: settings.describe(), values: settings.values()});
                 return;
+            case '/api/furigana': {
+                const text = queryParam(message, 'text').slice(0, 500);
+                if (!furigana) {
+                    respondJson(message, 200, {segments: null, status: {available: false, dict: '', error: 'furigana unavailable'}});
+                    return;
+                }
+                respondLater(message, path, furigana.annotate(text).then(segments => ({
+                    segments,
+                    status: furigana.status(),
+                })));
+                return;
+            }
             case '/api/fonts':
                 respondLater(message, path, fontFamilies().then(families => ({families})));
                 return;

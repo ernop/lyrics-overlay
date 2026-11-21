@@ -31,6 +31,8 @@ overlay, and the testing lessons behind the rules. What it is for:
   local GPU gate scripts often live). `generate-lyrics.py` decodes audio
   with `ffmpeg` directly so it does not break on `av >= 19` (which removed
   `metadata_errors` expected by `faster-whisper.decode_audio`).
+- **Japanese furigana** (optional): install `sudachipy` and
+  `sudachidict-full` into `.venv` (`uv pip install --python .venv/bin/python sudachipy sudachidict-full`, also installed by `scripts/install-generator.sh`), or into system `python3`. Toggle **Furigana** under Settings -> Lyrics -> Typography.
 - **More fonts** (optional): `scripts/install-fonts.sh` downloads about
   160 of Ubuntu's font packages and unpacks their TrueType and OpenType
   files into `~/.local/share/fonts/`, for this user alone; safe to rerun

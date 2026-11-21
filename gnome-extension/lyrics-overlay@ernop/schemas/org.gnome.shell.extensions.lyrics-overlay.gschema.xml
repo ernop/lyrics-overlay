@@ -21,6 +21,10 @@
       <default>false</default>
       <summary>Draw the lyric line in italic</summary>
     </key>
+    <key name="text-furigana" type="b">
+      <default>false</default>
+      <summary>Show hiragana furigana readings above kanji in Japanese lyrics</summary>
+    </key>
     <key name="text-color" type="s">
       <choices>
         <choice value="white"/>

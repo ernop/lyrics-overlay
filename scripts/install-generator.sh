@@ -21,7 +21,7 @@ if [ "${#missing[@]}" -gt 0 ]; then
     exit 1
 fi
 
-packages=("faster-whisper")
+packages=("faster-whisper" "sudachipy" "sudachidict-full")
 if [ "$cpu_only" = 0 ] && command -v nvidia-smi >/dev/null 2>&1; then
     packages+=("nvidia-cublas-cu12" "nvidia-cudnn-cu12")
 fi

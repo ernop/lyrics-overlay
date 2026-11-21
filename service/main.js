@@ -11,6 +11,7 @@ import {ArchiveSync} from './archive-sync.js';
 import {BrowserCommands} from './browser-commands.js';
 import {LyricsCore} from './core.js';
 import {exportService} from './dbus.js';
+import {FuriganaWorker} from './furigana.js';
 import {loadStaticFiles, startHttp} from './http.js';
 import {createLrclibSearch} from './lrclib.js';
 import {createLyricGenerator, validateGeneratorConfig} from './lyric-generator.js';
@@ -84,11 +85,14 @@ const generator = createLyricGenerator({
     ytarchiveUrl: settings.ytarchiveUrl,
     log,
 });
+const furigana = new FuriganaWorker({projectDir, log});
 const core = new LyricsCore({
     store,
     search: createLrclibSearch(settings.lrclibBaseUrl),
     generate: generator ?? undefined,
     maxGenerateDurationSeconds: settings.lyricsGenerator?.maxDurationSeconds,
+    furigana,
+    furiganaEnabled: look.get('text-furigana'),
     clock: {now: () => Date.now()},
     timers,
     emit: {
@@ -122,6 +126,8 @@ songKey = new SongKey({store, onKey: key => core.setSongKey(key), log});
 look.onChanged(name => {
     if (name === 'pitch-scale')
         syncSongKey(core.state());
+    else if (name === 'text-furigana')
+        core.setFuriganaEnabled(look.get('text-furigana'));
 });
 
 const browser = new BrowserCommands({timers, log});
@@ -145,7 +151,7 @@ bus = exportService({
     log,
 });
 const http = startHttp({port: settings.port, hostname: settings.hostname, files: loadStaticFiles(projectDir),
-    core, browser, addon, settings: look, pitch, log});
+    core, browser, addon, settings: look, pitch, furigana, log});
 
 for (const signal of [2, 15]) {
     GLibUnix.signal_add(GLib.PRIORITY_DEFAULT, signal, () => {
@@ -157,6 +163,7 @@ for (const signal of [2, 15]) {
 loop.run();
 http.disconnect();
 core.shutdown();
+furigana.shutdown();
 songKey.shutdown();
 pitch.shutdown();
 bus.close();

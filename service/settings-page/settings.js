@@ -26,6 +26,8 @@ const SLIDER_STEPS = 1000;
 const MIN_FIXED_SPAN = 6;
 const SHARPS = pitchClassNames(null);
 const DEFAULT_SAMPLE = 'Amazing grace, how sweet the sound';
+const DEFAULT_JAPANESE_SAMPLE = '\u685c\u306e\u82b1\u3073\u3089\u304c\u821e\u3044\u6563\u308b\u591c';
+const KANJI_RE = /[\u4e00-\u9fff\u3400-\u4dbf\u3005]/u;
 
 const LINE_COLORS = [
     ['#facc15', 'Yellow'], ['#ffffff', 'White'], ['#fb923c', 'Orange'], ['#ef4444', 'Red'], ['#f472b6', 'Pink'],
@@ -51,6 +53,9 @@ const model = {
     state: null,
     line: {text: '', key: 'none'},
     addon: null,
+    furigana: {available: true, dict: '', error: ''},
+    furiganaCache: new Map(),
+    furiganaPending: new Set(),
     pending: new Map(),
     sending: false,
     held: new Set(),
@@ -99,7 +104,32 @@ function activeSampleText() {
         return model.customSample;
     if (model.line?.text)
         return model.line.text;
+    if (model.values?.['text-furigana'])
+        return DEFAULT_JAPANESE_SAMPLE;
     return DEFAULT_SAMPLE;
+}
+
+function rubyForPreview(text) {
+    if (!model.values?.['text-furigana'] || !KANJI_RE.test(text))
+        return null;
+    if (model.line?.text === text && Array.isArray(model.line.ruby))
+        return model.line.ruby;
+    if (model.furiganaCache.has(text))
+        return model.furiganaCache.get(text);
+    if (!model.furiganaPending.has(text)) {
+        model.furiganaPending.add(text);
+        call('GET', `/api/furigana?text=${encodeURIComponent(text)}`).then(answer => {
+            if (answer?.status)
+                model.furigana = answer.status;
+            model.furiganaCache.set(text, Array.isArray(answer?.segments) ? answer.segments : null);
+            render();
+        }).catch(() => {
+            // Keep preview rendering without furigana; pollState reports service errors.
+        }).finally(() => {
+            model.furiganaPending.delete(text);
+        });
+    }
+    return null;
 }
 
 function render() {
@@ -109,7 +139,8 @@ function render() {
         view(model.values);
     const monitor = activeMonitor('box-monitor');
     const text = activeSampleText();
-    model.lyricPreview?.render(model.values, monitor, text, model.previewScene);
+    const ruby = rubyForPreview(text);
+    model.lyricPreview?.render(model.values, monitor, text, model.previewScene, ruby);
     model.placementMap?.update(model.values, monitor, text);
     model.pitchPreview?.render(model.values, model.state?.key ?? null);
 }
@@ -182,8 +213,12 @@ async function pollState() {
         const answer = await call('GET', '/api/state');
         model.state = answer.state;
         model.addon = answer.addon;
+        if (answer.furigana)
+            model.furigana = answer.furigana;
         const nextLine = answer.line ?? {text: '', key: 'none'};
-        const lineChanged = nextLine.text !== model.line.text || nextLine.key !== model.line.key;
+        const lineChanged = nextLine.text !== model.line.text
+            || nextLine.key !== model.line.key
+            || JSON.stringify(nextLine.ruby ?? null) !== JSON.stringify(model.line.ruby ?? null);
         model.line = nextLine;
         for (const fn of model.stateViews)
             fn(model.state, model.addon, model.line);
@@ -766,9 +801,20 @@ function borderRingsRows() {
         class: 'compact',
         hidden: 'hidden',
     });
-    widthInput.addEventListener('pointerdown', () => hold(`text-border-${activeIdx + 1}-width`, true));
-    widthInput.addEventListener('pointerup', () => hold(`text-border-${activeIdx + 1}-width`, false));
-    widthInput.addEventListener('pointercancel', () => hold(`text-border-${activeIdx + 1}-width`, false));
+    let heldWidthKey = '';
+    const releaseWidth = () => {
+        if (heldWidthKey) {
+            model.held.delete(heldWidthKey);
+            heldWidthKey = '';
+        }
+    };
+    widthInput.addEventListener('pointerdown', () => {
+        heldWidthKey = `text-border-${activeIdx + 1}-width`;
+        model.held.add(heldWidthKey);
+    });
+    widthInput.addEventListener('pointerup', releaseWidth);
+    widthInput.addEventListener('pointercancel', releaseWidth);
+    widthInput.addEventListener('blur', releaseWidth);
     widthInput.addEventListener('input', () => set(`text-border-${activeIdx + 1}-width`, fromPos(Number(widthInput.value))));
     const widthRow = el('div', {class: 'row'},
         widthLabel,
@@ -837,12 +883,30 @@ function borderRingsRows() {
         const em = activeRing.em;
         const px = Math.round(activeRing.width);
         widthVal.textContent = `${Math.round(em * 100)}% \u00b7 ${px} px`;
-        widthInput.value = String(toPos(Math.min(RING_MAX, Math.max(RING_MIN, em))));
+        if (!model.held.has(`text-border-${activeIdx + 1}-width`))
+            widthInput.value = String(toPos(Math.min(RING_MAX, Math.max(RING_MIN, em))));
         autoWidthBtn.hidden = !(customWidths[activeIdx] > 0);
     };
 
     view(syncUI);
     return [chipsRow, colorRow, widthRow];
+}
+
+function furiganaRow() {
+    const toggle = pressButton('', () => set('text-furigana', !model.values['text-furigana']), {class: 'switch'});
+    const statusPill = el('span', {class: 'pill pill-alert', hidden: 'hidden'});
+    const syncStatus = () => {
+        const showError = Boolean(model.values?.['text-furigana']) && model.furigana && !model.furigana.available;
+        statusPill.hidden = !showError;
+        statusPill.textContent = showError ? (model.furigana.error || 'Japanese dictionary unavailable') : '';
+    };
+    view(values => {
+        toggle.setAttribute('aria-pressed', String(values['text-furigana']));
+        toggle.textContent = values['text-furigana'] ? 'On' : 'Off';
+        syncStatus();
+    });
+    model.stateViews.push(syncStatus);
+    return row('Furigana', toggle, statusPill);
 }
 
 function buildLyricsTab() {
@@ -857,6 +921,7 @@ function buildLyricsTab() {
         fontPickerRow(),
         sliderRow('font-size', 'Size', {ticks: [16, 28, 48, 84, 144, 256], format: unit('px'), log: true}),
         row('Style', el('div', {class: 'seg'}, boldBtn, italicBtn)),
+        furiganaRow(),
     );
 
     const appearance = section('Appearance', null,

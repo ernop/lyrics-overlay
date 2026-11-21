@@ -59,7 +59,18 @@ indicator changes quietly.
     Serif / Display / Mono filters. More fonts (owner, 2026-11-10: "many
     more font options"): `scripts/install-fonts.sh` adds about 160 Ubuntu
     font packages for the user alone (below).
-  - **Size** (`16-256 px`), **Style** (`Bold` on by default, `Italic`).
+  - **Size** (`16-256 px`), **Style** (`Bold` on by default, `Italic`), and
+    **Furigana** (`text-furigana`, off by default; owner, 2026-11-20): shows
+    hiragana readings centered above kanji in Japanese lyrics while leaving
+    okurigana, kana, ASCII numbers (such as countdowns), and non-Japanese
+    lyrics untouched. Computed 100% locally and offline in sub-millisecond
+    time with `sudachipy` + `sudachidict-full` (falling back to `core`/`small`
+    if installed elsewhere), pre-warmed once per song in a single batch call.
+    Furigana inherit the chosen font, weight, color, and concentric multi-ring
+    borders at 44% of base font size (`min 12 px`), painted layer-by-layer
+    with the base lyrics so kanji and furigana fuse smoothly into one
+    continuous broadcast telop contour, with automatic vertical clearance on
+    multi-line wrapped lyrics and live rendering in the settings page preview.
   - **Color**: 11 named presets (white, yellow, orange, red, pink, magenta,
     purple, blue, cyan, green, black) or any custom `#rrggbb` color.
   - **Border** (`None` | `Single` | `Double` | `Triple` | `Quad` | `Glow`,

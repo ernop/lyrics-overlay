@@ -19,6 +19,7 @@ Firefox tab (YouTube)                         Standalone desktop frontend
     http.js -> report-schema.js -> core.js -> dbus.js              |
           |                        |  lrclib.js (LRCLIB, budgeted, cached)
           |                        |  lyric-generator.js -> generate-lyrics.py (optional local Whisper timing)
+          |                        |  furigana.js -> furigana.py (offline SudachiPy Japanese furigana worker)
           |                        |  store.js (~/.local/state/lyrics-overlay)
           |                        |  pitch-capture.js (PipeWire, on request; echo-cancel.js, microphones.js)
           |                        |  song-key.js (what the computer plays, while a detected scale shows)
@@ -105,7 +106,9 @@ Firefox tab (YouTube)                         Standalone desktop frontend
   `backdropMetrics`), Cairo/Pango lyric fitting and multi-layer border/cloud
   painting (`text-layout.js`: constant font size, font-normalized word
   spaces via `normalizedSpaceScale`, x-height word bridge, stepped solid
-  rings, 3-pass separable A8 Gaussian backing cloud, cached masks and
+  rings, 3-pass separable A8 Gaussian backing cloud, Japanese furigana ruby
+  layout positioned via `Pango.Layout.index_to_pos()` and painted
+  layer-by-layer with proportional borders, cached masks and
   metrics), Cairo/Pango pitch panel painting (`pitch-painter.js`),
   session D-Bus client (`service-client.js`), voice-wei's pitch detector,
   the key detector (`key-detect.js`), what the pitch panel shows when

@@ -18,6 +18,8 @@ import {keyName, noteLabel, pitchClassNames, scalePitchClasses} from '/shared/sc
 import {hexColor, parseHexColor, resolveRingColors, resolveTextColor} from '/shared/text-ink.js';
 
 const EDGE_PIXELS = 4;
+const RUBY_SIZE_RATIO = 0.44;
+const MIN_RUBY_FONT_SIZE = 12;
 const DOCKED_HEIGHT_RANGE = [0.03, 0.6];
 const DOCKED_WIDTH_RANGE = [0.05, 0.6];
 
@@ -109,11 +111,28 @@ function edgePad(values, fontSize) {
     };
 }
 
+function normalizeRubySegments(text, ruby) {
+    if (!Array.isArray(ruby) || !ruby.length)
+        return null;
+    let joined = '';
+    const spans = [];
+    for (const seg of ruby) {
+        if (!Array.isArray(seg) || seg.length < 2)
+            return null;
+        const base = String(seg[0] ?? '');
+        const reading = String(seg[1] ?? '').trim();
+        if (reading && base)
+            spans.push({start: joined.length, end: joined.length + base.length, reading});
+        joined += base;
+    }
+    return joined === text && spans.length ? spans : null;
+}
+
 /**
  * Computes exact monitor-pixel layout at the constant `font-size` without
  * ever shrinking text: long lines wrap cleanly and expand surface height.
  */
-export function computeLyricLayout(ctx, text, values, monitor) {
+export function computeLyricLayout(ctx, text, values, monitor, ruby = null) {
     const boxW = Math.max(160, Math.round(values.box.width * monitor.width));
     const boxH = Math.max(48, Math.round(values.box.height * monitor.height));
     const fontSize = values['font-size'];
@@ -135,7 +154,77 @@ export function computeLyricLayout(ctx, text, values, monitor) {
     const lines = wrapLines(ctx, text, balancedW);
     const lineWidths = lines.map(line => ctx.measureText(line).width);
     const blockW = Math.max(...lineWidths, 1);
-    const blockH = lines.length * lineStep;
+
+    const rubySpans = values['text-furigana'] ? normalizeRubySegments(text, ruby) : null;
+    let rubyInfo = null;
+    let lineYs = lines.map((_, idx) => (idx + 0.5) * lineStep);
+    let blockH = lines.length * lineStep;
+
+    if (rubySpans) {
+        const rubyFontSize = Math.max(MIN_RUBY_FONT_SIZE, Math.round(fontSize * RUBY_SIZE_RATIO));
+        const rubyRing = borderSpec(values['text-border'], rubyFontSize, borderOpts(values));
+        const baseInner = ring.rings[0]?.width ?? 0;
+        const rubyGap = Math.max(Math.round(fontSize * 0.11), Math.round(baseInner));
+        const rubyRise = rubyFontSize + rubyGap;
+
+        // Locate each wrapped line's character span in `text`.
+        const lineRanges = [];
+        let cursor = 0;
+        for (const line of lines) {
+            const idx = text.indexOf(line, cursor);
+            const start = idx >= 0 ? idx : cursor;
+            lineRanges.push({start, end: start + line.length, spans: []});
+            cursor = start + line.length;
+        }
+        for (const span of rubySpans) {
+            const entry = lineRanges.find(r => span.start >= r.start && span.start < r.end);
+            if (entry)
+                entry.spans.push(span);
+        }
+
+        // Compute per-line vertical positions with extra headroom above any
+        // wrapped line that carries furigana.
+        lineYs = [];
+        let yCursor = 0;
+        for (let i = 0; i < lines.length; i++) {
+            const hasRuby = lineRanges[i].spans.length > 0;
+            const headroom = hasRuby ? rubyRise + (i > 0 ? Math.max(Math.round(fontSize * 0.16), Math.round(rubyRing.totalReach)) : 0) : 0;
+            yCursor += headroom;
+            lineYs.push(yCursor + 0.5 * lineStep);
+            yCursor += lineStep;
+        }
+        blockH = yCursor;
+
+        // Measure relative horizontal center of every ruby span within its line.
+        const perLineRuns = [];
+        ctx.font = fontCss(values, fontSize);
+        applyNormalizedWordSpacing(ctx, fontSize, ring.targetSpaceEm);
+        for (let i = 0; i < lines.length; i++) {
+            const line = lines[i];
+            const range = lineRanges[i];
+            for (const span of range.spans) {
+                const localStart = Math.max(0, span.start - range.start);
+                const localEnd = Math.min(line.length, span.end - range.start);
+                const prefixW = ctx.measureText(line.slice(0, localStart)).width;
+                const spanW = ctx.measureText(line.slice(localStart, localEnd)).width;
+                perLineRuns.push({
+                    lineIdx: i,
+                    reading: span.reading,
+                    relCenterX: prefixW + spanW / 2,
+                    yOffset: -(fontSize * 0.48 + rubyGap + rubyFontSize * 0.45),
+                });
+            }
+        }
+        ctx.font = fontCss(values, rubyFontSize);
+        if ('wordSpacing' in ctx)
+            ctx.wordSpacing = '0px';
+        for (const run of perLineRuns)
+            run.width = ctx.measureText(run.reading).width;
+
+        if (perLineRuns.length)
+            rubyInfo = {fontSize: rubyFontSize, ring: rubyRing, runs: perLineRuns};
+    }
+
     const requiredH = Math.ceil(blockH + 2 * pad.y);
     const renderH = Math.min(monitor.height, Math.max(boxH, requiredH));
 
@@ -149,10 +238,12 @@ export function computeLyricLayout(ctx, text, values, monitor) {
         xMetrics,
         lines,
         lineWidths,
+        lineYs,
         lineStep,
         blockW,
         blockH,
         pad,
+        ruby: rubyInfo,
     };
 }
 
@@ -209,8 +300,8 @@ export class LyricPreviewCanvas {
         this._observer.observe(canvas);
     }
 
-    render(values, monitor, sampleText, scene = 'video') {
-        this._lastArgs = [values, monitor, sampleText, scene];
+    render(values, monitor, sampleText, scene = 'video', ruby = null) {
+        this._lastArgs = [values, monitor, sampleText, scene, ruby];
         const canvas = this._canvas;
         const rect = canvas.getBoundingClientRect();
         if (rect.width < 10 || rect.height < 10)
@@ -230,7 +321,7 @@ export class LyricPreviewCanvas {
 
         paintSceneBackground(ctx, w, h, scene);
 
-        const layout = computeLyricLayout(ctx, sampleText || 'Amazing grace, how sweet the sound', values, monitor);
+        const layout = computeLyricLayout(ctx, sampleText || 'Amazing grace, how sweet the sound', values, monitor, ruby);
         this._onTelemetry?.(layout);
 
         // Fit the monitor-pixel surface proportionally inside the preview canvas.
@@ -268,6 +359,32 @@ export class LyricPreviewCanvas {
             return (layout.boxW - lineW) / 2;
         };
 
+        // Compute placed, de-overlapped furigana runs in monitor coordinates.
+        const rubyRuns = [];
+        if (layout.ruby) {
+            const rubyMinGap = Math.max(2, Math.round(layout.ruby.fontSize * 0.14));
+            const byLine = new Map();
+            for (const run of layout.ruby.runs) {
+                const lx = lineX(layout.lineWidths[run.lineIdx]);
+                const ly = originY + layout.lineYs[run.lineIdx];
+                const rawX = lx + run.relCenterX - run.width / 2;
+                const clampedX = clamp(rawX, EDGE_PIXELS, layout.boxW - EDGE_PIXELS - run.width);
+                const placed = {text: run.reading, x: clampedX, y: ly + run.yOffset, width: run.width};
+                if (!byLine.has(run.lineIdx))
+                    byLine.set(run.lineIdx, []);
+                byLine.get(run.lineIdx).push(placed);
+            }
+            for (const list of byLine.values()) {
+                list.sort((a, b) => a.x - b.x);
+                for (let i = 1; i < list.length; i++) {
+                    const minX = list[i - 1].x + list[i - 1].width + rubyMinGap;
+                    if (list[i].x < minX)
+                        list[i].x = minX;
+                }
+                rubyRuns.push(...list);
+            }
+        }
+
         // Backdrop plate (automatic em-proportional padding and corner radius)
         const backdropMode = values['text-backdrop'] ?? 'none';
         if (backdropMode !== 'none' && (values['text-backdrop-opacity'] ?? 0.65) > 0) {
@@ -279,8 +396,12 @@ export class LyricPreviewCanvas {
                 ctx.fill();
             } else {
                 const reach = ring.totalReach;
-                const minX = Math.min(...layout.lineWidths.map(lineX));
-                const maxX = Math.max(...layout.lineWidths.map(lw => lineX(lw) + lw));
+                let minX = Math.min(...layout.lineWidths.map(lineX));
+                let maxX = Math.max(...layout.lineWidths.map(lw => lineX(lw) + lw));
+                for (const run of rubyRuns) {
+                    minX = Math.min(minX, run.x);
+                    maxX = Math.max(maxX, run.x + run.width);
+                }
                 const px = Math.max(0, minX - reach - metrics.padX);
                 const py = Math.max(0, originY - reach - metrics.padY);
                 const pr = Math.min(layout.boxW, maxX + reach + metrics.padX);
@@ -290,9 +411,18 @@ export class LyricPreviewCanvas {
             }
         }
 
-        ctx.font = fontCss(values, fontSize);
-        ctx.textBaseline = 'middle';
-        applyNormalizedWordSpacing(ctx, fontSize, ring.targetSpaceEm);
+        const setBaseFont = () => {
+            ctx.font = fontCss(values, fontSize);
+            ctx.textBaseline = 'middle';
+            applyNormalizedWordSpacing(ctx, fontSize, ring.targetSpaceEm);
+        };
+        const setRubyFont = () => {
+            ctx.font = fontCss(values, layout.ruby.fontSize);
+            ctx.textBaseline = 'middle';
+            if ('wordSpacing' in ctx)
+                ctx.wordSpacing = '0px';
+        };
+        setBaseFont();
         ctx.lineJoin = 'round';
         ctx.lineCap = 'round';
         ctx.miterLimit = 2;
@@ -300,12 +430,13 @@ export class LyricPreviewCanvas {
         const paintBridge = (color, reach) => {
             if (!ring.bridge || reach <= 0)
                 return;
+            setBaseFont();
             ctx.fillStyle = color;
             layout.lines.forEach((line, idx) => {
                 if (line.trim().length < 2)
                     return;
                 const x = lineX(layout.lineWidths[idx]);
-                const y = originY + (idx + 0.5) * layout.lineStep;
+                const y = originY + layout.lineYs[idx];
                 const m = ctx.measureText(line);
                 const left = x - (m.actualBoundingBoxLeft ?? 0);
                 const right = x + (m.actualBoundingBoxRight ?? layout.lineWidths[idx]);
@@ -323,7 +454,8 @@ export class LyricPreviewCanvas {
             });
         };
 
-        const paintPass = (mode, color, lineWidth = 0) => {
+        const paintBasePass = (mode, color, lineWidth = 0) => {
+            setBaseFont();
             if (mode === 'stroke') {
                 ctx.strokeStyle = color;
                 ctx.lineWidth = lineWidth;
@@ -332,7 +464,7 @@ export class LyricPreviewCanvas {
             }
             layout.lines.forEach((line, idx) => {
                 const x = lineX(layout.lineWidths[idx]);
-                const y = originY + (idx + 0.5) * layout.lineStep;
+                const y = originY + layout.lineYs[idx];
                 if (mode === 'stroke')
                     ctx.strokeText(line, x, y);
                 else
@@ -340,9 +472,29 @@ export class LyricPreviewCanvas {
             });
         };
 
-        const paintSilhouette = (color, reach) => {
-            paintBridge(color, reach);
-            paintPass('stroke', color, 2 * reach);
+        const paintRubyPass = (mode, color, lineWidth = 0) => {
+            if (!rubyRuns.length)
+                return;
+            setRubyFont();
+            if (mode === 'stroke') {
+                ctx.strokeStyle = color;
+                ctx.lineWidth = lineWidth;
+            } else {
+                ctx.fillStyle = color;
+            }
+            for (const run of rubyRuns) {
+                if (mode === 'stroke')
+                    ctx.strokeText(run.text, run.x, run.y);
+                else
+                    ctx.fillText(run.text, run.x, run.y);
+            }
+        };
+
+        const paintSilhouette = (color, baseReach, rubyReach = 0) => {
+            paintBridge(color, baseReach);
+            paintBasePass('stroke', color, 2 * baseReach);
+            if (rubyRuns.length && rubyReach > 0)
+                paintRubyPass('stroke', color, 2 * rubyReach);
         };
 
         // Precompute cumulative reach for each ring from innermost (0) to outermost (n-1).
@@ -352,11 +504,20 @@ export class LyricPreviewCanvas {
             acc += entry.width;
             reaches.push(acc);
         }
+        const rubyReaches = [];
+        if (layout.ruby) {
+            let racc = 0;
+            for (const entry of layout.ruby.ring.rings) {
+                racc += entry.width;
+                rubyReaches.push(racc);
+            }
+        }
 
         // Optional smooth dark backing cloud behind rings
         if (ring.auraSpread > 0 && ring.auraAlpha > 0 && reaches.length) {
             const solidIdx = ring.featheredOuter && reaches.length > 1 ? reaches.length - 2 : reaches.length - 1;
             const auraReach = reaches[solidIdx];
+            const rubyAuraReach = rubyReaches[solidIdx] ?? 0;
             const blurPx = ring.auraSpread * 0.55 * scale * dpr;
             const dropPx = Math.round(fontSize * 0.03) * scale * dpr;
             ctx.save();
@@ -364,28 +525,36 @@ export class LyricPreviewCanvas {
             ctx.shadowBlur = blurPx;
             ctx.shadowOffsetX = 0;
             ctx.shadowOffsetY = dropPx;
-            paintSilhouette('rgba(0, 0, 0, 1)', auraReach);
+            paintSilhouette('rgba(0, 0, 0, 1)', auraReach, rubyAuraReach);
             ctx.shadowBlur = blurPx * 0.45;
             ctx.shadowColor = `rgba(0, 0, 0, ${(ring.auraAlpha * 0.55).toFixed(2)})`;
-            paintSilhouette('rgba(0, 0, 0, 1)', auraReach);
+            paintSilhouette('rgba(0, 0, 0, 1)', auraReach, rubyAuraReach);
             ctx.restore();
         }
 
-        // Concentric rings painted outermost -> innermost so each band stays sharp.
+        // Concentric rings painted outermost -> innermost across base + furigana.
         for (let i = ring.rings.length - 1; i >= 0; i--) {
             const entry = ring.rings[i];
+            const rubyEntry = layout.ruby?.ring.rings[i];
             const color = ringPalette[i];
             const prevReach = i > 0 ? reaches[i - 1] : 0;
+            const prevRubyReach = i > 0 ? (rubyReaches[i - 1] ?? 0) : 0;
             if (entry.feathered) {
-                for (const pass of GLOW_CANVAS_PASSES)
-                    paintSilhouette(rgba(color, pass.alpha), prevReach + entry.width * pass.frac);
+                for (const pass of GLOW_CANVAS_PASSES) {
+                    paintSilhouette(
+                        rgba(color, pass.alpha),
+                        prevReach + entry.width * pass.frac,
+                        rubyEntry ? prevRubyReach + rubyEntry.width * pass.frac : 0,
+                    );
+                }
             } else {
-                paintSilhouette(rgba(color, 1), reaches[i]);
+                paintSilhouette(rgba(color, 1), reaches[i], rubyReaches[i] ?? 0);
             }
         }
 
-        // Pure opaque letter fill
-        paintPass('fill', rgba(fill, 1));
+        // Pure opaque letter fills (base + furigana)
+        paintBasePass('fill', rgba(fill, 1));
+        paintRubyPass('fill', rgba(fill, 1));
 
         ctx.restore();
         ctx.restore();

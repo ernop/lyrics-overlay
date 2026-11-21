@@ -35,9 +35,49 @@ const ALIGNMENTS = Object.freeze({
 
 const ANCHORS = new Set(['top', 'center', 'bottom']);
 const BACKDROPS = new Set(['none', 'pill', 'box']);
+const RUBY_SIZE_RATIO = 0.44;
+const MIN_RUBY_FONT_SIZE = 12;
 
 const utf8 = new TextEncoder();
 const fromUtf8 = new TextDecoder();
+
+/**
+ * Validates and converts `params.ruby` ([[base, reading], ...]) into UTF-8 byte
+ * spans for segments that carry a non-empty furigana reading. Returns null when
+ * no valid readings apply to `text`.
+ */
+function rubyByteSpans(text, ruby) {
+    if (!Array.isArray(ruby) || !ruby.length)
+        return null;
+    let joined = '';
+    let bytePos = 0;
+    const spans = [];
+    for (const seg of ruby) {
+        if (!Array.isArray(seg) || seg.length < 2)
+            return null;
+        const base = String(seg[0] ?? '');
+        const reading = String(seg[1] ?? '').trim();
+        const byteLen = utf8.encode(base).length;
+        if (reading && base) {
+            // Find the start byte of the final Unicode character in `base` so
+            // Pango.Layout.index_to_pos() gives the exact right edge of the span.
+            const chars = [...base];
+            const lastLen = utf8.encode(chars[chars.length - 1]).length;
+            spans.push({
+                byteStart: bytePos,
+                byteEnd: bytePos + byteLen,
+                lastCharByte: bytePos + byteLen - lastLen,
+                base,
+                reading,
+            });
+        }
+        joined += base;
+        bytePos += byteLen;
+    }
+    if (joined !== text || !spans.length)
+        return null;
+    return spans;
+}
 
 function borderOptions(params) {
     return {
@@ -129,14 +169,203 @@ function measureFontMetrics(context, spec) {
     return metrics;
 }
 
+function lastCharByteInRange(bytes, rangeStart, rangeEnd) {
+    let idx = rangeEnd - 1;
+    // Walk back past UTF-8 continuation bytes (10xxxxxx) to the lead byte.
+    while (idx > rangeStart && (bytes[idx] & 0xc0) === 0x80)
+        idx--;
+    return idx;
+}
+
+/**
+ * Computes wrapped-line vertical shifts and horizontal/vertical coordinates for
+ * furigana ruby runs above kanji spans. All returned coordinates are relative
+ * to the lyric block's canvas origin (x in canvas pixels, y relative to
+ * `origin.y`).
+ */
+function buildRubyLayout(context, layout, text, spans, spec, params, ring, left, pad) {
+    const bytes = utf8.encode(text);
+    const rubyFontSize = Math.max(MIN_RUBY_FONT_SIZE, Math.round(spec.fontSize * RUBY_SIZE_RATIO));
+    const rubySpec = {
+        family: spec.family,
+        bold: spec.bold,
+        italic: spec.italic,
+        fontSize: rubyFontSize,
+        spaceScale: 1,
+        align: 'left',
+    };
+    const rubyRing = borderSpec(params.border, rubyFontSize, borderOptions(params));
+    const rubyFontMetrics = measureFontMetrics(context, rubySpec);
+    const rubyMeasure = Pango.Layout.new(context);
+    rubyMeasure.set_font_description(fontDescription(rubySpec));
+
+    const wrappedLines = [];
+    const iter = layout.get_iter();
+    do {
+        const line = iter.get_line_readonly();
+        const [lineInk] = line.get_pixel_extents();
+        const [, lineLogical] = iter.get_line_extents();
+        const startByte = line.get_start_index();
+        wrappedLines.push({
+            startByte,
+            endByte: startByte + line.get_length(),
+            baseline: iter.get_baseline() / Pango.SCALE,
+            x: left + lineLogical.x / Pango.SCALE,
+            ink: lineInk,
+            runs: [],
+        });
+    } while (iter.next_line());
+
+    const rubyEdgeX = Math.ceil(rubyRing.totalReach + rubyRing.extraPad) + EDGE_PIXELS;
+    const minRubyX = Math.min(pad.x, rubyEdgeX);
+    const maxRubyRight = params.width - minRubyX;
+    const minRunGap = Math.max(2, Math.round(rubyFontSize * 0.14));
+
+    for (const span of spans) {
+        const lineIdx = wrappedLines.findIndex(
+            entry => span.byteStart >= entry.startByte && span.byteStart < entry.endByte,
+        );
+        if (lineIdx < 0)
+            continue;
+        const entry = wrappedLines[lineIdx];
+        const endCharByte = span.byteEnd <= entry.endByte
+            ? span.lastCharByte
+            : lastCharByteInRange(bytes, span.byteStart, entry.endByte);
+        const startPos = layout.index_to_pos(span.byteStart);
+        const endPos = layout.index_to_pos(endCharByte);
+        const spanLeft = Math.min(startPos.x, endPos.x) / Pango.SCALE;
+        const spanRight = Math.max(startPos.x + startPos.width, endPos.x + endPos.width) / Pango.SCALE;
+        const centerX = left + (spanLeft + spanRight) / 2;
+
+        rubyMeasure.set_text(span.reading, -1);
+        const [rInk, rLogical] = rubyMeasure.get_iter().get_line_readonly().get_pixel_extents();
+        const width = Math.max(rLogical.width, rInk.x + rInk.width);
+        const rawX = centerX - (rInk.x + rInk.width / 2);
+        const clampedX = Math.max(minRubyX, Math.min(maxRubyRight - width, rawX));
+        entry.runs.push({
+            lineIdx,
+            text: span.reading,
+            x: Math.round(clampedX),
+            width,
+            ink: rInk,
+        });
+    }
+
+    // Prevent adjacent furigana runs on the same wrapped line from colliding.
+    for (const entry of wrappedLines) {
+        if (entry.runs.length < 2)
+            continue;
+        entry.runs.sort((a, b) => a.x - b.x);
+        for (let i = 1; i < entry.runs.length; i++) {
+            const prev = entry.runs[i - 1];
+            const cur = entry.runs[i];
+            const minX = prev.x + prev.ink.x + prev.ink.width + minRunGap - cur.ink.x;
+            if (cur.x < minX)
+                cur.x = Math.round(minX);
+        }
+        // Pull back leftward if pushing right overflowed the right margin.
+        const last = entry.runs[entry.runs.length - 1];
+        const overflow = last.x + last.ink.x + last.ink.width - maxRubyRight;
+        if (overflow > 0) {
+            last.x = Math.round(last.x - overflow);
+            for (let i = entry.runs.length - 2; i >= 0; i--) {
+                const cur = entry.runs[i];
+                const next = entry.runs[i + 1];
+                const maxX = next.x + next.ink.x - minRunGap - (cur.ink.x + cur.ink.width);
+                if (cur.x > maxX)
+                    cur.x = Math.round(Math.max(minRubyX, maxX));
+            }
+        }
+    }
+
+    const baseInner = ring.rings[0]?.width ?? 0;
+    const rubyGap = Math.max(Math.round(spec.fontSize * 0.11), Math.round(baseInner));
+    const interlineAir = Math.max(
+        Math.round(spec.fontSize * 0.22),
+        Math.round(ring.totalReach + rubyRing.totalReach * 0.65),
+    );
+
+    const lineShifts = new Array(wrappedLines.length).fill(0);
+    const runs = [];
+    let cumulativeShift = 0;
+    let prevBottomY = -Infinity;
+
+    for (let i = 0; i < wrappedLines.length; i++) {
+        const entry = wrappedLines[i];
+        let rubyOffset = 0;
+        let rubyTopInk = 0;
+        if (entry.runs.length) {
+            const maxBottom = Math.max(...entry.runs.map(r => r.ink.y + r.ink.height));
+            const minTop = Math.min(...entry.runs.map(r => r.ink.y));
+            rubyOffset = entry.ink.y - rubyGap - maxBottom;
+            rubyTopInk = rubyOffset + minTop;
+        }
+        if (i > 0 && entry.runs.length) {
+            const desiredTop = prevBottomY + interlineAir;
+            const actualTop = entry.baseline + cumulativeShift + rubyTopInk;
+            if (actualTop < desiredTop)
+                cumulativeShift += desiredTop - actualTop;
+        }
+        lineShifts[i] = cumulativeShift;
+        const baseY = entry.baseline + cumulativeShift;
+        prevBottomY = baseY + entry.ink.y + entry.ink.height;
+
+        if (entry.runs.length) {
+            const rubyBaseY = baseY + rubyOffset;
+            for (const run of entry.runs) {
+                runs.push({
+                    text: run.text,
+                    x: run.x,
+                    relY: rubyBaseY,
+                    ink: run.ink,
+                });
+            }
+        }
+    }
+
+    if (!runs.length)
+        return null;
+
+    // Visual bounding box across all base lines and ruby runs (relative to origin.y = 0).
+    let minX = Infinity;
+    let maxX = -Infinity;
+    let minY = Infinity;
+    let maxY = -Infinity;
+    for (let i = 0; i < wrappedLines.length; i++) {
+        const entry = wrappedLines[i];
+        const baseY = entry.baseline + lineShifts[i];
+        minX = Math.min(minX, entry.x + entry.ink.x - ring.totalReach);
+        maxX = Math.max(maxX, entry.x + entry.ink.x + entry.ink.width + ring.totalReach);
+        minY = Math.min(minY, baseY + entry.ink.y - ring.totalReach);
+        maxY = Math.max(maxY, baseY + entry.ink.y + entry.ink.height + ring.totalReach);
+    }
+    for (const run of runs) {
+        minX = Math.min(minX, run.x + run.ink.x - rubyRing.totalReach);
+        maxX = Math.max(maxX, run.x + run.ink.x + run.ink.width + rubyRing.totalReach);
+        minY = Math.min(minY, run.relY + run.ink.y - rubyRing.totalReach);
+        maxY = Math.max(maxY, run.relY + run.ink.y + run.ink.height + rubyRing.totalReach);
+    }
+
+    return {
+        spec: rubySpec,
+        ring: rubyRing,
+        fontMetrics: {xTop: rubyFontMetrics.xTop, xBottom: rubyFontMetrics.xBottom},
+        lineShifts,
+        runs,
+        bounds: {minX, maxX, minY, maxY},
+    };
+}
+
 /**
  * Lays out one lyric at exact `params.fontSize` (never shrinking per line).
  * @param {Pango.Context} context measuring context
  * @param {string} text
  * @param {{fontSize: number, family: string, bold: boolean, italic?: boolean,
  *          color: string, customColor?: string, border: string,
+ *          borderCloud?: boolean, ringColors?: string[], ringWidths?: number[],
  *          backdrop?: string, backdropColor?: string, backdropOpacity?: number,
  *          align: string, anchor?: 'top'|'center'|'bottom',
+ *          ruby?: Array<[string, string]>|null,
  *          width: number, height: number}} params
  */
 export function fitLyric(context, text, params) {
@@ -185,8 +414,6 @@ export function fitLyric(context, text, params) {
     spec.wrapWidth = Math.min(balanced, maxWidth);
 
     const [ink, logical] = measure(spec.wrapWidth).get_pixel_extents();
-    const requiredHeight = Math.ceil(logical.height + 2 * pad.y);
-    const surfaceHeight = Math.max(params.height, requiredHeight);
 
     let left;
     if (params.align === 'left')
@@ -196,27 +423,60 @@ export function fitLyric(context, text, params) {
     else
         left = (params.width - spec.wrapWidth) / 2;
 
+    const spans = rubyByteSpans(text, params.ruby);
+    const rubyLayout = spans
+        ? buildRubyLayout(context, layout, text, spans, spec, params, ring, left, pad)
+        : null;
+
+    let requiredHeight;
+    let surfaceHeight;
     let top;
-    if (anchor === 'top')
-        top = pad.y;
-    else if (anchor === 'bottom')
-        top = Math.max(pad.y, surfaceHeight - pad.y - logical.height);
-    else
-        top = Math.max(pad.y, (surfaceHeight - logical.height) / 2);
+    let textInkBox;
+    const solidReach = ring.totalReach;
+
+    if (rubyLayout) {
+        const bp = backdropMode === 'pill' ? backdropMetrics(spec.fontSize) : {padX: 0, padY: 0};
+        const outerY = Math.ceil(Math.max(ring.extraPad, rubyLayout.ring.extraPad)) + bp.padY + EDGE_PIXELS;
+        const contentH = rubyLayout.bounds.maxY - rubyLayout.bounds.minY;
+        requiredHeight = Math.max(Math.ceil(contentH + 2 * outerY), Math.ceil(logical.height + 2 * pad.y));
+        surfaceHeight = Math.max(params.height, requiredHeight);
+        let boxTop;
+        if (anchor === 'top')
+            boxTop = outerY;
+        else if (anchor === 'bottom')
+            boxTop = Math.max(outerY, surfaceHeight - outerY - contentH);
+        else
+            boxTop = Math.max(outerY, (surfaceHeight - contentH) / 2);
+        top = boxTop - rubyLayout.bounds.minY;
+        textInkBox = {
+            x: rubyLayout.bounds.minX,
+            y: boxTop,
+            width: rubyLayout.bounds.maxX - rubyLayout.bounds.minX,
+            height: contentH,
+        };
+    } else {
+        requiredHeight = Math.ceil(logical.height + 2 * pad.y);
+        surfaceHeight = Math.max(params.height, requiredHeight);
+        if (anchor === 'top')
+            top = pad.y;
+        else if (anchor === 'bottom')
+            top = Math.max(pad.y, surfaceHeight - pad.y - logical.height);
+        else
+            top = Math.max(pad.y, (surfaceHeight - logical.height) / 2);
+        textInkBox = {
+            x: left + ink.x - solidReach,
+            y: top + ink.y - solidReach,
+            width: ink.width + 2 * solidReach,
+            height: ink.height + 2 * solidReach,
+        };
+    }
 
     const origin = {x: left, y: top};
-    const solidReach = ring.totalReach;
     const baseColors = ringColors(fill);
     const ringPalette = resolveRingColors(fill, ring.rings.length, params.ringColors);
     const colors = {
         inner: ringPalette[0] ?? baseColors.inner,
         outer: ringPalette[1] ?? baseColors.outer,
-    };
-    const textInkBox = {
-        x: origin.x + ink.x - solidReach,
-        y: origin.y + ink.y - solidReach,
-        width: ink.width + 2 * solidReach,
-        height: ink.height + 2 * solidReach,
     };
 
     let backdrop = null;
@@ -231,10 +491,10 @@ export function fitLyric(context, text, params) {
                 radius: metrics.radius, rgb: bgRgb, opacity: bgOpacity,
             };
         } else {
-            const bx = Math.max(0, origin.x + ink.x - solidReach - metrics.padX);
-            const by = Math.max(0, origin.y + ink.y - solidReach - metrics.padY);
-            const br = Math.min(params.width, origin.x + ink.x + ink.width + solidReach + metrics.padX);
-            const bb = Math.min(surfaceHeight, origin.y + ink.y + ink.height + solidReach + metrics.padY);
+            const bx = Math.max(0, textInkBox.x - metrics.padX);
+            const by = Math.max(0, textInkBox.y - metrics.padY);
+            const br = Math.min(params.width, textInkBox.x + textInkBox.width + metrics.padX);
+            const bb = Math.min(surfaceHeight, textInkBox.y + textInkBox.height + metrics.padY);
             backdrop = {
                 x: bx, y: by, width: Math.max(1, br - bx), height: Math.max(1, bb - by),
                 radius: metrics.radius, rgb: bgRgb, opacity: bgOpacity,
@@ -257,6 +517,7 @@ export function fitLyric(context, text, params) {
         lineCount: lines,
         requiredHeight,
         anchor,
+        rubyLayout,
     };
 }
 
@@ -465,8 +726,9 @@ export function paintLyric(cr, fitted) {
 
     const layout = PangoCairo.create_layout(cr);
     applySpec(layout, fitted.spec);
+    const rubyLayout = fitted.rubyLayout ?? null;
 
-    if (!fitted.ring.rings.length) {
+    if (!fitted.ring.rings.length && !rubyLayout) {
         cr.moveTo(fitted.origin.x, fitted.origin.y);
         cr.setSourceRGB(...fitted.fill);
         PangoCairo.show_layout(cr, layout);
@@ -478,51 +740,102 @@ export function paintLyric(cr, fitted) {
     const bytes = utf8.encode(fitted.spec.text);
     const lines = [];
     const iter = layout.get_iter();
+    let lineIdx = 0;
     do {
         const line = iter.get_line_readonly();
         const [, logical] = iter.get_line_extents();
         const start = line.get_start_index();
+        const yShift = rubyLayout ? (rubyLayout.lineShifts[lineIdx] ?? 0) : 0;
         lines.push({
             line,
             text: fromUtf8.decode(bytes.subarray(start, start + line.get_length())),
             x: Math.round(fitted.origin.x + logical.x / Pango.SCALE),
-            y: Math.round(fitted.origin.y + iter.get_baseline() / Pango.SCALE),
+            y: Math.round(fitted.origin.y + iter.get_baseline() / Pango.SCALE + yShift),
         });
+        lineIdx++;
     } while (iter.next_line());
 
-    for (const entry of lines) {
-        entry.rings = lineRings(
-            entry.line, entry.text, fitted.spec, fitted.border, fitted.ring, fitted.fontMetrics,
-        );
-    }
-
-    // Paint layer-by-layer across all lines (cloud -> outermost ring -> ... ->
-    // innermost ring -> fills) so stacked wrapped lines fuse smoothly.
-    if (fitted.ring.auraSpread > 0 && fitted.ring.auraAlpha > 0) {
-        const dropY = Math.round(fitted.spec.fontSize * 0.03);
-        for (const {x, y, rings} of lines) {
-            if (!rings.aura)
-                continue;
-            cr.save();
-            cr.translate(x + rings.dx, y + rings.dy + dropY);
-            cr.scale(rings.aura.scale, rings.aura.scale);
-            cr.setSourceRGBA(0, 0, 0, fitted.ring.auraAlpha);
-            cr.maskSurface(rings.aura.surface, 0, 0);
-            cr.restore();
+    // Build Pango layouts for every furigana run so they share the exact
+    // same concentric border pipeline as the base lyrics.
+    const rubyItems = [];
+    if (rubyLayout) {
+        const rubyDesc = fontDescription(rubyLayout.spec);
+        for (const run of rubyLayout.runs) {
+            const rl = PangoCairo.create_layout(cr);
+            rl.set_font_description(rubyDesc);
+            rl.set_text(run.text, -1);
+            rubyItems.push({
+                layout: rl,
+                line: rl.get_iter().get_line_readonly(),
+                text: run.text,
+                x: Math.round(run.x),
+                y: Math.round(fitted.origin.y + run.relY),
+            });
         }
     }
 
-    const palette = fitted.ringPalette ?? resolveRingColors(fitted.fill, fitted.ring.rings.length);
-    for (let i = fitted.ring.rings.length - 1; i >= 0; i--) {
-        cr.setSourceRGB(...palette[i]);
-        for (const {x, y, rings} of lines) {
-            if (rings.masks[i])
-                cr.maskSurface(rings.masks[i], x + rings.dx, y + rings.dy);
+    if (fitted.ring.rings.length) {
+        for (const entry of lines) {
+            entry.rings = lineRings(
+                entry.line, entry.text, fitted.spec, fitted.border, fitted.ring, fitted.fontMetrics,
+            );
+        }
+        for (const entry of rubyItems) {
+            entry.rings = lineRings(
+                entry.line, entry.text, rubyLayout.spec, fitted.border, rubyLayout.ring, rubyLayout.fontMetrics,
+            );
+        }
+
+        // Paint layer-by-layer across base lines and furigana together
+        // (cloud -> outermost ring -> ... -> innermost ring -> fills) so
+        // stacked lines and kanji+furigana fuse into one continuous contour.
+        if (fitted.ring.auraSpread > 0 && fitted.ring.auraAlpha > 0) {
+            const dropY = Math.round(fitted.spec.fontSize * 0.03);
+            for (const {x, y, rings} of lines) {
+                if (!rings.aura)
+                    continue;
+                cr.save();
+                cr.translate(x + rings.dx, y + rings.dy + dropY);
+                cr.scale(rings.aura.scale, rings.aura.scale);
+                cr.setSourceRGBA(0, 0, 0, fitted.ring.auraAlpha);
+                cr.maskSurface(rings.aura.surface, 0, 0);
+                cr.restore();
+            }
+            if (rubyLayout && rubyLayout.ring.auraSpread > 0 && rubyLayout.ring.auraAlpha > 0) {
+                const rubyDropY = Math.round(rubyLayout.spec.fontSize * 0.03);
+                for (const {x, y, rings} of rubyItems) {
+                    if (!rings.aura)
+                        continue;
+                    cr.save();
+                    cr.translate(x + rings.dx, y + rings.dy + rubyDropY);
+                    cr.scale(rings.aura.scale, rings.aura.scale);
+                    cr.setSourceRGBA(0, 0, 0, rubyLayout.ring.auraAlpha);
+                    cr.maskSurface(rings.aura.surface, 0, 0);
+                    cr.restore();
+                }
+            }
+        }
+
+        const palette = fitted.ringPalette ?? resolveRingColors(fitted.fill, fitted.ring.rings.length);
+        for (let i = fitted.ring.rings.length - 1; i >= 0; i--) {
+            cr.setSourceRGB(...palette[i]);
+            for (const {x, y, rings} of lines) {
+                if (rings.masks[i])
+                    cr.maskSurface(rings.masks[i], x + rings.dx, y + rings.dy);
+            }
+            for (const {x, y, rings} of rubyItems) {
+                if (rings.masks[i])
+                    cr.maskSurface(rings.masks[i], x + rings.dx, y + rings.dy);
+            }
         }
     }
 
     cr.newPath();
     for (const {line, x, y} of lines) {
+        cr.moveTo(x, y);
+        PangoCairo.layout_line_path(cr, line);
+    }
+    for (const {line, x, y} of rubyItems) {
         cr.moveTo(x, y);
         PangoCairo.layout_line_path(cr, line);
     }
