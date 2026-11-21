@@ -24,6 +24,17 @@ behind it.
 
 ![Desktop with a song video playing; timed lyrics and the live pitch trace float at the bottom](docs/desktop.png)
 
+## Explore songs while you watch
+
+Leave Lyrics Overlay on while watching
+[this YouTube video](https://www.youtube.com/watch?v=mslmtjVvmDo), or any other
+song in Firefox. It loads matching timed lyrics when they are available; with
+local generation enabled, it can instead transcribe the audio and generate
+timed lyrics from scratch. That makes exploring unfamiliar songs—and joining
+in with them—a lot more fun.
+
+![Lyrics Overlay showing freshly generated timed lyrics over a YouTube video](docs/exploring-songs.png)
+
 ## Sing from any workspace
 
 YouTube does not need to stay on screen. While you read, write, or code in

@@ -13,6 +13,11 @@ one-line, properly timed display voice-wei's car view gives. Nothing ever
 asks for attention: the overlay exists only when switched on, and the tray
 indicator changes quietly.
 
+It should also make exploring unfamiliar songs more fun: the owner can leave
+it on while watching YouTube, where it loads matching timed lyrics when
+available or, with local generation enabled, transcribes and times the song
+from scratch when they are not.
+
 ## Requirements (owner, 2026-11-09; extended 2026-11-10)
 
 - **Tray indicator.** A small indicator sits in the lower-right tray.
