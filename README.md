@@ -1,287 +1,122 @@
 # Lyrics overlay
 
-A global desktop overlay of timed lyrics and a live pitch meter, so you can
-sing along to YouTube and YouTube Music videos from any workspace.
+Timed lyrics and a live singing pitch meter that float over your Linux desktop
+while a song plays in YouTube or YouTube Music in Firefox.
 
-![A desktop with a song's video in a window; at the bottom of the screen, the line being sung and the pitch meter's trace of the singer's voice](docs/desktop.png)
+It is meant for singing along casually while you watch a video or while you
+work on something else. When a song starts playing in any Firefox tab — even
+hidden on another workspace — the current line appears above your windows,
+timed to the music, and an optional pitch meter beside or below it draws the
+notes you sing into your microphone against the song's scale.
 
-It runs on Linux desktops (Wayland with XWayland, or X11) with YouTube in
-Firefox. When a YouTube or YouTube Music tab plays a song, the line about
-to be sung appears above normal windows, timed to the video, and the pitch
-meter draws the pitch you sing into the microphone. Lyrics come from
-[LRCLIB](https://lrclib.net), matched from the video's title and YouTube's
-song details — or you can search LRCLIB by hand, import a local `.lrc`/`.txt`
-file, or override non-music classification with one click. With optional local
-automatic lyric timing enabled, songs missing synced lyrics on LRCLIB are timed
-directly from their audio using local
-[faster-whisper](https://github.com/SYSTRAN/faster-whisper) (aligning LRCLIB's
-plain lyrics onto word timestamps when available, or transcribing sung lines
-otherwise), while a quiet pill in the overlay reports progress. Customizable
-1–4 ring broadcast-style telop borders keep lines sharp over both dark and
-bright video without needing a backdrop bar, and an optional offline Japanese
-furigana mode places hiragana readings above kanji locally via
-[SudachiPy](https://github.com/WorksApplications/sudachi.rs).
+Lyrics are matched automatically, and your choices and timing adjustments are
+remembered per video. If a track is slightly off or missing, you can nudge the
+timing in half-second steps, search by artist and title, load your own `.lrc`
+or `.txt` file, or let an optional local tool time the lyrics directly from the
+audio. Layered borders keep the text legible over bright and dark windows
+without a solid background bar, optional offline Japanese furigana places
+hiragana readings above kanji, and clicking a lyric jumps straight back to the
+playing tab while empty space passes clicks through to whatever sits behind it.
 
-It has three parts:
+![Desktop with a song video playing; timed lyrics and the live pitch trace float at the bottom](docs/desktop.png)
 
-- a Firefox add-on (`firefox/`) that tells the local service what the YouTube
-  tab is playing; it sends nothing off the computer;
-- a service (`service/`, a gjs program run as the systemd user unit
-  `lyrics-overlay.service`) that finds or generates timed lyrics, remembers
-  your choices and timing for each video, decides which line shows when,
-  follows the pitch you sing, detects the song's key, and serves the settings
-  page;
-- a standalone desktop overlay (`desktop/`, a gjs GTK3/XWayland process run as
-  `lyrics-overlay-desktop.service`) that draws the tray indicator, the lyric
-  line, the quiet timing status pill, and the pitch panel — and restarts in
-  milliseconds with no logout required. (An optional GNOME Shell 50 extension
-  also remains in `gnome-extension/lyrics-overlay@ernop`.)
+## Sing from any workspace
 
-## Requirements
+YouTube does not need to stay on screen. While you read, write, or code in
+other windows, the lyrics and pitch meter float unobtrusively over both bright
+and dark apps, with a small note icon in the top bar whenever music is playing.
 
-- Linux desktop with XWayland or X11 (tested on GNOME Shell 50 / Ubuntu 26.04)
-- Firefox 142 or later
-- `sudo apt install gjs gir1.2-soup-3.0 gir1.2-gtk-3.0 libglib2.0-bin pipewire pipewire-bin`
-- Optional, for local automatic lyric timing: `ffmpeg`, `yt-dlp`, and `uv` (or
-  Python 3.10+ with `venv`); a CUDA GPU speeds timing to roughly 20x real-time
-  with `large-v3`, or it can run on CPU (`device: "cpu"`, `computeType: "int8"`).
-- Node.js and npm, only to run the tests.
+![Working across a light notes window and a dark code editor while Japanese lyrics with furigana and the live pitch trace float above](docs/workspace.png)
+
+## Readable over bright and dark scenes
+
+Pick a font, size, color, and 1 to 4 concentric border rings — with automatic
+high-contrast colors, custom per-ring colors and widths, or a soft glow — plus
+optional offline Japanese furigana above kanji.
+
+![Four lyric border styles and offline Japanese furigana over split dark and light backgrounds](docs/styles.png)
+
+## Live settings and layout
+
+Right-click the lyric, pitch panel, or top-bar note to open the single settings
+page (`http://localhost:8792/settings`). Every change updates the live overlay
+immediately.
+
+![Settings page — Lyrics tab with live Japanese furigana preview and multi-ring border controls](docs/settings.png)
+
+Arrange the lyric box and pitch panel directly on a map of your monitor, dock
+the pitch panel on any side (or detach it), and adjust note range, scale
+highlighting, and microphone choice:
+
+![Settings page — Screen map and Pitch tab](docs/settings-map.png)
+
+For the current song, nudge timing, switch between lyric sets, search LRCLIB by
+artist and title, load a local `.lrc` or `.txt` file, or trigger local timing:
+
+![Settings page — Song tab with timing nudges, manual search, and local file import](docs/settings-song.png)
+
+## Everyday controls
+
+| Action | Result |
+|---|---|
+| Click lyric | Jumps to the song's Firefox tab and raises its window |
+| `Ctrl+drag` lyric | Moves it with center/edge snap (`Shift` bypasses snap, `Esc` cancels) |
+| `Ctrl+scroll` lyric | Resizes the text |
+| `Ctrl+drag` pitch panel | Moves, resizes from any edge, or docks against a side of the lyric |
+| Click top-bar note | Toggles the overlay on or off |
+| Right-click lyric, pitch panel, or note | Opens or raises the settings page |
+
+---
 
 ## Install
 
-```
+Requires a Linux desktop (Wayland with XWayland, or X11) and Firefox 142+.
+
+```sh
+sudo apt install gjs gir1.2-soup-3.0 gir1.2-gtk-3.0 libglib2.0-bin pipewire pipewire-bin
 git clone https://github.com/ernop/lyrics-overlay.git
 cd lyrics-overlay
 scripts/install.sh
 ```
 
-`scripts/install.sh` checks the requirements, creates `settings.json` from
-`settings.example.json`, and installs and starts both `lyrics-overlay.service`
-and `lyrics-overlay-desktop.service` immediately (no logout required). Then:
+Then download
+[lyrics-overlay.xpi](https://github.com/ernop/lyrics-overlay/releases/latest/download/lyrics-overlay.xpi),
+drag it onto a Firefox window, and click **Add**. (From 1.3.0 onward, Firefox
+keeps the add-on updated automatically.)
 
-1. Download
-   [lyrics-overlay.xpi](https://github.com/ernop/lyrics-overlay/releases/latest/download/lyrics-overlay.xpi)
-   and open it in Firefox (drag it onto a Firefox window); press Add.
+### Optional extras
 
-### Optional: automatic lyric timing & Japanese furigana
+- **Local automatic lyric timing & offline Japanese furigana:** run
+  `scripts/install-generator.sh` (creates a local `.venv` with `faster-whisper`
+  and `sudachipy`), then enable `lyricsGenerator` in `settings.json` or toggle
+  **Furigana** on the settings page.
+- **Extra fonts:** `scripts/install-fonts.sh` unpacks extra fonts into
+  `~/.local/share/fonts/` for your user.
+- **Update:** `git pull && scripts/install.sh` (restarts immediately, no logout).
+- **Remove:** `systemctl --user disable --now lyrics-overlay.service lyrics-overlay-desktop.service && rm -f ~/.config/systemd/user/lyrics-overlay*.service`, remove the add-on in Firefox, and optionally delete `~/.local/state/lyrics-overlay` and `.venv`.
 
-To generate timed lyrics locally for songs without synced LRCLIB lyrics (and
-enable offline Japanese furigana at the same time):
+## Privacy
 
-```
-scripts/install-generator.sh
-```
+- The Firefox add-on talks only to the local service on this computer.
+- Lyric lookups go to [LRCLIB](https://lrclib.net) with a generic User-Agent,
+  cached for 7 days and strictly rate-limited.
+- Offline Japanese furigana and optional local audio timing run on this
+  computer; temporary audio is deleted immediately and lyric text is never
+  written to logs.
+- Microphone and playback-key audio stay in memory and open only while music is
+  playing with the pitch panel enabled.
 
-This creates a local `.venv` with `faster-whisper`, CUDA runtime libraries,
-and `sudachipy` + `sudachidict-full` (nothing is installed globally). Then add
-a `lyricsGenerator` block to `settings.json` (see
-[Service settings](#service-settings)) and restart the service:
+## Technical details
 
-```
-systemctl --user restart lyrics-overlay.service
-```
+The overlay consists of a small Firefox add-on (`firefox/`), a local background
+service (`service/`), and a standalone desktop window process (`desktop/`).
+Configuration lives in `settings.json` (copied from `settings.example.json`);
+run `npm test` and `npm run lint` to run the test suite.
 
-If you only want offline Japanese furigana without Whisper:
-
-```
-uv venv .venv && uv pip install --python .venv/bin/python sudachipy sudachidict-full
-```
-
-Then enable **Furigana** under Settings -> Lyrics -> Typography.
-
-### Optional: more fonts
-
-`scripts/install-fonts.sh` adds about 160 of Ubuntu's font packages into
-`~/.local/share/fonts/` for your user alone (no root). The settings page lists
-them at once; restart `lyrics-overlay-desktop.service` to draw them
-immediately.
-
-### Update
-
-```
-git pull && scripts/install.sh
-```
-
-Both `lyrics-overlay.service` and `lyrics-overlay-desktop.service` restart at
-once with no logout needed. From 1.3.0 Firefox
-updates the add-on by itself (checking the newest GitHub release once a day),
-and the settings page's Song tab shows the running version with an install
-button whenever Firefox runs an older one. Versions 1.0.0 to 1.2.0 have no
-update address, so install the newest
-[lyrics-overlay.xpi](https://github.com/ernop/lyrics-overlay/releases/latest/download/lyrics-overlay.xpi)
-once by hand as in step 1 above. An add-on updated from 1.0 or 1.1 opens a page
-asking for access to `localhost`, which it needs to find the open settings tab;
-press Allow there once (clicking lyrics to raise the song works without it).
-
-### Remove
-
-```
-systemctl --user disable --now lyrics-overlay.service lyrics-overlay-desktop.service
-rm -f ~/.config/systemd/user/lyrics-overlay*.service
-rm -rf ~/.local/state/lyrics-overlay   # remembered choices, timing and caches
-rm -rf .venv                           # if automatic lyric timing was installed
-```
-
-and remove the add-on in Firefox's Add-ons and themes page.
-
-## Using it
-
-The indicator shows while YouTube plays sound and for two minutes after.
-
-![The indicator on and off, on a dark and a light panel](docs/indicator-icons.png)
-
-| Where | Action | Result |
-|---|---|---|
-| Indicator | press | lyric line on or off |
-| Indicator | right-press | opens or raises the settings page |
-| Panel indicator button | middle-drag | slides the standalone panel button horizontally along the panel |
-| Lyric or timing pill | press | selects the song's Firefox tab and raises its window (acts immediately on press; never drags) |
-| Lyric or timing pill | `Ctrl+drag` | moves the box with magnetic center/edge snap (hold `Shift` to bypass snap; `Esc` cancels; `Ctrl+press` without movement does nothing) |
-| Lyric or timing pill | right-press | opens or raises the settings page |
-| Lyric | `Ctrl+scroll` | changes the text size |
-| Pitch panel | `Ctrl+drag` edge | resizes it |
-| Pitch panel | `Ctrl+drag` separate | moves it; dropped against a side of the lyric, it docks there |
-| Pitch panel | `Ctrl+drag` docked away | makes it separate |
-| Pitch panel | right-press | opens or raises the settings page |
-
-Where no lyric or timing status pill is drawn, clicks reach the windows below.
-
-The keyboard's media keys (play/pause, next, previous) reach YouTube through
-Firefox itself, which exposes each playing tab to the desktop as a media
-player; this uses Firefox's `media.hardwaremediakeys.enabled` (on by default).
-The keys go to the tab that played media last.
-
-## Borders and Japanese furigana
-
-Multi-ring broadcast telop borders (`Single`, `Double`, `Triple` default,
-`Quad`, and `Glow`) paint concentric rings outermost-to-innermost across
-wrapped lines and furigana together, with automatic WCAG contrast alternation
-or per-ring custom colors and widths (`2%–35%` of text size). Offline
-Japanese furigana (`Furigana: On`) puts hiragana readings only over kanji while
-leaving okurigana, kana, ASCII countdowns, and non-Japanese lines untouched:
-
-![Multi-ring borders and offline Japanese furigana over split dark and light video backgrounds](docs/styles.png)
-
-## The settings page
-
-Everything is set on one page in Firefox, http://localhost:8792/settings, and
-each change applies live on the lyric line and the pitch panel. A right press
-on the indicator, the lyric, the timing status pill, or the pitch panel selects
-the open settings tab (or opens one) and raises its window; there is only ever
-one.
-
-![Settings page — Lyrics tab: live Japanese furigana preview on the left, multi-ring border controls on the right](docs/settings.png)
-
-| Area | What it holds |
-|---|---|
-| Live stage (left, sticky) | flips between **Preview** (live lyric preview with furigana over Video/Dark/Light scenes on Lyrics/Song, or live pitch trace preview on Pitch, with editable sample text) and **Screen map** (exact monitor aspect ratio, 8-handle lyric resize and drag with center snap, pitch panel docking/resizing, multi-monitor picker, placement presets) |
-| Lyrics | searchable font picker, constant size (`16–256 px`; long lines wrap evenly without shrinking), `Bold`/`Italic`, offline Japanese **Furigana** toggle, 11 colors or custom hex, customizable 1–4 ring borders (`None`, `Single`, `Double`, `Triple` default, `Quad`, `Glow`) with per-ring colors, widths (`2%–35%`), and optional `Soft cloud`, optional `Behind text` or `Full bar` backdrop, alignment, and transition |
-| Pitch | docking/size, fixed or voice-following range (or fit to last 30 s), window duration, scroll in silence, trace thickness/color/background, note names, scale highlighting (detected from song, fixed, or none), current-note readout, analysis rate, PipeWire microphone picker, and echo cancelling |
-| Song | active song and live lyric status (including one-click `This is a music video` override for uncategorized uploads and live timing stages when generating), timing nudges (`Too fast` / `Too slow` in `0.5 s` steps, `Reset`), manual LRCLIB artist/title search, local `.lrc`/`.txt` lyric file import, single-line lyric sets with line counts and `Timed` / `Untimed` / `Aligned` / `Transcribed` / `Local file` badges, `Generate timed lyrics` (bypasses the duration cap when run manually), microphone and detected scale readout, and Firefox add-on version with install button when outdated |
-
-Screen placement map beside the Pitch tab, and the Song tab with lyric sets,
-manual LRCLIB search, and local `.lrc`/`.txt` import:
-
-![Settings page — Screen map and Pitch tab](docs/settings-map.png)
-
-![Settings page — Song tab with timing nudges, manual LRCLIB search, and local lyric import](docs/settings-song.png)
-
-## Service settings
-
-`settings.json` (created from `settings.example.json`; restart the service
-after a change with `systemctl --user restart lyrics-overlay.service`):
-
-| Key | Default | Meaning |
-|---|---|---|
-| `port` | `8792` | the service's port on `127.0.0.1`; the add-on, shell extension, and settings page use `8792` |
-| `hostname` | `"lyrics.localhost"` | one more `Host` name the service answers to, such as a local proxy's |
-| `lrclibBaseUrl` | `"https://lrclib.net"` | the LRCLIB server |
-| `ytarchiveUrl` | `null` | a ytarchive server that receives each played video and its lyrics (including generated timed LRC); also checked first for local audio when generating lyrics; `null` turns it off |
-| `stateDir` | `"~/.local/state/lyrics-overlay"` | remembered choices, timing, generated lyrics, and caches |
-| `lyricsGenerator` | `null` | optional local automatic lyric timing config (example below); `null` turns it off |
-
-Example `lyricsGenerator` block in `settings.json`:
-
-```json
-"lyricsGenerator": {
-  "command": [".venv/bin/python", "service/generate-lyrics.py"],
-  "model": "large-v3",
-  "device": "cuda",
-  "computeType": "float16",
-  "maxDurationSeconds": 900,
-  "gpuGate": null
-}
-```
-
-- `command`: executable and script path (relative paths resolve from the repo root).
-- `model`, `device` (`"auto"`, `"cuda"`, `"cpu"`), `computeType` (`"auto"`, `"float16"`, `"int8"`): passed to `faster-whisper`.
-- `maxDurationSeconds`: skips automatic generation for longer videos (default `900`, 15 minutes).
-- `gpuGate`: optional wrapper command for a shared local GPU coordinator (`{command, name, what, gb, lane, minutes, waitMinutes}`), or `null` to run directly.
-
-## Checking that it works
-
-With a song playing:
-
-| Check | Expect |
-|---|---|
-| `systemctl --user status lyrics-overlay.service lyrics-overlay-desktop.service` | both `active (running)` |
-| `curl -s http://127.0.0.1:8792/api/state` | `state.lyrics` is `timed` (or `generating` while automatic timing runs); `addon.status` is `current`, not `older`, `unnamed`, or `unheard`; `state.generation.available` is `true` when `lyricsGenerator` is configured |
-| `python3 scripts/check-live-desktop.py` | tray indicator and lyric line are drawn, and where |
-| `journalctl --user -u lyrics-overlay.service` | one `lookup <video>` line per video (`timed`, `plain`, or `none`), plus `generate <video>` when automatic timing runs |
-
-If no line shows:
-
-- `lyrics` is `generating`: automatic lyric timing is fetching audio, waiting
-  for the GPU, or transcribing; a quiet pill appears in the overlay until the
-  timed lines arrive.
-- `lyrics` is `none` or `plain`: LRCLIB has no timed lyrics for the song (and
-  automatic timing is either disabled, skipped for an instrumental/long video,
-  or busy). The settings page's Song tab can search again, pick another lyric
-  set, or run `Generate timed lyrics` / `Retry timing`.
-- `addon.status` is `unheard`: no add-on has reported since the service
-  started. Check that the add-on is installed and enabled in Firefox and that
-  the YouTube tab plays sound.
-- `addon.status` is `older` or `unnamed`: Firefox runs an old add-on; use the
-  settings page's install button, or install the `.xpi` as in Install.
-- `lyrics-overlay-desktop.service` is not running: run `scripts/install.sh`
-  or `systemctl --user restart lyrics-overlay-desktop.service` and check
-  `journalctl --user -u lyrics-overlay-desktop.service`.
-
-## Network and privacy
-
-- The Firefox add-on reports only to the service on this computer.
-- The service asks LRCLIB for lyrics with a generic User-Agent. Every answer is
-  kept for 7 days, and searches are capped at 20 a minute, 200 an hour, and
-  1000 a day across restarts.
-- When `lyricsGenerator` is configured and LRCLIB has no synced lyrics, the
-  generator checks local `ytarchiveUrl` for an already-archived soundtrack
-  first and otherwise downloads the song's audio with anonymous `yt-dlp` (no
-  cookies, `--no-playlist --ignore-config`). Whisper runs locally, the
-  temporary audio file is deleted immediately after transcription, and lyric
-  text is never written to logs.
-- Japanese furigana runs 100% locally via `sudachipy` with no network requests
-  and never logs lyric text.
-- The microphone opens only while the line and the pitch panel are on and
-  YouTube is playing sound.
-- While the pitch panel shows a scale detected from the song, the service also
-  listens to what the computer plays (not the microphone) to find the key,
-  keeping only summed pitch-class energy per video.
-- Microphone and speaker-monitor audio stays in memory.
-
-## Development
-
-```
-npm install
-npm test             # unit suites and the real gjs service against stand-ins
-npm run lint         # web-ext lint on the Firefox add-on
-npm run test:desktop # headless GNOME Shell + XWayland with standalone desktop frontend and service
-npm run test:shell   # headless GNOME Shell with the legacy extension and service
-```
-
-[docs/product.md](docs/product.md) holds the requirements and decisions,
-[docs/architecture.md](docs/architecture.md) how the parts fit together, and
-[docs/operations.md](docs/operations.md) install details, tests, and releases.
-[AGENTS.md](AGENTS.md) is the entry point for coding agents.
+For full architecture, configuration keys, verification commands, and release
+steps, see [docs/product.md](docs/product.md),
+[docs/architecture.md](docs/architecture.md), and
+[docs/operations.md](docs/operations.md).
 
 ## License
 

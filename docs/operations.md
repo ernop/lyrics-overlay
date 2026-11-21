@@ -22,15 +22,31 @@ overlay, and the testing lessons behind the rules. What it is for:
   Add-on 1.0 reached the service that way; 1.1 and later use port 8792
   directly.
 - **Automatic lyric timing** (optional): `scripts/install-generator.sh`
-  creates a gitignored `.venv` in the repo root with `faster-whisper` and
-  NVIDIA CUDA runtime libraries (`nvidia-cublas-cu12`, `nvidia-cudnn-cu12`).
-  Configure `lyricsGenerator` in `settings.json` and restart
-  `lyrics-overlay.service`. Both `service/lyric-generator.js` and
-  `service/generate-lyrics.py` prepend `~/.local/bin` to `PATH` because
-  `systemd --user` omits it (where `yt-dlp`, `deno`, `uv`, and optional
-  local GPU gate scripts often live). `generate-lyrics.py` decodes audio
-  with `ffmpeg` directly so it does not break on `av >= 19` (which removed
-  `metadata_errors` expected by `faster-whisper.decode_audio`).
+  creates a gitignored `.venv` in the repo root with `faster-whisper`,
+  NVIDIA CUDA runtime libraries (`nvidia-cublas-cu12`, `nvidia-cudnn-cu12`),
+  and `sudachipy` + `sudachidict-full`. Configure `lyricsGenerator` in
+  `settings.json` and restart `lyrics-overlay.service`:
+
+  ```json
+  "lyricsGenerator": {
+    "command": [".venv/bin/python", "service/generate-lyrics.py"],
+    "model": "large-v3",
+    "device": "cuda",
+    "computeType": "float16",
+    "maxDurationSeconds": 900,
+    "gpuGate": null
+  }
+  ```
+
+  Set `device: "cpu"` and `computeType: "int8"` on CPU-only machines;
+  `gpuGate` optionally wraps runs through a shared local GPU coordinator
+  (`{command, name, what, gb, lane, minutes, waitMinutes}`). Both
+  `service/lyric-generator.js` and `service/generate-lyrics.py` prepend
+  `~/.local/bin` to `PATH` because `systemd --user` omits it (where `yt-dlp`,
+  `deno`, `uv`, and optional local GPU gate scripts often live).
+  `generate-lyrics.py` decodes audio with `ffmpeg` directly so it does not
+  break on `av >= 19` (which removed `metadata_errors` expected by
+  `faster-whisper.decode_audio`).
 - **Japanese furigana** (optional): install `sudachipy` and
   `sudachidict-full` into `.venv` (`uv pip install --python .venv/bin/python sudachipy sudachidict-full`, also installed by `scripts/install-generator.sh`), or into system `python3`. Toggle **Furigana** under Settings -> Lyrics -> Typography.
 - **More fonts** (optional): `scripts/install-fonts.sh` downloads about
@@ -127,12 +143,12 @@ overlay, and the testing lessons behind the rules. What it is for:
   installed service and the owner's screen are untouched.
 - **The README's pictures**: `gjs -m scripts/render-indicator-icons.js`
   draws `docs/indicator-icons.png` after an icon changes;
-  `scripts/update-readme-pictures.sh` runs the shell e2e (two lyric
-  lines), `tests/e2e/readme-desktop.mjs` (the staged desktop) and
-  `scripts/settings-page-picture.mjs` (the settings page in a headless
-  Firefox, with made-up microphones) and copies each picture into
-  `docs/` without the time stamped in it, so an unchanged picture stays
-  the same file.
+  `scripts/update-readme-pictures.sh` runs `tests/e2e/readme-desktop.mjs`
+  (`docs/desktop.png` and `docs/workspace.png`), `scripts/styles-picture.mjs`
+  (`docs/styles.png`), and `scripts/settings-page-picture.mjs`
+  (`docs/settings.png`, `docs/settings-map.png`, `docs/settings-song.png` in
+  headless Firefox with made-up microphones) and copies each picture into
+  `docs/` without PNG text chunks so an unchanged picture stays the same file.
 
 ## Release the Firefox extension
 

@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # Refreshes the README's pictures, all drawn with public-domain songs and
-# made-up devices: tests/e2e/readme-desktop.mjs stages the full desktop in
-# headless GNOME Shell; scripts/styles-picture.mjs renders multi-ring borders
-# and offline Japanese furigana through Cairo/Pango and SudachiPy;
-# scripts/settings-page-picture.mjs captures the Lyrics, Screen map / Pitch,
-# and Song tabs in headless Firefox. Each lands in
+# made-up devices: tests/e2e/readme-desktop.mjs stages both the video desktop
+# (docs/desktop.png) and the multi-app workspace with Japanese furigana
+# (docs/workspace.png) in headless GNOME Shell; scripts/styles-picture.mjs
+# renders multi-ring borders and offline Japanese furigana through Cairo/Pango
+# and SudachiPy; scripts/settings-page-picture.mjs captures the Lyrics, Screen
+# map / Pitch, and Song tabs in headless Firefox. Each lands in
 # build/e2e-artifacts/readme-*.png and is copied into docs/ without PNG text
 # metadata chunks.
 set -euo pipefail

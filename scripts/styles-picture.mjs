@@ -39,14 +39,14 @@ const [ruby1, ruby2] = annotate([JP_LINE_1, JP_LINE_2]);
 
 const rows = [
     {
-        badge: 'Triple (default) · White',
+        badge: 'Triple border · White',
         text: 'Amazing grace, how sweet the sound',
         color: 'white',
         border: 'triple',
         fontSize: 58,
     },
     {
-        badge: 'Quad (4 rings) + Furigana · Pink',
+        badge: 'Quad border + Furigana · Pink',
         text: JP_LINE_1,
         ruby: ruby1,
         color: 'pink',
@@ -54,7 +54,7 @@ const rows = [
         fontSize: 58,
     },
     {
-        badge: 'Triple + Furigana · Custom rings',
+        badge: 'Custom ring colors + Furigana',
         text: JP_LINE_2,
         ruby: ruby2,
         color: 'yellow',
@@ -150,7 +150,7 @@ legendDesc.set_family('Sans');
 legendDesc.set_weight(Pango.Weight.BOLD);
 legendDesc.set_absolute_size(12 * Pango.SCALE);
 legend.set_font_description(legendDesc);
-legend.set_text('Light video background', -1);
+legend.set_text('Light background', -1);
 const [, legLog] = legend.get_pixel_extents();
 roundedRect(cr, W - legLog.width - 30, 10, legLog.width + 18, legLog.height + 8, 6);
 cr.setSourceRGBA(1, 1, 1, 0.92);
