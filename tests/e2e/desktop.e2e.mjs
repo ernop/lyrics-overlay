@@ -294,16 +294,30 @@ loop.run();
     await h.waitFor(async () => (await h.evalJs(focusedTitle)) === delayedTitle,
         'window raiser to wait for delayed browser retitle and focus the window');
 
-    // 2c. Ambiguous duplicate titles: two windows share the title -> raiser refuses to guess.
+    // 2c. Duplicate titles: two windows share the title -> raiser picks the most
+    //     recently active matching window instead of refusing silently (e.g. two
+    //     Firefox windows both showing "Lyrics overlay settings").
     const dupTitle = 'Duplicate Window — Mozilla Firefox';
     await h.openWindow(dupTitle);
     await h.openWindow(dupTitle);
+    const dupSeqs = await h.evalJs(`global.display.list_all_windows()
+        .filter(w => w.get_title() === ${JSON.stringify(dupTitle)})
+        .map(w => w.get_stable_sequence())`);
+    assert.equal(dupSeqs.length, 2);
+    const preferredSeq = dupSeqs[0];
+    await h.evalJs(`(() => {
+        const w = global.display.list_all_windows().find(x => x.get_stable_sequence() === ${preferredSeq});
+        Main.activateWindow(w);
+        return true;
+    })()`);
+    await h.waitFor(async () => (await h.evalJs('global.display.focus_window?.get_stable_sequence() ?? null')) === preferredSeq,
+        'first duplicate window to become most recently used');
     await focusOther();
     const dupAnswer = h.answerNextCommand(() => ({ok: true, windowTitle: dupTitle}));
     await h.evalJs(inputScript([{move: inkCenter(line2), wait: 40}, {button: 1, down: true, wait: 40}, {button: 1, down: false, wait: 60}]));
     await dupAnswer;
-    await h.waitFor(() => h.desktopLog.includes('not guessing which to raise'), 'ambiguous title refusal logged');
-    assert.notEqual(await h.evalJs(focusedTitle), dupTitle, 'must not guess between two windows sharing a title');
+    await h.waitFor(async () => (await h.evalJs('global.display.focus_window?.get_stable_sequence() ?? null')) === preferredSeq,
+        'window raiser to activate the most recently used window among duplicate titles');
 
     // 2d. Omitted windowTitle (Firefox withholding window.title without tabs permission):
     //     service accepts /api/command-result (no 400 / 3 s timeout).

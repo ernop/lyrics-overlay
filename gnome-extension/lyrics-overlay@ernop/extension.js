@@ -5,6 +5,7 @@
 // shows the settings page, which is the browser's one settings tab.
 
 import GLib from 'gi://GLib';
+import Meta from 'gi://Meta';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import {Extension} from 'resource:///org/gnome/shell/extensions/extension.js';
 
@@ -19,6 +20,41 @@ const SETTINGS_URI = 'http://localhost:8792/settings';
 // The browser retitles its window for the tab it just selected a moment
 // after it answers; past this the title it named is not coming.
 const RETITLE_WAIT_MS = 1000;
+const FIREFOX_SUFFIX = / [\u2014-] Mozilla Firefox$/u;
+
+function isFirefoxWindow(window) {
+    const wmClass = window.get_wm_class() ?? '';
+    const wmInstance = window.get_wm_class_instance() ?? '';
+    return /firefox/iu.test(wmClass) || /firefox/iu.test(wmInstance);
+}
+
+function matchWindowsByTitle(title) {
+    const windows = global.display.list_all_windows().filter(
+        window => !window.is_skip_taskbar() && window.get_window_type() === Meta.WindowType.NORMAL,
+    );
+    const exact = windows.filter(window => window.get_title() === title);
+    if (exact.length > 0) {
+        const exactFirefox = exact.filter(isFirefoxWindow);
+        return exactFirefox.length > 0 ? exactFirefox : exact;
+    }
+    const stripped = title.replace(FIREFOX_SUFFIX, '');
+    return windows.filter(window => isFirefoxWindow(window)
+        && (window.get_title() ?? '').replace(FIREFOX_SUFFIX, '') === stripped);
+}
+
+function pickMostRecentWindow(windows) {
+    const stacked = global.display.sort_windows_by_stacking(windows);
+    let chosen = stacked[stacked.length - 1];
+    let bestTime = chosen.get_user_time();
+    for (const window of stacked) {
+        const userTime = window.get_user_time();
+        if (userTime > bestTime) {
+            bestTime = userTime;
+            chosen = window;
+        }
+    }
+    return chosen;
+}
 
 export default class LyricsOverlayExtension extends Extension {
     enable() {
@@ -174,11 +210,13 @@ export default class LyricsOverlayExtension extends Extension {
         if (!title)
             return;
         const raise = () => {
-            const matches = global.display.list_all_windows().filter(window => window.get_title() === title);
-            if (matches.length > 1)
-                console.log(`lyrics-overlay: ${matches.length} windows are titled "${title}"; not guessing which to raise`);
-            else if (matches.length === 1)
+            const matches = matchWindowsByTitle(title);
+            if (matches.length === 1)
                 Main.activateWindow(matches[0]);
+            else if (matches.length > 1) {
+                Main.activateWindow(pickMostRecentWindow(matches));
+                console.log(`lyrics-overlay: ${matches.length} windows match "${title}"; raised most recent`);
+            }
             return matches.length > 0;
         };
         if (raise())

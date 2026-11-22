@@ -358,8 +358,8 @@ async function overlayScenario(h, releaseFile) {
     const centered = await h.evalJs(overlayFacts);
     assert.deepEqual([centered.align, centered.fill, centered.ring], ['center', '1,1,1', [true, true]]);
     assert.ok(Math.abs(centered.ink.x + centered.ink.width / 2 - centered.layerWidth / 2) < 12, JSON.stringify(centered));
-    // Proportional double border: fused inner body is 15.5% of font size.
-    assert.ok(Math.abs(centered.ringInner - Math.max(2, centered.fontSize * 0.155)) < 0.05, JSON.stringify(centered));
+    // Proportional triple border (default): inner ring is 12.5% of font size.
+    assert.ok(Math.abs(centered.ringInner - Math.max(2, centered.fontSize * 0.125)) < 0.05, JSON.stringify(centered));
     await h.gsettings.set('text-border', "'glow'");
     await h.waitFor(async () => {
         const facts = await h.evalJs(overlayFacts);

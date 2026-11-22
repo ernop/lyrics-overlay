@@ -47,21 +47,16 @@ function isFirefoxWindow(window) {
 function matchByTitle(title) {
     const windows = normalWindows();
     const exact = windows.filter(window => window.get_title() === title);
-    if (exact.length > 0)
-        return exact;
+    if (exact.length > 0) {
+        const exactFirefox = exact.filter(isFirefoxWindow);
+        return exactFirefox.length > 0 ? exactFirefox : exact;
+    }
     const stripped = title.replace(FIREFOX_SUFFIX, '');
     return windows.filter(window => isFirefoxWindow(window)
         && (window.get_title() ?? '').replace(FIREFOX_SUFFIX, '') === stripped);
 }
 
-function raiseFallbackFirefox() {
-    const windows = normalWindows().filter(isFirefoxWindow);
-    if (windows.length === 0)
-        return {ok: false, reason: 'not-found'};
-    if (windows.length === 1) {
-        Main.activateWindow(windows[0]);
-        return {ok: true, matched: 'firefox-single'};
-    }
+function pickMostRecent(windows) {
     const stacked = global.display.sort_windows_by_stacking(windows);
     let chosen = stacked[stacked.length - 1];
     let bestTime = chosen.get_user_time();
@@ -72,7 +67,18 @@ function raiseFallbackFirefox() {
             chosen = window;
         }
     }
-    Main.activateWindow(chosen);
+    return chosen;
+}
+
+function raiseFallbackFirefox() {
+    const windows = normalWindows().filter(isFirefoxWindow);
+    if (windows.length === 0)
+        return {ok: false, reason: 'not-found'};
+    if (windows.length === 1) {
+        Main.activateWindow(windows[0]);
+        return {ok: true, matched: 'firefox-single'};
+    }
+    Main.activateWindow(pickMostRecent(windows));
     console.log('lyrics-overlay-raiser: no window title reported; raised most recent Firefox window');
     return {ok: true, matched: 'firefox-mru'};
 }
@@ -137,8 +143,9 @@ export default class LyricsOverlayRaiserExtension extends Extension {
                 return {ok: true, matched: 'title'};
             }
             if (matches.length > 1) {
-                console.log(`lyrics-overlay-raiser: ${matches.length} windows are titled "${title}"; not guessing which to raise`);
-                return {ok: false, reason: 'ambiguous'};
+                Main.activateWindow(pickMostRecent(matches));
+                console.log(`lyrics-overlay-raiser: ${matches.length} windows match "${title}"; raised most recent`);
+                return {ok: true, matched: 'title-mru'};
             }
             return null;
         };

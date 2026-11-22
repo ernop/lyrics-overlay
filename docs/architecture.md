@@ -101,11 +101,12 @@ Firefox tab (YouTube)                         Standalone desktop frontend
   by `scripts/install.sh` on GNOME desktops (`scripts/install-window-raiser.sh`).
   Owns `net.fuseki.LyricsOverlayRaiser` on the session bus and exports
   `net.fuseki.LyricsOverlayRaiser1.RaiseWindow(s title) -> s`: activates the
-  unique normal window matching `title` (also matching stripped
+  normal window matching `title` (preferring Firefox windows when exact
+  matches include non-Firefox windows, matching stripped
   ` — Mozilla Firefox` suffixes against Firefox windows, waiting up to 1 s
-  for `notify::title` / `window-created`, and refusing to guess when multiple
-  windows share the title); when `title` is empty, activates the single or
-  most recently active Firefox window. `enable()` and `disable()` are
+  for `notify::title` / `window-created`, and raising the most recently
+  active matching window when multiple windows share the title); when `title`
+  is empty, activates the single or most recently active Firefox window. `enable()` and `disable()` are
   idempotent and reply to any in-flight D-Bus invocation before tearing down.
 - **Legacy GNOME Shell extension** (`gnome-extension/lyrics-overlay@ernop`,
   GNOME 50). Optional in-shell frontend sharing `shared/text-layout.js`,

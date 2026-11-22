@@ -115,7 +115,8 @@ overlay, and the testing lessons behind the rules. What it is for:
   `lyrics-overlay-raiser@ernop` under constant GC (~16 s). Tests tray button
   toggle, per-pixel click-through, immediate focus on plain press (verifying
   Mutter actually focuses the matching Wayland browser window across exact
-  title, delayed retitle, ambiguous duplicate titles, empty `windowTitle`,
+  title, delayed retitle, duplicate titles picking the most recently active
+  match, empty `windowTitle`,
   and duplicate `disable()`/`enable()` cycles on the raiser), `Ctrl+drag` from
   a focused native Wayland window (using real Linux evdev keycodes), `Escape`
   cancel, right-click settings + `org.freedesktop.Notifications` error notice,

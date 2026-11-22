@@ -386,10 +386,12 @@ from scratch when they are not.
   multiple Firefox windows and does nothing when playback is paused or has no
   MPRIS controller. On GNOME Wayland, the standalone desktop frontend calls a
   tiny zero-UI GNOME Shell companion extension (`lyrics-overlay-raiser@ernop`,
-  no rendering or settings) over session D-Bus to raise the one window whose
-  title is exactly the one the extension reports, waiting up to 1 s for the
-  browser to retitle it and doing nothing when two windows share that title
-  rather than guess. Because the add-on omits the `tabs` permission, Firefox's
+  no rendering or settings) over session D-Bus to raise the window whose
+  title matches the one the extension reports (preferring Firefox windows on
+  exact matches, waiting up to 1 s for the browser to retitle it, and raising
+  the most recently active matching window when multiple windows share that
+  title—for example two Firefox windows both showing `Lyrics overlay settings`—
+  rather than failing silently). Because the add-on omits the `tabs` permission, Firefox's
   `windows.get()` can occasionally return `undefined` for `window.title` during
   a tab switch; the service accepts an omitted or empty `windowTitle` instead
   of refusing `/api/command-result`, and the raiser falls back to raising the

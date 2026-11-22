@@ -91,7 +91,11 @@ export function raiseBrowser(windowTitle = '') {
             if (reply.ok)
                 return;
             if (reply.reason === 'ambiguous') {
-                printerr('lyrics-overlay-desktop: multiple windows share the reported title; not guessing which to raise');
+                printerr('lyrics-overlay-desktop: multiple windows share the reported title; cannot raise with older window raiser');
+                notify(
+                    'Multiple windows match',
+                    `More than one window is titled "${title}". Close the duplicate tab, or log out and back in to load the updated window raiser.`,
+                );
                 return;
             }
             if (reply.reason === 'replaced')
