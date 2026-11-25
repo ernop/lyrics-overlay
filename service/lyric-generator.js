@@ -129,7 +129,7 @@ export function createLyricGenerator({config, projectDir, runtimeDir, ytarchiveU
 
         const argv = config.command.map((part, idx) => (idx <= 1 ? resolvePath(projectDir, part) : part));
         argv.push(
-            '--video-id', videoId,
+            `--video-id=${videoId}`,
             '--model', config.model,
             '--device', config.device,
             '--compute-type', config.computeType,

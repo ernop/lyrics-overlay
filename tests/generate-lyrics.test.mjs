@@ -565,3 +565,109 @@ loop.run();
         fs.rmSync(tmp, {recursive: true, force: true});
     }
 });
+
+test('lyric and score generators accept YouTube video IDs starting with a hyphen', async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'lyrics-overlay-hyphen-id-'));
+    try {
+        const fakeBin = path.join(tmp, 'bin');
+        fs.mkdirSync(fakeBin);
+        const ytdlpLog = path.join(tmp, 'ytdlp.log');
+        fs.writeFileSync(path.join(fakeBin, 'yt-dlp'), `#!/usr/bin/env python3
+import json, pathlib, sys
+with open(${JSON.stringify(ytdlpLog)}, "a", encoding="utf-8") as fh:
+    fh.write(json.dumps(sys.argv[1:]) + "\\n")
+out_idx = sys.argv.index("-o") + 1
+out_dir = pathlib.Path(sys.argv[out_idx]).parent
+(out_dir / "audio.webm").write_bytes(b"fake-audio" * 512)
+`, {mode: 0o755});
+        fs.writeFileSync(path.join(fakeBin, 'ffprobe'), `#!/usr/bin/env python3
+print("12.0")
+`, {mode: 0o755});
+
+        const fakeLyricsGate = path.join(tmp, 'fake-lyrics-gpu');
+        fs.writeFileSync(fakeLyricsGate, `#!/usr/bin/env python3
+import json
+print(json.dumps({
+    "ok": True, "language": "en", "duration": 12.0, "device": "cuda",
+    "segments": [
+        {"start": 1.0, "end": 3.0, "text": "Hyphen line one", "no_speech_prob": 0.01, "words": [
+            {"start": 1.0, "end": 1.8, "word": "Hyphen", "probability": 0.95},
+            {"start": 1.9, "end": 2.4, "word": "line", "probability": 0.95},
+            {"start": 2.5, "end": 3.0, "word": "one", "probability": 0.95},
+        ]},
+        {"start": 4.0, "end": 6.0, "text": "Hyphen line two", "no_speech_prob": 0.01, "words": [
+            {"start": 4.0, "end": 4.8, "word": "Hyphen", "probability": 0.95},
+            {"start": 4.9, "end": 5.4, "word": "line", "probability": 0.95},
+            {"start": 5.5, "end": 6.0, "word": "two", "probability": 0.95},
+        ]},
+    ],
+}))
+`, {mode: 0o755});
+
+        const scoreWorkerLog = path.join(tmp, 'score-worker.json');
+        const fakeScoreGate = path.join(tmp, 'fake-score-gpu');
+        fs.writeFileSync(fakeScoreGate, `#!/usr/bin/env python3
+import argparse, json, pathlib, sys
+sep = sys.argv.index("--")
+worker_argv = sys.argv[sep + 1:]
+pathlib.Path(${JSON.stringify(scoreWorkerLog)}).write_text(json.dumps(worker_argv), encoding="utf-8")
+# Verify generate-score.py's worker argv parses --video-id=-Hyphen1234 cleanly via argparse.
+p = argparse.ArgumentParser()
+p.add_argument("--video-id", default="")
+known, _ = p.parse_known_args(worker_argv[2:])
+assert known.video_id == "-Hyphen1234", f"unexpected worker video_id: {known.video_id!r}"
+print(json.dumps({
+    "ok": True, "videoId": known.video_id, "quality": "standard", "duration": 12.0,
+    "bpm": 120.0, "meter": [4, 4], "beats": [0, 0.5, 1.0, 1.5], "downbeats": [0],
+    "key": {"root": 0, "type": "major", "margin": 0.25},
+    "notes": [{"id": "n1", "start": 0.5, "end": 1.0, "midi": 60, "conf": 0.9, "voice": 0}],
+    "chords": [], "voicesDetected": 1,
+}))
+`, {mode: 0o755});
+
+        const gjsDriver = path.join(tmp, 'hyphen-driver.js');
+        fs.writeFileSync(gjsDriver, `
+import GLib from 'gi://GLib';
+import {createLyricGenerator, validateGeneratorConfig} from ${JSON.stringify(`file://${path.join(root, 'service', 'lyric-generator.js')}`)};
+import {createScoreGenerator, validateScoreGeneratorConfig} from ${JSON.stringify(`file://${path.join(root, 'service', 'score-generator.js')}`)};
+
+const loop = new GLib.MainLoop(null, false);
+const lCfg = validateGeneratorConfig({
+    command: ['python3', ${JSON.stringify(path.join(root, 'service', 'generate-lyrics.py'))}],
+    gpuGate: {command: ${JSON.stringify(fakeLyricsGate)}, name: 'Test', what: 'Test', gb: 1, lane: 'now', minutes: 1},
+}, 's.json');
+const sCfg = validateScoreGeneratorConfig({
+    command: ['python3', ${JSON.stringify(path.join(root, 'service', 'generate-score.py'))}],
+    gpuGate: {command: ${JSON.stringify(fakeScoreGate)}, name: 'Test', what: 'Test', gb: 1, lane: 'now', minutes: 1},
+}, 's.json');
+
+const lGen = createLyricGenerator({config: lCfg, projectDir: ${JSON.stringify(root)}, runtimeDir: ${JSON.stringify(tmp)}, ytarchiveUrl: null, log: () => {}});
+const sGen = createScoreGenerator({config: sCfg, projectDir: ${JSON.stringify(root)}, runtimeDir: ${JSON.stringify(tmp)}, ytarchiveUrl: null, log: () => {}});
+
+Promise.all([
+    lGen({videoId: '-Hyphen1234', identity: {title: 'Dash Song', durationSeconds: 12}, plainLyrics: '', force: true}).promise,
+    sGen({videoId: '-Hyphen1234', identity: {title: 'Dash Song', durationSeconds: 12}, plainLyrics: '', force: true}).promise,
+]).then(([lyrics, score]) => {
+    print(JSON.stringify({lyrics, score}));
+    loop.quit();
+});
+loop.run();
+`);
+        const {stdout} = await execFileAsync('gjs', ['-m', gjsDriver], {
+            timeout: 10_000,
+            env: {...process.env, PATH: `${fakeBin}:${process.env.PATH ?? '/usr/bin:/bin'}`},
+        });
+        const out = JSON.parse(stdout);
+        assert.equal(out.lyrics.ok, true, `lyric generator failed on leading-hyphen ID: ${out.lyrics.error}`);
+        assert.match(out.lyrics.lrc, /\[00:01\.00\] Hyphen line one/u);
+        assert.equal(out.score.ok, true, `score generator failed on leading-hyphen ID: ${out.score.error}`);
+        assert.equal(out.score.videoId, '-Hyphen1234');
+        const workerArgv = JSON.parse(fs.readFileSync(scoreWorkerLog, 'utf8'));
+        assert.ok(workerArgv.includes('--video-id=-Hyphen1234'), `worker argv uses --video-id=-Hyphen1234: ${JSON.stringify(workerArgv)}`);
+        const ytdlpCalls = fs.readFileSync(ytdlpLog, 'utf8').trim().split('\n').map(l => JSON.parse(l));
+        assert.equal(ytdlpCalls.length, 2);
+        assert.ok(ytdlpCalls.every(call => call.at(-1) === 'https://www.youtube.com/watch?v=-Hyphen1234'));
+    } finally {
+        fs.rmSync(tmp, {recursive: true, force: true});
+    }
+});

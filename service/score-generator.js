@@ -108,7 +108,7 @@ export function createScoreGenerator({config, projectDir, runtimeDir = null, yta
 
         const argv = config.command.map((part, idx) => (idx <= 1 ? resolvePath(projectDir, part) : part));
         argv.push(
-            '--video-id', videoId,
+            `--video-id=${videoId}`,
             '--device', config.device,
             '--whisper-model', config.whisperModel,
             '--quality', quality === 'high' ? 'high' : 'standard',

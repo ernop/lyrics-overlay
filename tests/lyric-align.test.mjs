@@ -217,3 +217,35 @@ test('alignPlainLyrics fuses isolated-vocal timestamps with referenceSyncedLyric
     // Reference had line 2 at 1/3 of the way between 10 s and 19 s -> 12 + (3/9)*9 = 15.0 s!
     assert.ok(Math.abs(nonEmpty[1].time - 15.0) < 0.4, `unmatched middle line preserves 1/3 reference ratio (~15 s), got ${nonEmpty[1].time}`);
 });
+
+test('buildTranscribedLyrics splits long single unspaced CJK and Latin tokens without recursing infinitely', () => {
+    const longJapanese = '夜空の向こうに広がる星屑を追いかけながら、遠い約束の歌を静かに口ずさんで歩いていく長い夜明け前の道でまだ見ぬ景色を探している';
+    assert.ok([...longJapanese].length > 56);
+    const longLatin = 'supercalifragilisticexpialidocious'.repeat(2);
+    assert.ok(longLatin.length > 56);
+
+    const result = buildTranscribedLyrics([
+        // Case 1: unspaced CJK segment with no word breakdown (1 visible raw entry > 56 chars)
+        {start: 2.0, end: 11.0, text: longJapanese, no_speech_prob: 0.01, words: []},
+        // Case 2: single oversized word entry inside words[]
+        {
+            start: 14.0,
+            end: 20.0,
+            text: longLatin,
+            no_speech_prob: 0.01,
+            words: [{start: 14.0, end: 20.0, word: longLatin, probability: 0.95}],
+        },
+    ], 30);
+
+    assert.equal(result.ok, true);
+    const parsed = parseSyncedLyrics(result.lrc).filter(l => l.text);
+    assert.ok(parsed.length >= 4, `expected both oversized tokens split into multiple lines, got ${parsed.length}`);
+    for (let i = 0; i < parsed.length; i++) {
+        assert.ok([...parsed[i].text].length <= 56, `line ${i} exceeded 56 chars: ${parsed[i].text.length}`);
+        if (i > 0)
+            assert.ok(parsed[i].time > parsed[i - 1].time, 'timestamps stay strictly increasing');
+    }
+    const rejoined = parsed.map(l => l.text).join('');
+    assert.ok(rejoined.includes(longJapanese), 'full Japanese phrase preserved across split lines');
+    assert.ok(rejoined.includes(longLatin), 'full Latin token preserved across split lines');
+});

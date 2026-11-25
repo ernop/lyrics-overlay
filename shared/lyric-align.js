@@ -700,10 +700,65 @@ function joinRawWords(wordGroup) {
     return pieces.join(' ').replace(/\s+/gu, ' ').trim();
 }
 
+const SINGLE_TOKEN_PUNCT = /[、。！？，；,.!?;—-]/u;
+
+/** Splits a single long unspaced token (e.g. unspaced CJK phrase) into balanced lines <= MAX_LINE_CHARS. */
+function splitLongSingleToken(entry) {
+    const chars = [...entry.raw];
+    const total = chars.length;
+    if (total <= MAX_LINE_CHARS)
+        return [{start: entry.start, end: entry.end, text: entry.raw}];
+    const span = Math.max(0, entry.end - entry.start);
+    const out = [];
+    let offset = 0;
+    while (offset < total) {
+        const remaining = total - offset;
+        if (remaining <= MAX_LINE_CHARS) {
+            const text = chars.slice(offset).join('').trim();
+            if (text) {
+                out.push({
+                    start: entry.start + (offset / total) * span,
+                    end: entry.end,
+                    text,
+                });
+            }
+            break;
+        }
+        const piecesLeft = Math.ceil(remaining / MAX_LINE_CHARS);
+        const target = Math.ceil(remaining / piecesLeft);
+        const minSplit = Math.max(1, target - 10);
+        const maxSplit = Math.min(MAX_LINE_CHARS, remaining - 1);
+        let splitAt = Math.min(maxSplit, Math.max(1, target));
+        let bestDist = Infinity;
+        for (let i = minSplit; i <= maxSplit; i++) {
+            if (SINGLE_TOKEN_PUNCT.test(chars[offset + i - 1])) {
+                const dist = Math.abs(i - target);
+                if (dist < bestDist) {
+                    bestDist = dist;
+                    splitAt = i;
+                }
+            }
+        }
+        const endOffset = offset + splitAt;
+        const text = chars.slice(offset, endOffset).join('').trim();
+        if (text) {
+            out.push({
+                start: entry.start + (offset / total) * span,
+                end: entry.start + (endOffset / total) * span,
+                text,
+            });
+        }
+        offset = endOffset;
+    }
+    return out;
+}
+
 function splitChunkIntoLines(wordGroup) {
     const visible = wordGroup.filter(w => w.raw);
     if (!visible.length)
         return [];
+    if (visible.length === 1)
+        return splitLongSingleToken(visible[0]);
     const text = joinRawWords(visible);
     if (text.length <= MAX_LINE_CHARS && visible.length <= MAX_LINE_WORDS)
         return [{start: visible[0].start, end: visible[visible.length - 1].end, text}];
@@ -722,6 +777,8 @@ function splitChunkIntoLines(wordGroup) {
             bestSplit = i;
         }
     }
+    if (bestSplit <= 0 || bestSplit >= visible.length)
+        return [{start: visible[0].start, end: visible[visible.length - 1].end, text}];
     return [
         ...splitChunkIntoLines(visible.slice(0, bestSplit)),
         ...splitChunkIntoLines(visible.slice(bestSplit)),
