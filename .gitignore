@@ -9,3 +9,4 @@ gnome-extension/lyrics-overlay@ernop/schemas/gschemas.compiled
 .amo-upload-uuid
 __pycache__/
 .venv/
+.venv-score/

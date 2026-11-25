@@ -6,6 +6,7 @@
 // - checking whether Dash to Panel hides the panel's rightBox (AppIndicators);
 // - converting SVG icons into pixbufs and StatusNotifierItem ARGB32 pixmaps.
 
+import GdkX11 from 'gi://GdkX11?version=3.0';
 import GLib from 'gi://GLib';
 import Gio from 'gi://Gio';
 import GdkPixbuf from 'gi://GdkPixbuf';
@@ -222,4 +223,215 @@ export function openCompiledSettings(schemaSourceDir, compiledDir, schemaId) {
 export function readTextFile(path) {
     const [, bytes] = GLib.file_get_contents(path);
     return decoder.decode(bytes);
+}
+
+const QUIET_MAP_RESTORE_MS = 80;
+const QUIET_MAP_FALLBACK_MS = 250;
+
+const CLEAR_DEMANDS_ATTENTION_PY = [
+    'import ctypes, sys',
+    'xid = int(sys.argv[1])',
+    'x11 = ctypes.CDLL("libX11.so.6")',
+    'x11.XOpenDisplay.restype = ctypes.c_void_p',
+    'd = x11.XOpenDisplay(None)',
+    'if not d: sys.exit(0)',
+    'root = x11.XDefaultRootWindow(d)',
+    'x11.XInternAtom.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_int]',
+    'x11.XInternAtom.restype = ctypes.c_ulong',
+    'state = x11.XInternAtom(d, b"_NET_WM_STATE", 0)',
+    'demands = x11.XInternAtom(d, b"_NET_WM_STATE_DEMANDS_ATTENTION", 0)',
+    'class XClientMessageEvent(ctypes.Structure):',
+    '    _fields_ = [("type", ctypes.c_int), ("serial", ctypes.c_ulong), ("send_event", ctypes.c_int),',
+    '                ("display", ctypes.c_void_p), ("window", ctypes.c_ulong),',
+    '                ("message_type", ctypes.c_ulong), ("format", ctypes.c_int), ("l", ctypes.c_long * 5)]',
+    'ev = XClientMessageEvent()',
+    'ev.type = 33',
+    'ev.window = xid',
+    'ev.message_type = state',
+    'ev.format = 32',
+    'ev.l[0] = 0',
+    'ev.l[1] = demands',
+    'ev.l[2] = 0',
+    'ev.l[3] = 1',
+    'ev.l[4] = 0',
+    'x11.XSendEvent.argtypes = [ctypes.c_void_p, ctypes.c_ulong, ctypes.c_int, ctypes.c_long, ctypes.c_void_p]',
+    'x11.XSendEvent(d, root, 0, 0x00180000, ctypes.byref(ev))',
+    'x11.XSync(d, 0)',
+    'x11.XCloseDisplay(d)',
+].join('\n');
+
+/**
+ * Maps a GTK3 XWayland window without stealing focus, without triggering
+ * GNOME Shell's `"<title>" is ready` attention banner, and without leaving
+ * `_NET_WM_STATE_DEMANDS_ATTENTION` set on the taskbar entry.
+ *
+ * On Mutter/XWayland, whenever an unfocused mapped window overlaps the focused
+ * window (e.g. a maximized browser), Mutter marks it `demands_attention=true`
+ * even with `focus_on_map=false` and `accept_focus=false`. Setting
+ * `skip_taskbar_hint=true` across the map transition prevents GNOME Shell's
+ * `WindowAttentionHandler` from posting the `"is ready"` notification, sending
+ * `_NET_WM_STATE_REMOVE` for `_NET_WM_STATE_DEMANDS_ATTENTION` clears the
+ * Mutter flag before the taskbar entry appears, and restoring `accept_focus`
+ * (and `skip_taskbar_hint`) after first paint preserves normal OS-window
+ * focus, keyboard, and Alt-Tab behavior.
+ */
+export class QuietMapGuard {
+    /**
+     * @param {import('gi://Gtk?version=3.0').Window} win
+     * @param {{restoreSkipTaskbar?: boolean}} [options]
+     */
+    constructor(win, {restoreSkipTaskbar = false} = {}) {
+        this._win = win;
+        this._restoreSkipTaskbar = Boolean(restoreSkipTaskbar);
+        this._gen = 0;
+        this._awaitingMap = false;
+        this._paintClock = null;
+        this._paintId = 0;
+        this._restoreId = 0;
+        this._fallbackId = 0;
+        this._clearProc = null;
+        this._clearCancel = null;
+
+        this._win.set_focus_on_map(false);
+        this._win.set_accept_focus(false);
+        this._win.set_skip_taskbar_hint(true);
+        this._mapId = this._win.connect('map-event', () => {
+            if (!this._awaitingMap)
+                return false;
+            this._awaitingMap = false;
+            this._scheduleRestore();
+            return false;
+        });
+    }
+
+    /** Call immediately before `win.show_all()`. */
+    prepareShow() {
+        this._cancelPending();
+        this._gen++;
+        this._awaitingMap = true;
+        this._win.set_focus_on_map(false);
+        this._win.set_accept_focus(false);
+        this._win.set_skip_taskbar_hint(true);
+        const gdkWin = this._win.get_window();
+        if (gdkWin instanceof GdkX11.X11Window)
+            gdkWin.set_user_time(0);
+    }
+
+    /** Call immediately before `win.hide()`. */
+    prepareHide() {
+        this._cancelPending();
+        this._gen++;
+        this._awaitingMap = false;
+        this._win.set_accept_focus(false);
+        this._win.set_skip_taskbar_hint(true);
+    }
+
+    destroy() {
+        this._cancelPending();
+        this._gen++;
+        this._awaitingMap = false;
+        if (this._mapId) {
+            this._win.disconnect(this._mapId);
+            this._mapId = 0;
+        }
+    }
+
+    _scheduleRestore() {
+        this._cancelPending();
+        const gen = this._gen;
+        const finishRestore = () => {
+            this._cancelPending();
+            if (gen !== this._gen || !this._win.get_visible())
+                return;
+            const applyHints = () => {
+                if (gen !== this._gen || !this._win.get_visible())
+                    return;
+                this._win.set_accept_focus(true);
+                this._win.set_skip_taskbar_hint(this._restoreSkipTaskbar);
+            };
+            const gdkWin = this._win.get_window();
+            if (!(gdkWin instanceof GdkX11.X11Window)) {
+                applyHints();
+                return;
+            }
+            const xid = gdkWin.get_xid();
+            if (!xid) {
+                applyHints();
+                return;
+            }
+            try {
+                const cancel = new Gio.Cancellable();
+                const proc = Gio.Subprocess.new(
+                    ['python3', '-c', CLEAR_DEMANDS_ATTENTION_PY, String(xid)],
+                    Gio.SubprocessFlags.STDERR_SILENCE,
+                );
+                this._clearCancel = cancel;
+                this._clearProc = proc;
+                proc.wait_async(cancel, (p, res) => {
+                    if (this._clearProc === p) {
+                        this._clearProc = null;
+                        this._clearCancel = null;
+                    }
+                    try {
+                        p.wait_finish(res);
+                    } catch {
+                        // Ignore cancellation or missing libX11; still restore hints below.
+                    }
+                    applyHints();
+                });
+            } catch {
+                applyHints();
+            }
+        };
+        const armPostPaint = () => {
+            if (this._restoreId)
+                return;
+            this._restoreId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, QUIET_MAP_RESTORE_MS, () => {
+                this._restoreId = 0;
+                finishRestore();
+                return GLib.SOURCE_REMOVE;
+            });
+        };
+        const clock = this._win.get_frame_clock?.() ?? null;
+        if (clock) {
+            this._paintClock = clock;
+            this._paintId = clock.connect('after-paint', () => {
+                this._disconnectPaint();
+                armPostPaint();
+            });
+            // Safety fallback if the frame clock is paused (e.g. another workspace).
+            this._fallbackId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, QUIET_MAP_FALLBACK_MS, () => {
+                this._fallbackId = 0;
+                finishRestore();
+                return GLib.SOURCE_REMOVE;
+            });
+        } else {
+            armPostPaint();
+        }
+    }
+
+    _disconnectPaint() {
+        if (this._paintClock && this._paintId) {
+            this._paintClock.disconnect(this._paintId);
+            this._paintId = 0;
+            this._paintClock = null;
+        }
+    }
+
+    _cancelPending() {
+        this._disconnectPaint();
+        if (this._restoreId) {
+            GLib.source_remove(this._restoreId);
+            this._restoreId = 0;
+        }
+        if (this._fallbackId) {
+            GLib.source_remove(this._fallbackId);
+            this._fallbackId = 0;
+        }
+        if (this._clearCancel) {
+            this._clearCancel.cancel();
+            this._clearCancel = null;
+        }
+        this._clearProc = null;
+    }
 }

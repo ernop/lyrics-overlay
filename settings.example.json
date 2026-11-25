@@ -4,5 +4,6 @@
   "lrclibBaseUrl": "https://lrclib.net",
   "ytarchiveUrl": null,
   "stateDir": "~/.local/state/lyrics-overlay",
-  "lyricsGenerator": null
+  "lyricsGenerator": null,
+  "scoreGenerator": null
 }

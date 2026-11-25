@@ -18,6 +18,9 @@ import {parseHexColor, resolveRingColors, resolveTextColor, ringColors} from './
 export {borderSpec};
 
 const EDGE_PIXELS = 4;
+// Vertical anti-aliasing margin outside painted border rings so bottom-anchored
+// lyrics sit visually flush (~2 px) against the monitor work area / taskbar.
+const EDGE_Y = 2;
 // Cairo's stroker leaves a hole in a stroke whose half-width exceeds the
 // radius of a closed contour (dot of i/j, period, colon, o counter).
 // Stepping down by less than the smallest contour's diameter covers every
@@ -37,6 +40,7 @@ const ANCHORS = new Set(['top', 'center', 'bottom']);
 const BACKDROPS = new Set(['none', 'pill', 'box']);
 const RUBY_SIZE_RATIO = 0.44;
 const MIN_RUBY_FONT_SIZE = 12;
+const MIN_FIT_FONT_SIZE = 14;
 
 const utf8 = new TextEncoder();
 const fromUtf8 = new TextDecoder();
@@ -160,13 +164,35 @@ function measureFontMetrics(context, spec) {
 
     layout.set_text('x', -1);
     const [xInk] = layout.get_iter().get_line_readonly().get_pixel_extents();
+    layout.set_text('\u00c4gjpqy', -1);
+    const [refInk] = layout.get_iter().get_line_readonly().get_pixel_extents();
     const metrics = {
         spaceRatio,
         xTop: xInk.y,
         xBottom: xInk.y + xInk.height,
+        ascAboveBaseline: Math.max(0, -refInk.y),
+        descBelowBaseline: Math.max(0, refInk.y + refInk.height),
     };
     cacheSet(metricsCache, key, metrics, METRICS_CACHE_SIZE);
     return metrics;
+}
+
+/**
+ * Tight single-line surface height for the current typography, border, and
+ * backdrop settings, matching `fitLyric()`'s vertical bounds to the pixel.
+ */
+export function singleLineHeight(context, params) {
+    const ring = borderSpec(params.border, params.fontSize, borderOptions(params));
+    const fontMetrics = measureFontMetrics(context, {
+        family: params.family,
+        bold: Boolean(params.bold),
+        italic: Boolean(params.italic),
+        fontSize: params.fontSize,
+    });
+    const bp = (params.backdrop ?? 'none') === 'pill' ? backdropMetrics(params.fontSize) : {padX: 0, padY: 0};
+    const outerY = Math.ceil(ring.extraPad) + bp.padY + EDGE_Y;
+    const contentH = fontMetrics.ascAboveBaseline + fontMetrics.descBelowBaseline + 2 * ring.totalReach;
+    return Math.max(1, Math.ceil(contentH + 2 * outerY));
 }
 
 function lastCharByteInRange(bytes, rangeStart, rangeEnd) {
@@ -183,7 +209,7 @@ function lastCharByteInRange(bytes, rangeStart, rangeEnd) {
  * to the lyric block's canvas origin (x in canvas pixels, y relative to
  * `origin.y`).
  */
-function buildRubyLayout(context, layout, text, spans, spec, params, ring, left, pad) {
+function buildRubyLayout(context, layout, text, spans, spec, params, ring, left, pad, baseFontMetrics) {
     const bytes = utf8.encode(text);
     const rubyFontSize = Math.max(MIN_RUBY_FONT_SIZE, Math.round(spec.fontSize * RUBY_SIZE_RATIO));
     const rubySpec = {
@@ -314,6 +340,7 @@ function buildRubyLayout(context, layout, text, spans, spec, params, ring, left,
             const rubyBaseY = baseY + rubyOffset;
             for (const run of entry.runs) {
                 runs.push({
+                    lineIdx: i,
                     text: run.text,
                     x: run.x,
                     relY: rubyBaseY,
@@ -331,19 +358,29 @@ function buildRubyLayout(context, layout, text, spans, spec, params, ring, left,
     let maxX = -Infinity;
     let minY = Infinity;
     let maxY = -Infinity;
+    let frameMinY = Infinity;
+    let frameMaxY = -Infinity;
     for (let i = 0; i < wrappedLines.length; i++) {
         const entry = wrappedLines[i];
         const baseY = entry.baseline + lineShifts[i];
         minX = Math.min(minX, entry.x + entry.ink.x - ring.totalReach);
         maxX = Math.max(maxX, entry.x + entry.ink.x + entry.ink.width + ring.totalReach);
-        minY = Math.min(minY, baseY + entry.ink.y - ring.totalReach);
-        maxY = Math.max(maxY, baseY + entry.ink.y + entry.ink.height + ring.totalReach);
+        const lineTop = baseY + entry.ink.y - ring.totalReach;
+        const lineBottom = baseY + entry.ink.y + entry.ink.height + ring.totalReach;
+        minY = Math.min(minY, lineTop);
+        maxY = Math.max(maxY, lineBottom);
+        frameMinY = Math.min(frameMinY, lineTop, i === 0 && baseFontMetrics ? baseY - baseFontMetrics.ascAboveBaseline - ring.totalReach : lineTop);
+        frameMaxY = Math.max(frameMaxY, lineBottom, i === wrappedLines.length - 1 && baseFontMetrics ? baseY + baseFontMetrics.descBelowBaseline + ring.totalReach : lineBottom);
     }
     for (const run of runs) {
         minX = Math.min(minX, run.x + run.ink.x - rubyRing.totalReach);
         maxX = Math.max(maxX, run.x + run.ink.x + run.ink.width + rubyRing.totalReach);
-        minY = Math.min(minY, run.relY + run.ink.y - rubyRing.totalReach);
-        maxY = Math.max(maxY, run.relY + run.ink.y + run.ink.height + rubyRing.totalReach);
+        const rTop = run.relY + run.ink.y - rubyRing.totalReach;
+        const rBot = run.relY + run.ink.y + run.ink.height + rubyRing.totalReach;
+        minY = Math.min(minY, rTop);
+        maxY = Math.max(maxY, rBot);
+        frameMinY = Math.min(frameMinY, rTop);
+        frameMaxY = Math.max(frameMaxY, rBot);
     }
 
     return {
@@ -353,11 +390,15 @@ function buildRubyLayout(context, layout, text, spans, spec, params, ring, left,
         lineShifts,
         runs,
         bounds: {minX, maxX, minY, maxY},
+        frameBounds: {minY: frameMinY, maxY: frameMaxY},
     };
 }
 
 /**
- * Lays out one lyric at exact `params.fontSize` (never shrinking per line).
+ * Lays out one lyric at `params.fontSize`, optionally capping wrapped lines
+ * (`maxLines: 1..4`) by shrinking only an overflowing line to fit inside
+ * `params.width`, and optionally sizing the surface snugly to the painted
+ * content (`contentFit: true`).
  * @param {Pango.Context} context measuring context
  * @param {string} text
  * @param {{fontSize: number, family: string, bold: boolean, italic?: boolean,
@@ -366,6 +407,7 @@ function buildRubyLayout(context, layout, text, spans, spec, params, ring, left,
  *          backdrop?: string, backdropColor?: string, backdropOpacity?: number,
  *          align: string, anchor?: 'top'|'center'|'bottom',
  *          ruby?: Array<[string, string]>|null,
+ *          maxLines?: number, contentFit?: boolean,
  *          width: number, height: number}} params
  */
 export function fitLyric(context, text, params) {
@@ -379,33 +421,73 @@ export function fitLyric(context, text, params) {
     if (!BACKDROPS.has(backdropMode))
         throw new Error(`lyrics-overlay: unknown backdrop "${backdropMode}"`);
 
-    const ring = borderSpec(params.border, params.fontSize, borderOptions(params));
-    const pad = edgePadding(params, params.fontSize);
-    const maxWidth = Math.max(1, params.width - 2 * pad.x);
+    const maxLines = Math.max(0, Math.min(4, Math.round(Number(params.maxLines) || 0)));
+    const contentFit = Boolean(params.contentFit);
     const layout = Pango.Layout.new(context);
-    const fontMetrics = measureFontMetrics(context, {
-        family: params.family,
-        bold: Boolean(params.bold),
-        italic: Boolean(params.italic),
-        fontSize: params.fontSize,
-    });
-    const spec = {
-        text,
-        family: params.family,
-        bold: Boolean(params.bold),
-        italic: Boolean(params.italic),
-        spaceScale: normalizedSpaceScale(fontMetrics.spaceRatio, ring.targetSpaceEm),
-        align: params.align,
-        fontSize: params.fontSize,
-        wrapWidth: maxWidth,
+
+    const buildAttempt = size => {
+        const ring = borderSpec(params.border, size, borderOptions(params));
+        const pad = edgePadding(params, size);
+        const maxWidth = Math.max(1, params.width - 2 * pad.x);
+        const fontMetrics = measureFontMetrics(context, {
+            family: params.family,
+            bold: Boolean(params.bold),
+            italic: Boolean(params.italic),
+            fontSize: size,
+        });
+        const spec = {
+            text,
+            family: params.family,
+            bold: Boolean(params.bold),
+            italic: Boolean(params.italic),
+            spaceScale: normalizedSpaceScale(fontMetrics.spaceRatio, ring.targetSpaceEm),
+            align: params.align,
+            fontSize: size,
+            wrapWidth: maxWidth,
+        };
+        applySpec(layout, spec);
+        const lineCount = layout.get_line_count();
+        return {ring, pad, maxWidth, fontMetrics, spec, lineCount};
     };
+
+    let attempt = buildAttempt(params.fontSize);
+    // When a line-count cap is active (e.g. 1 line default) and this specific
+    // lyric exceeds it at the user's chosen font size, binary-search down just
+    // enough for this line to fit — stopping at a readable floor (~56% of
+    // chosen size, min 18px) so a narrow window drops extra words onto the
+    // line below instead of turning microscopic or clipping.
+    const shrinkFloor = Math.min(params.fontSize, Math.max(18, Math.round(params.fontSize * 0.56)));
+    if (maxLines > 0 && attempt.lineCount > maxLines && params.fontSize > shrinkFloor) {
+        let low = shrinkFloor;
+        let high = params.fontSize;
+        let best = buildAttempt(low);
+        if (best.lineCount <= maxLines) {
+            for (let step = 0; step < 10; step++) {
+                const mid = (low + high) / 2;
+                const probe = buildAttempt(mid);
+                if (probe.lineCount <= maxLines) {
+                    best = probe;
+                    low = mid;
+                } else {
+                    high = mid;
+                }
+            }
+            attempt = best;
+        } else {
+            // Even at the readable shrink floor it still needs an extra line below;
+            // wrap cleanly at the largest readable size that minimizes extra lines.
+            attempt = best;
+        }
+    }
+
+    const {ring, pad, maxWidth, fontMetrics, spec} = attempt;
     const measure = wrapWidth => {
         applySpec(layout, {...spec, wrapWidth});
         return layout;
     };
     const lineCountAt = wrapWidth => measure(wrapWidth).get_line_count();
     const lines = lineCountAt(maxWidth);
-    const wrapKey = `${spec.fontSize}|${spec.family}|${spec.bold}|${spec.italic}|${spec.spaceScale}|${lines}|${text}`;
+    const wrapKey = `${spec.fontSize.toFixed(2)}|${spec.family}|${spec.bold}|${spec.italic}|${spec.spaceScale}|${lines}|${text}`;
     let balanced = cacheGet(wrapCache, wrapKey);
     if (balanced === undefined) {
         balanced = balancedWrapWidth(maxWidth, lineCountAt);
@@ -413,33 +495,165 @@ export function fitLyric(context, text, params) {
     }
     spec.wrapWidth = Math.min(balanced, maxWidth);
 
-    const [ink, logical] = measure(spec.wrapWidth).get_pixel_extents();
-
-    let left;
-    if (params.align === 'left')
-        left = pad.x;
-    else if (params.align === 'right')
-        left = params.width - pad.x - spec.wrapWidth;
-    else
-        left = (params.width - spec.wrapWidth) / 2;
+    let [ink, logical] = measure(spec.wrapWidth).get_pixel_extents();
 
     const spans = rubyByteSpans(text, params.ruby);
+    let surfaceWidth = params.width;
+    let left;
+    if (contentFit) {
+        const bp = backdropMode === 'pill' ? backdropMetrics(spec.fontSize) : {padX: 0, padY: 0};
+        const outerX = Math.ceil(ring.totalReach + ring.extraPad) + bp.padX + EDGE_PIXELS;
+        // Use actual glyph/logical width (excluding center/right layout padding inside wrapWidth)
+        // plus 4px wrap slack so multi-line text never re-wraps onto an extra line.
+        const rawW = Math.max(logical.width, ink.width) + 4;
+        const contentW = Math.max(1, Math.min(maxWidth, Math.ceil(rawW)));
+        spec.wrapWidth = contentW;
+        [ink, logical] = measure(spec.wrapWidth).get_pixel_extents();
+        const finalW = Math.max(contentW, Math.ceil(Math.max(logical.width, ink.x + ink.width) - Math.min(0, ink.x)));
+        surfaceWidth = Math.min(params.width, Math.max(1, Math.ceil(finalW + 2 * outerX)));
+        if (params.align === 'left')
+            left = outerX;
+        else if (params.align === 'right')
+            left = Math.max(outerX, surfaceWidth - outerX - spec.wrapWidth);
+        else
+            left = Math.max(outerX, (surfaceWidth - spec.wrapWidth) / 2);
+    } else if (params.align === 'left') {
+        left = pad.x;
+    } else if (params.align === 'right') {
+        left = params.width - pad.x - spec.wrapWidth;
+    } else {
+        left = (params.width - spec.wrapWidth) / 2;
+    }
+
+    const effectiveParams = contentFit ? {...params, width: surfaceWidth} : params;
     const rubyLayout = spans
-        ? buildRubyLayout(context, layout, text, spans, spec, params, ring, left, pad)
+        ? buildRubyLayout(context, layout, text, spans, spec, effectiveParams, ring, left, pad, fontMetrics)
         : null;
+
+    const scoreBandHeight = Math.max(0, Math.round(Number(params.scoreBandHeight) || 0));
+    const scoreGap = 6;
+    const scoreInterlinePad = 8;
+
+    // Collect wrapped lines once so multi-line score bands and word anchors align accurately.
+    const wrappedLines = [];
+    {
+        const wIter = layout.get_iter();
+        do {
+            const wLine = wIter.get_line_readonly();
+            const [wInk] = wLine.get_pixel_extents();
+            const [, wLog] = wIter.get_line_extents();
+            const startByte = wLine.get_start_index();
+            wrappedLines.push({
+                startByte,
+                endByte: startByte + wLine.get_length(),
+                baseline: wIter.get_baseline() / Pango.SCALE,
+                x: left + wLog.x / Pango.SCALE,
+                width: wLog.width / Pango.SCALE,
+                ink: wInk,
+            });
+        } while (wIter.next_line());
+    }
+
+    const lineShifts = rubyLayout
+        ? [...rubyLayout.lineShifts]
+        : new Array(wrappedLines.length).fill(0);
+    let scoreLayout = null;
+    const solidReach = ring.totalReach;
+
+    if (scoreBandHeight > 0 && wrappedLines.length > 0) {
+        for (let i = 1; i < wrappedLines.length; i++) {
+            const extra = i * (scoreBandHeight + scoreGap + scoreInterlinePad);
+            lineShifts[i] += extra;
+            if (rubyLayout) {
+                for (const run of rubyLayout.runs) {
+                    if (run.lineIdx === i)
+                        run.relY += extra;
+                }
+            }
+        }
+
+        const bytes = utf8.encode(text);
+        const wordAnchors = [];
+        for (const word of Array.isArray(params.scoreWords) ? params.scoreWords : []) {
+            const lineIdx = wrappedLines.findIndex(
+                entry => word.byteStart >= entry.startByte && word.byteStart < entry.endByte,
+            );
+            if (lineIdx < 0)
+                continue;
+            const entry = wrappedLines[lineIdx];
+            const endCharByte = word.byteEnd <= entry.endByte
+                ? word.lastCharByte
+                : lastCharByteInRange(bytes, word.byteStart, entry.endByte);
+            const startPos = layout.index_to_pos(word.byteStart);
+            const endPos = layout.index_to_pos(endCharByte);
+            const spanLeft = Math.min(startPos.x, endPos.x) / Pango.SCALE;
+            const spanRight = Math.max(startPos.x + startPos.width, endPos.x + endPos.width) / Pango.SCALE;
+            wordAnchors.push({
+                index: word.index,
+                lineIdx,
+                xLeft: left + spanLeft,
+                xRight: left + spanRight,
+                xCenter: left + (spanLeft + spanRight) / 2,
+                width: Math.max(1, spanRight - spanLeft),
+            });
+        }
+
+        const headerAllowance = Math.max(68, Math.round(scoreBandHeight * 0.95));
+        const bands = [];
+        let minX = rubyLayout ? rubyLayout.bounds.minX : Infinity;
+        let maxX = rubyLayout ? rubyLayout.bounds.maxX : -Infinity;
+        let minY = rubyLayout ? rubyLayout.bounds.minY : Infinity;
+        let maxY = rubyLayout ? rubyLayout.bounds.maxY : -Infinity;
+
+        for (let i = 0; i < wrappedLines.length; i++) {
+            const entry = wrappedLines[i];
+            const baseY = entry.baseline + lineShifts[i];
+            const lineLeft = entry.x + entry.ink.x - solidReach;
+            const lineRight = entry.x + entry.ink.x + entry.ink.width + solidReach;
+            const lineTop = baseY + entry.ink.y - solidReach;
+            const lineBottom = baseY + entry.ink.y + entry.ink.height + solidReach;
+            const bandRelY = Math.round(lineBottom + scoreGap);
+            const stripLeft = Math.max(EDGE_PIXELS, Math.floor(lineLeft - headerAllowance));
+            const stripRight = Math.min(params.width - EDGE_PIXELS, Math.ceil(Math.max(lineRight + 24, stripLeft + 220)));
+            const band = {
+                lineIdx: i,
+                startByte: entry.startByte,
+                endByte: entry.endByte,
+                x: stripLeft,
+                relY: bandRelY,
+                width: Math.max(80, stripRight - stripLeft),
+                height: scoreBandHeight,
+            };
+            bands.push(band);
+            minX = Math.min(minX, lineLeft, band.x);
+            maxX = Math.max(maxX, lineRight, band.x + band.width);
+            minY = Math.min(minY, lineTop);
+            maxY = Math.max(maxY, bandRelY + scoreBandHeight);
+        }
+        if (rubyLayout) {
+            for (const run of rubyLayout.runs) {
+                minX = Math.min(minX, run.x + run.ink.x - rubyLayout.ring.totalReach);
+                maxX = Math.max(maxX, run.x + run.ink.x + run.ink.width + rubyLayout.ring.totalReach);
+                minY = Math.min(minY, run.relY + run.ink.y - rubyLayout.ring.totalReach);
+                maxY = Math.max(maxY, run.relY + run.ink.y + run.ink.height + rubyLayout.ring.totalReach);
+            }
+        }
+        scoreLayout = {bands, wordAnchors, bounds: {minX, maxX, minY, maxY}};
+    }
 
     let requiredHeight;
     let surfaceHeight;
     let top;
     let textInkBox;
-    const solidReach = ring.totalReach;
 
-    if (rubyLayout) {
+    const resolveSurfaceH = req => (contentFit ? Math.max(1, req) : Math.max(params.height, req));
+
+    if (scoreLayout) {
         const bp = backdropMode === 'pill' ? backdropMetrics(spec.fontSize) : {padX: 0, padY: 0};
-        const outerY = Math.ceil(Math.max(ring.extraPad, rubyLayout.ring.extraPad)) + bp.padY + EDGE_PIXELS;
-        const contentH = rubyLayout.bounds.maxY - rubyLayout.bounds.minY;
+        const outerY = Math.ceil(Math.max(ring.extraPad, rubyLayout?.ring.extraPad ?? 0)) + bp.padY + EDGE_PIXELS;
+        const contentH = scoreLayout.bounds.maxY - scoreLayout.bounds.minY;
         requiredHeight = Math.max(Math.ceil(contentH + 2 * outerY), Math.ceil(logical.height + 2 * pad.y));
-        surfaceHeight = Math.max(params.height, requiredHeight);
+        surfaceHeight = resolveSurfaceH(requiredHeight);
         let boxTop;
         if (anchor === 'top')
             boxTop = outerY;
@@ -447,22 +661,54 @@ export function fitLyric(context, text, params) {
             boxTop = Math.max(outerY, surfaceHeight - outerY - contentH);
         else
             boxTop = Math.max(outerY, (surfaceHeight - contentH) / 2);
-        top = boxTop - rubyLayout.bounds.minY;
+        top = boxTop - scoreLayout.bounds.minY;
         textInkBox = {
-            x: rubyLayout.bounds.minX,
+            x: scoreLayout.bounds.minX,
             y: boxTop,
-            width: rubyLayout.bounds.maxX - rubyLayout.bounds.minX,
+            width: scoreLayout.bounds.maxX - scoreLayout.bounds.minX,
             height: contentH,
         };
-    } else {
-        requiredHeight = Math.ceil(logical.height + 2 * pad.y);
-        surfaceHeight = Math.max(params.height, requiredHeight);
+    } else if (rubyLayout) {
+        const bp = backdropMode === 'pill' ? backdropMetrics(spec.fontSize) : {padX: 0, padY: 0};
+        const outerY = Math.ceil(Math.max(ring.extraPad, rubyLayout.ring.extraPad)) + bp.padY + EDGE_Y;
+        const fBounds = rubyLayout.frameBounds ?? rubyLayout.bounds;
+        const contentH = Math.max(1, fBounds.maxY - fBounds.minY);
+        requiredHeight = Math.ceil(contentH + 2 * outerY);
+        surfaceHeight = resolveSurfaceH(requiredHeight);
+        let boxTop;
         if (anchor === 'top')
-            top = pad.y;
+            boxTop = outerY;
         else if (anchor === 'bottom')
-            top = Math.max(pad.y, surfaceHeight - pad.y - logical.height);
+            boxTop = Math.max(outerY, surfaceHeight - outerY - contentH);
         else
-            top = Math.max(pad.y, (surfaceHeight - logical.height) / 2);
+            boxTop = Math.max(outerY, (surfaceHeight - contentH) / 2);
+        top = boxTop - fBounds.minY;
+        textInkBox = {
+            x: rubyLayout.bounds.minX,
+            y: top + rubyLayout.bounds.minY,
+            width: rubyLayout.bounds.maxX - rubyLayout.bounds.minX,
+            height: rubyLayout.bounds.maxY - rubyLayout.bounds.minY,
+        };
+    } else {
+        const bp = backdropMode === 'pill' ? backdropMetrics(spec.fontSize) : {padX: 0, padY: 0};
+        const outerY = Math.ceil(ring.extraPad) + bp.padY + EDGE_Y;
+        const firstBase = wrappedLines[0]?.baseline ?? 0;
+        const lastBase = wrappedLines[wrappedLines.length - 1]?.baseline ?? 0;
+        const inkTop = Math.min(ink.y, firstBase - fontMetrics.ascAboveBaseline);
+        const inkBottom = Math.max(ink.y + ink.height, lastBase + fontMetrics.descBelowBaseline);
+        const paintTop = inkTop - solidReach;
+        const paintBottom = inkBottom + solidReach;
+        const contentH = Math.max(1, paintBottom - paintTop);
+        requiredHeight = Math.ceil(contentH + 2 * outerY);
+        surfaceHeight = resolveSurfaceH(requiredHeight);
+        let boxTop;
+        if (anchor === 'top')
+            boxTop = outerY;
+        else if (anchor === 'bottom')
+            boxTop = Math.max(outerY, surfaceHeight - outerY - contentH);
+        else
+            boxTop = Math.max(outerY, (surfaceHeight - contentH) / 2);
+        top = boxTop - paintTop;
         textInkBox = {
             x: left + ink.x - solidReach,
             y: top + ink.y - solidReach,
@@ -472,6 +718,12 @@ export function fitLyric(context, text, params) {
     }
 
     const origin = {x: left, y: top};
+    if (scoreLayout) {
+        scoreLayout = {
+            bands: scoreLayout.bands.map(b => ({...b, y: Math.round(top + b.relY)})),
+            wordAnchors: scoreLayout.wordAnchors,
+        };
+    }
     const baseColors = ringColors(fill);
     const ringPalette = resolveRingColors(fill, ring.rings.length, params.ringColors);
     const colors = {
@@ -487,13 +739,13 @@ export function fitLyric(context, text, params) {
         const metrics = backdropMetrics(spec.fontSize);
         if (backdropMode === 'box') {
             backdrop = {
-                x: 0, y: 0, width: params.width, height: surfaceHeight,
+                x: 0, y: 0, width: surfaceWidth, height: surfaceHeight,
                 radius: metrics.radius, rgb: bgRgb, opacity: bgOpacity,
             };
         } else {
             const bx = Math.max(0, textInkBox.x - metrics.padX);
             const by = Math.max(0, textInkBox.y - metrics.padY);
-            const br = Math.min(params.width, textInkBox.x + textInkBox.width + metrics.padX);
+            const br = Math.min(surfaceWidth, textInkBox.x + textInkBox.width + metrics.padX);
             const bb = Math.min(surfaceHeight, textInkBox.y + textInkBox.height + metrics.padY);
             backdrop = {
                 x: bx, y: by, width: Math.max(1, br - bx), height: Math.max(1, bb - by),
@@ -516,8 +768,13 @@ export function fitLyric(context, text, params) {
         inkBox,
         lineCount: lines,
         requiredHeight,
+        surfaceWidth,
+        surfaceHeight,
+        effectiveFontSize: spec.fontSize,
         anchor,
         rubyLayout,
+        lineShifts,
+        scoreLayout,
     };
 }
 
@@ -727,8 +984,10 @@ export function paintLyric(cr, fitted) {
     const layout = PangoCairo.create_layout(cr);
     applySpec(layout, fitted.spec);
     const rubyLayout = fitted.rubyLayout ?? null;
+    const lineShifts = fitted.lineShifts ?? rubyLayout?.lineShifts ?? null;
+    const hasLineShift = Boolean(lineShifts && lineShifts.some(s => s !== 0));
 
-    if (!fitted.ring.rings.length && !rubyLayout) {
+    if (!fitted.ring.rings.length && !rubyLayout && !hasLineShift) {
         cr.moveTo(fitted.origin.x, fitted.origin.y);
         cr.setSourceRGB(...fitted.fill);
         PangoCairo.show_layout(cr, layout);
@@ -745,7 +1004,7 @@ export function paintLyric(cr, fitted) {
         const line = iter.get_line_readonly();
         const [, logical] = iter.get_line_extents();
         const start = line.get_start_index();
-        const yShift = rubyLayout ? (rubyLayout.lineShifts[lineIdx] ?? 0) : 0;
+        const yShift = lineShifts ? (lineShifts[lineIdx] ?? 0) : 0;
         lines.push({
             line,
             text: fromUtf8.decode(bytes.subarray(start, start + line.get_length())),

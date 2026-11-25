@@ -27,6 +27,7 @@ import {
 import {LyricWindow} from './lyric-window.js';
 import {MonitorManager} from './monitors.js';
 import {PitchWindow} from './pitch-window.js';
+import {ScoreWindow} from './score-window.js';
 import {TrayButton} from './tray-button.js';
 import {TraySni} from './tray-sni.js';
 
@@ -89,6 +90,14 @@ class DesktopApp {
         });
         this._pitchWindow.setLyricBox(this._lyricWindow.box, this._lyricWindow.monitorIndex);
 
+        this._scoreWindow = new ScoreWindow({
+            settings: this._settings,
+            monitors: this._monitors,
+            onOpenEditor: () => this._openScoreEditor(),
+            onContextMenu: () => this._openSettings(),
+            onEditScore: patch => this._client.command({op: 'editScore', patch}),
+        });
+
         this._trayButton = new TrayButton({
             settings: this._settings,
             monitors: this._monitors,
@@ -104,12 +113,14 @@ class DesktopApp {
         this._client = new ServiceClient({
             onState: state => this._onState(state),
             onLine: line => this._lyricWindow.setLine(line),
+            onScore: payload => this._scoreWindow.setPayload(payload),
             onPitch: frames => this._pitchWindow.pushFrames(frames),
         });
 
         this._settingsIds = [
             this._settings.connect('changed::overlay-enabled', () => this._sync()),
             this._settings.connect('changed::pitch-enabled', () => this._sync()),
+            this._settings.connect('changed::score-enabled', () => this._sync()),
             this._settings.connect('changed::tray-mode', () => this._syncTrayMode()),
         ];
 
@@ -159,6 +170,7 @@ class DesktopApp {
         }
         this._traySni.destroy();
         this._trayButton.destroy();
+        this._scoreWindow.destroy();
         this._pitchWindow.destroy();
         this._lyricWindow.destroy();
     }
@@ -169,6 +181,10 @@ class DesktopApp {
             lyrics: this._state?.lyrics ?? 'none',
             overlayEnabled: this._settings.get_boolean('overlay-enabled'),
             pitchEnabled: this._settings.get_boolean('pitch-enabled'),
+            scoreEnabled: this._settings.get_boolean('score-enabled'),
+            scoreVisible: this._scoreWindow.visible,
+            scoreBox: this._scoreWindow.box,
+            scoreConfigVisible: this._scoreWindow.configVisible,
             trayMode: this._settings.get_string('tray-mode'),
             lyricVisible: this._lyricWindow.visible,
             lyricBox: this._lyricWindow.renderBox,
@@ -204,6 +220,7 @@ class DesktopApp {
         this._trayButton.setActive(active);
         this._pitchWindow.setStatus(state?.pitch?.error ? `Microphone stopped: ${state.pitch.error}` : '');
         this._pitchWindow.setSongKey(state?.key ?? null);
+        this._scoreWindow.setSongKey(state?.key ?? null);
         this._sync();
     }
 
@@ -211,14 +228,19 @@ class DesktopApp {
         const state = this._state;
         const enabled = this._settings.get_boolean('overlay-enabled');
         const pitchEnabled = this._settings.get_boolean('pitch-enabled');
+        const scoreEnabled = this._settings.get_boolean('score-enabled');
         const active = Boolean(state?.active);
         const generating = state?.lyrics === 'generating';
         const showStatus = generating && !state.generation?.previewing;
-        this._lyricWindow.setStatus(showStatus ? (state.generation?.message || 'Timing lyrics\u2026') : '');
+        const statusMsg = showStatus ? (state.generation?.message || 'Timing lyrics\u2026') : '';
+        this._lyricWindow.setStatus(statusMsg);
         this._lyricWindow.setShown(enabled && active && (state.lyrics === 'timed' || generating));
 
         const pitchShown = enabled && pitchEnabled && active;
         this._pitchWindow.setShown(pitchShown);
+
+        const scoreShown = enabled && scoreEnabled && active;
+        this._scoreWindow.setShown(scoreShown);
 
         const micWanted = enabled && pitchEnabled && active && Boolean(state?.sounding);
         if (micWanted !== this._micRequested && state) {
@@ -254,6 +276,15 @@ class DesktopApp {
             return;
         }
         raiseBrowser(result.windowTitle);
+    }
+
+    _openScoreEditor() {
+        const uri = `${SETTINGS_URI}?score=1`;
+        try {
+            Gio.AppInfo.launch_default_for_uri(uri, null);
+        } catch {
+            this._openSettings();
+        }
     }
 }
 

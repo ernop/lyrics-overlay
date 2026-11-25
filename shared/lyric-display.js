@@ -86,3 +86,49 @@ export function displayAt({lines, offsetSeconds, mediaTime}) {
     }
     return {text: line, key, nextChangeAt};
 }
+
+/**
+ * Returns the song-time window `[lineStart, lineEnd]` (in original audio
+ * seconds, matching extracted vocal scores) for a shown lyric line key
+ * (`"line:<index>"`).
+ *
+ * @param {Array<{time: number, text: string}>} lines
+ * @param {string} key
+ * @param {number} [offsetSeconds=0]
+ * @returns {{rawText: string, lineStart: number, lineEnd: number, prevLineEnd: number|null, nextLineStart: number|null}|null}
+ */
+export function lineWindowAt(lines, key, offsetSeconds = 0) {
+    const match = /^line:(\d+)$/u.exec(String(key ?? ''));
+    if (!match)
+        return null;
+    const idx = Number(match[1]);
+    if (!Number.isInteger(idx) || idx < 0 || idx >= lines.length)
+        return null;
+    const entry = lines[idx];
+    const rawText = String(entry.text ?? '').trim();
+    if (!rawText)
+        return null;
+    // Notice: LRC entry.time is in LRC clock; mediaTime = entry.time - offsetSeconds.
+    // The extracted score timestamps are in media (audio) time, so we shift LRC
+    // times by `-offsetSeconds` so the aligned notes line up with what plays!
+    const lineStart = Math.max(0, entry.time - offsetSeconds);
+    let lineEnd = lineStart + LAST_LINE_HOLD_SECONDS;
+    let nextLineStart = null;
+    for (let i = idx + 1; i < lines.length; i++) {
+        const t = Math.max(lineStart + 0.2, lines[i].time - offsetSeconds);
+        if (i === idx + 1)
+            lineEnd = t;
+        if (lines[i].text.trim()) {
+            nextLineStart = t;
+            break;
+        }
+    }
+    let prevLineEnd = null;
+    for (let i = idx - 1; i >= 0; i--) {
+        if (lines[i].text.trim()) {
+            prevLineEnd = Math.max(0, lines[i].time - offsetSeconds);
+            break;
+        }
+    }
+    return {rawText, lineStart, lineEnd, prevLineEnd, nextLineStart};
+}

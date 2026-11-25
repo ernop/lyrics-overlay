@@ -60,6 +60,34 @@ overlay, and the testing lessons behind the rules. What it is for:
   `faster-whisper.decode_audio`).
 - **Japanese furigana** (optional): install `sudachipy` and
   `sudachidict-full` into `.venv` (`uv pip install --python .venv/bin/python sudachipy sudachidict-full`, also installed by `scripts/install-generator.sh`), or into system `python3`. Toggle **Furigana** under Settings -> Lyrics -> Typography.
+- **White-paper Piano Lead Sheet** (optional): `scripts/install-score.sh`
+  creates a separate gitignored `.venv-score` (Python 3.12) with PyTorch,
+  `audio-separator[gpu]`, `beat_this`, `faster-whisper`, NVIDIA CUDA 12
+  runtime libraries (`nvidia-cublas-cu12`, `nvidia-cudnn-cu12`), and
+  `openvpi/GAME` (`v1.0.3`), and pre-caches `BS-RoFormer`, `Mel-Band RoFormer
+  Karaoke`, `Beat This! final0`, and `GAME-1.0-large` under
+  `~/.cache/lyrics-overlay/models/`. Configure `scoreGenerator` in
+  `settings.json` and restart `lyrics-overlay.service`:
+
+  ```json
+  "scoreGenerator": {
+    "command": [".venv-score/bin/python", "service/generate-score.py"],
+    "device": "cuda",
+    "whisperModel": "large-v3",
+    "maxDurationSeconds": 900,
+    "cookiesFromBrowser": null,
+    "gpuGate": null
+  }
+  ```
+
+  Peak VRAM across all sequential stages is ~5.2 GiB (reserving 7 GB under an
+  optional `gpuGate` leaves ~1.8 GB headroom); two-pass FP16
+  adaptive vocal isolation + beats + chords + GAME-large vocal melody
+  completes in ~75–115 s on a 4–5 min song, and cached replays are instant
+  (`scores/<videoId>.json`). Toggle **Lead sheet** in the settings page top
+  bar (opens the floating white-paper desktop window), or open the full-song
+  interactive browser editor at `http://localhost:8792/settings?score=1`
+  (shortcut `S`).
 - **More fonts** (optional): `scripts/install-fonts.sh` downloads about
   160 of Ubuntu's font packages and unpacks their TrueType and OpenType
   files into `~/.local/share/fonts/`, for this user alone; safe to rerun
@@ -305,3 +333,15 @@ asks for every site but holds only the one origin granted by hand.
     `queue_draw()` alone can leave pixels stale until pointer motion;
     calling `invalidate_rect(null, true)`, `process_updates(true)`, and
     `Gdk.flush()` repaints synchronously every time.
+  - On Mutter 50 / XWayland, `set_focus_on_map(false)` (even paired with
+    `set_accept_focus(false)`) still marks a newly mapped `NORMAL` or
+    `UTILITY` window `demands_attention=true` whenever it overlaps the focused
+    window (such as a maximized browser), causing GNOME Shell's
+    `WindowAttentionHandler` to show `"<title>" is ready` on every map/re-map.
+    `QuietMapGuard` in `desktop/desktop-actions.js` sets
+    `skip_taskbar_hint=true` across the map transition (so
+    `WindowAttentionHandler` suppresses the toast), clears
+    `_NET_WM_STATE_DEMANDS_ATTENTION` via an async X11 `_NET_WM_STATE_REMOVE`
+    after first paint, and restores `accept_focus=true` and `skip_taskbar_hint`
+    so Alt-Tab, taskbar, and click-to-focus work normally with zero attention
+    banners or taskbar highlights.

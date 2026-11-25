@@ -14,6 +14,17 @@ import {promisify} from 'node:util';
 const run = promisify(execFile);
 
 /**
+ * spawn(), but the kernel SIGKILLs the child when this node process dies, by
+ * any means (a test runner killed on timeout, Ctrl-C, SIGKILL). Without it a
+ * headless gnome-shell outlived its test run on 2026-11-20 and spun a core
+ * for 19 hours. setpriv execs the command, so the child keeps setpriv's PID
+ * and child.kill() reaches it.
+ */
+export function spawnTied(command, args, options) {
+    return spawn('setpriv', ['--pdeathsig', 'KILL', '--', command, ...args], options);
+}
+
+/**
  * What the real session stores at a dconf path: a dir's keys (path ending
  * in /) or one key's value, read from its database file. A write that
  * escaped an isolated session changes the keys that session writes; the
@@ -84,7 +95,7 @@ export async function startBus(dir, name, env, serviceDir) {
     fs.mkdirSync(socketDir, {mode: 0o700});
     const configPath = path.join(dir, `${name}.conf`);
     fs.writeFileSync(configPath, busConfig(socketDir, serviceDir));
-    const daemon = spawn('dbus-daemon', ['--config-file', configPath, '--nofork', '--print-address=1'],
+    const daemon = spawnTied('dbus-daemon',['--config-file', configPath, '--nofork', '--print-address=1'],
         {env, stdio: ['ignore', 'pipe', 'inherit']});
     const address = await new Promise((resolve, reject) => {
         daemon.once('error', reject);

@@ -36,6 +36,9 @@ export function exportService({core, pitch, browser, onNameLost, log}) {
         GetLine() {
             return JSON.stringify(core.line());
         },
+        GetScore() {
+            return JSON.stringify(core.scorePayload());
+        },
         CommandAsync([json], invocation) {
             let command;
             try {
@@ -100,6 +103,7 @@ export function exportService({core, pitch, browser, onNameLost, log}) {
     return {
         emitState: state => emit('StateChanged', state),
         emitLine: line => emit('LineChanged', line),
+        emitScore: score => emit('ScoreChanged', score),
         emitPitch: frames => emit('PitchFrames', frames),
         close() {
             releasePitchClient();

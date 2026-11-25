@@ -29,6 +29,7 @@ export class ServiceClient {
         // newer than those replies; a counter tells the replies to stand down.
         this._stateEpoch = 0;
         this._lineEpoch = 0;
+        this._scoreEpoch = 0;
     }
 
     start() {
@@ -96,10 +97,16 @@ export class ServiceClient {
                     this._lineEpoch++;
                     this._handlers.onLine(JSON.parse(json));
                 }),
+                proxy.connectSignal('ScoreChanged', (_proxy, _sender, [json]) => {
+                    this._scoreEpoch++;
+                    this._handlers.onScore?.(JSON.parse(json));
+                }),
                 proxy.connectSignal('PitchFrames', (_proxy, _sender, [json]) => this._handlers.onPitch(JSON.parse(json))),
             ];
             this._fetch('GetStateAsync', () => this._stateEpoch, json => this._handlers.onState(JSON.parse(json)));
             this._fetch('GetLineAsync', () => this._lineEpoch, json => this._handlers.onLine(JSON.parse(json)));
+            if (this._handlers.onScore)
+                this._fetch('GetScoreAsync', () => this._scoreEpoch, json => this._handlers.onScore(JSON.parse(json)));
         }, cancellable, Gio.DBusProxyFlags.DO_NOT_LOAD_PROPERTIES);
     }
 
@@ -119,6 +126,7 @@ export class ServiceClient {
         this._dropProxy();
         this._handlers.onState(null);
         this._handlers.onLine(NO_LINE);
+        this._handlers.onScore?.(null);
     }
 
     _dropProxy() {

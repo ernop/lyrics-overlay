@@ -25,6 +25,172 @@
       <default>false</default>
       <summary>Show hiragana furigana readings above kanji in Japanese lyrics</summary>
     </key>
+    <key name="lyric-max-lines" type="i">
+      <range min="0" max="4"/>
+      <default>0</default>
+      <summary>Line wrapping behavior inside the lyric width: 0 (Auto, default) keeps a constant font size and wraps evenly; 1–4 cap lines by gently shrinking overflowing lines before wrapping</summary>
+    </key>
+    <key name="score-enabled" type="b">
+      <default>false</default>
+      <summary>Show the separate floating white-paper piano lead sheet window while a song plays</summary>
+    </key>
+    <key name="score-scale-snap" type="s">
+      <choices>
+        <choice value="soft"/>
+        <choice value="strict"/>
+        <choice value="off"/>
+      </choices>
+      <default>'soft'</default>
+      <summary>How tightly vocal notes snap to the song's scale: soft keeps held chromatic notes, strict snaps every note, off keeps raw pitches</summary>
+    </key>
+    <key name="score-harmony" type="s">
+      <choices>
+        <choice value="off"/>
+        <choice value="above"/>
+        <choice value="below"/>
+        <choice value="both"/>
+      </choices>
+      <default>'off'</default>
+      <summary>Optional diatonic 3rd harmony guide notes (blue above, green below on white paper) for practicing harmonies</summary>
+    </key>
+    <key name="score-voices" type="s">
+      <choices>
+        <choice value="both"/>
+        <choice value="top"/>
+        <choice value="bottom"/>
+      </choices>
+      <default>'both'</default>
+      <summary>Which extracted vocal parts to display and play when a song has harmonizing voices: both (upper stems up, lower stems down), top, or bottom</summary>
+    </key>
+    <key name="score-note-names" type="s">
+      <choices>
+        <choice value="letters"/>
+        <choice value="degrees"/>
+        <choice value="off"/>
+      </choices>
+      <default>'letters'</default>
+      <summary>Label shown below each note on the lead sheet: note names (G4), scale degrees (1–7), or off</summary>
+    </key>
+    <key name="score-height" type="d">
+      <range min="56" max="160"/>
+      <default>92</default>
+      <summary>Legacy staff height setting kept for schema compatibility</summary>
+    </key>
+    <key name="score-background-opacity" type="d">
+      <range min="0" max="1"/>
+      <default>0.96</default>
+      <summary>Opacity of the white sheet-music paper background</summary>
+    </key>
+    <key name="score-box" type="a{sd}">
+      <default>{'cx': 0.5, 'cy': 0.25, 'width': 0.62, 'height': 0.36}</default>
+      <summary>Floating piano lead sheet box center and size as fractions of its monitor's work area</summary>
+    </key>
+    <key name="score-box-monitor" type="i">
+      <default>-1</default>
+      <summary>Monitor index of the floating piano lead sheet; -1 follows the primary monitor</summary>
+    </key>
+    <key name="score-bars-per-system" type="i">
+      <range min="0" max="12"/>
+      <default>0</default>
+      <summary>Measures shown per staff line on the piano lead sheet: 0 auto-reflows to fill window width at the chosen zoom, 1–12 pins a fixed count</summary>
+    </key>
+    <key name="score-rows" type="i">
+      <range min="0" max="6"/>
+      <default>0</default>
+      <summary>Legacy rows-per-page setting kept for schema compatibility; visible rows now always auto-fill window height</summary>
+    </key>
+    <key name="score-scale" type="d">
+      <range min="0.6" max="3.5"/>
+      <default>1.0</default>
+      <summary>Uniform staff engraving zoom for the piano lead sheet (0.6 to 3.5, preserves printed proportions)</summary>
+    </key>
+    <key name="score-always-on-top" type="b">
+      <default>false</default>
+      <summary>Keep the standard Piano Lead Sheet window above other desktop windows</summary>
+    </key>
+    <key name="score-spacing" type="s">
+      <choices>
+        <choice value="compact"/>
+        <choice value="normal"/>
+        <choice value="spacious"/>
+      </choices>
+      <default>'normal'</default>
+      <summary>Natural horizontal measure spacing on the piano lead sheet: compact, normal, or spacious</summary>
+    </key>
+    <key name="score-paging" type="s">
+      <choices>
+        <choice value="page"/>
+        <choice value="scroll"/>
+      </choices>
+      <default>'page'</default>
+      <summary>Page turn behavior on the floating lead sheet: page flips cleanly to the next page when finished, scroll shifts up one row at a time</summary>
+    </key>
+    <key name="score-click-action" type="s">
+      <choices>
+        <choice value="move"/>
+        <choice value="ctrl-move"/>
+        <choice value="focus"/>
+        <choice value="config"/>
+      </choices>
+      <default>'move'</default>
+      <summary>Legacy click-action setting kept for schema compatibility; plain left-click on the standard Lead Sheet window keeps normal OS focus</summary>
+    </key>
+    <key name="score-show-header" type="b">
+      <default>true</default>
+      <summary>Show the top header strip on the piano lead sheet</summary>
+    </key>
+    <key name="score-header-title" type="b">
+      <default>true</default>
+      <summary>Show the song title in the lead sheet header</summary>
+    </key>
+    <key name="score-header-key" type="b">
+      <default>true</default>
+      <summary>Show the active musical key in the lead sheet header</summary>
+    </key>
+    <key name="score-header-time" type="b">
+      <default>false</default>
+      <summary>Show the time signature in the lead sheet header</summary>
+    </key>
+    <key name="score-header-bpm" type="b">
+      <default>true</default>
+      <summary>Show the tempo (BPM) in the lead sheet header</summary>
+    </key>
+    <key name="score-header-clef" type="b">
+      <default>false</default>
+      <summary>Show the octave clef indicator (8vb) in the lead sheet header</summary>
+    </key>
+    <key name="score-header-bars" type="b">
+      <default>true</default>
+      <summary>Show the visible bar range (Bars 1–12/48) in the lead sheet header</summary>
+    </key>
+    <key name="score-header-page" type="b">
+      <default>true</default>
+      <summary>Show the page counter (Page 1/4) in the lead sheet header</summary>
+    </key>
+    <key name="score-show-measure-numbers" type="b">
+      <default>true</default>
+      <summary>Show measure numbers above barlines on the piano lead sheet</summary>
+    </key>
+    <key name="score-show-chords" type="b">
+      <default>true</default>
+      <summary>Show chord symbols above the staff on the piano lead sheet</summary>
+    </key>
+    <key name="score-show-lyrics" type="b">
+      <default>true</default>
+      <summary>Show aligned lyric words beneath the staff on the piano lead sheet</summary>
+    </key>
+    <key name="score-show-playhead" type="b">
+      <default>false</default>
+      <summary>Show the moving red playhead hairline on the piano lead sheet</summary>
+    </key>
+    <key name="score-show-active-measure" type="b">
+      <default>false</default>
+      <summary>Show yellow active-measure and active-note highlighting on the piano lead sheet</summary>
+    </key>
+    <key name="score-show-snap-moves" type="b">
+      <default>false</default>
+      <summary>Show a ghost dot, vertical arrow, and pitch-move label whenever Scale Snap pulls a detected note onto the song's scale</summary>
+    </key>
     <key name="text-color" type="s">
       <choices>
         <choice value="white"/>

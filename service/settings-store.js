@@ -28,6 +28,7 @@ const VALUE_CHECKS = {
     'pitch-microphone': value => /^[\w.:@+-]{0,200}$/u.test(value) || 'a PipeWire node name, or empty for the default',
     'box-monitor': value => (value >= -1 && value <= 32) || 'a monitor index (-1 for primary, or 0..32)',
     'pitch-box-monitor': value => (value >= -1 && value <= 32) || 'a monitor index (-1 for primary, or 0..32)',
+    'score-box-monitor': value => (value >= -1 && value <= 32) || 'a monitor index (-1 for primary, or 0..32)',
 };
 const MIN_FIXED_SPAN = 6;
 

@@ -169,3 +169,41 @@ test('a fit and a paint served from the caches match a fresh module with empty c
     assert.equal(result.sameFit, true);
     assert.equal(result.samePixels, true);
 });
+
+test('bottom-anchored lyric trims dead vertical padding to ~2 px while keeping baseline steady across lines', async t => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lyrics-trim-'));
+    t.after(() => fs.rmSync(dir, {recursive: true, force: true}));
+    const script = path.join(dir, 'check-trim.mjs');
+    fs.writeFileSync(script, `
+import PangoCairo from 'gi://PangoCairo';
+import {fitLyric, singleLineHeight} from 'file://${sharedDir}/text-layout.js';
+const ctx = PangoCairo.FontMap.get_default().create_context();
+const base = {
+    fontSize: 48, family: 'Sans', bold: true, italic: false,
+    color: 'yellow', border: 'double', align: 'left', anchor: 'bottom',
+    maxLines: 0, contentFit: false, width: 1000, height: 1,
+};
+const slh = singleLineHeight(ctx, base);
+const upper = fitLyric(ctx, 'HELLO WORLD', base);
+const desc = fitLyric(ctx, 'Hey gyp', base);
+const furi = fitLyric(ctx, '東京の夜空gjpqy', {...base, ruby: [['東京', 'とうきょう'], ['の', ''], ['夜空', 'よぞら'], ['gjpqy', '']]});
+const descGap = desc.surfaceHeight - (desc.inkBox.y + desc.inkBox.height);
+const furiGap = furi.surfaceHeight - (furi.inkBox.y + furi.inkBox.height);
+print(JSON.stringify({
+    slh,
+    upperH: upper.surfaceHeight,
+    descH: desc.surfaceHeight,
+    upperOriginY: upper.origin.y,
+    descOriginY: desc.origin.y,
+    descGap,
+    furiGap,
+}));
+`);
+    const {stdout} = await run('gjs', ['-m', script]);
+    const r = JSON.parse(stdout.trim().split('\n').pop());
+    assert.equal(r.upperH, r.slh);
+    assert.equal(r.descH, r.slh);
+    assert.equal(r.upperOriginY, r.descOriginY, 'uppercase and descender lines share identical baseline');
+    assert.ok(r.descGap >= 0 && r.descGap <= 4, `descender bottom gap should be ~2 px, got ${r.descGap}`);
+    assert.ok(r.furiGap >= 0 && r.furiGap <= 6, `furigana bottom gap should stay tight while holding baseline, got ${r.furiGap}`);
+});

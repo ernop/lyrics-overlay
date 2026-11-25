@@ -16,10 +16,12 @@ import {PAGE_COMMAND_OPS} from './core.js';
 import {readMonitors} from './monitors.js';
 import {isReportError, parseCommandResult, parseGone, parseReport} from './report-schema.js';
 import {isSettingsError} from './settings-store.js';
+import {buildLeadSheet} from '../shared/score-layout.js';
+import {encodeLeadSheetMidi} from '../shared/score-midi.js';
 
 const MAX_BODY_BYTES = 256 * 1024;
 const EXTENSION_PATHS = new Set(['/api/report', '/api/gone', '/api/commands', '/api/command-result']);
-const PAGE_PATHS = new Set(['/api/settings', '/api/settings/reset', '/api/command', '/api/pitch/fit', '/api/publish-lrclib']);
+const PAGE_PATHS = new Set(['/api/settings', '/api/settings/reset', '/api/command', '/api/pitch/fit', '/api/publish-lrclib', '/api/score/edit']);
 // The song controls the settings page offers (exported alongside LyricsCore.command).
 const PAGE_COMMANDS = PAGE_COMMAND_OPS;
 // "Fit to my singing" leaves this much room around what was sung.
@@ -253,6 +255,17 @@ export function startHttp({port, hostname, files, core, browser, addon, settings
             respondJson(message, 200, {values: settings.values()});
             return;
         }
+        case '/api/score/edit': {
+            const body = readJson(message);
+            if (!body || typeof body !== 'object' || Array.isArray(body))
+                throw new RequestError(400, 'score edit must be a JSON object');
+            const outcome = core.editScore({
+                videoId: typeof body.videoId === 'string' ? body.videoId : null,
+                edits: body.edits ?? {},
+            });
+            respondJson(message, outcome.ok ? 200 : 400, outcome);
+            return;
+        }
         }
     };
 
@@ -285,6 +298,38 @@ export function startHttp({port, hostname, files, core, browser, addon, settings
             case '/api/lyrics':
                 respondJson(message, 200, core.activeLyrics());
                 return;
+            case '/api/score':
+                respondJson(message, 200, core.activeScore());
+                return;
+            case '/api/score/midi': {
+                const payload = core.activeScore();
+                if (!payload?.score || payload.status !== 'ready') {
+                    respondJson(message, 404, {error: 'no extracted score for the active song yet'});
+                    return;
+                }
+                const vals = settings.values();
+                const sheet = buildLeadSheet(payload.score, {
+                    lyricLines: payload.lyricsLines ?? [],
+                    scaleSnap: vals['score-scale-snap'] ?? 'soft',
+                    harmony: vals['score-harmony'] ?? 'off',
+                    voiceMode: vals['score-voices'] ?? 'both',
+                });
+                const bytes = encodeLeadSheetMidi(sheet, {title: payload.title || 'Lead Sheet'});
+                if (!bytes) {
+                    respondJson(message, 404, {error: 'score has no notes to export'});
+                    return;
+                }
+                const safeSlug = String(payload.title || payload.videoId || 'lead-sheet')
+                    .replace(/[^a-z0-9._-]+/giu, '-')
+                    .replace(/^-+|-+$/gu, '')
+                    .slice(0, 64) || 'lead-sheet';
+                message.set_status(200, null);
+                const headers = message.get_response_headers();
+                headers.append('Cache-Control', 'no-store');
+                headers.append('Content-Disposition', `attachment; filename="${safeSlug}.mid"`);
+                message.set_response('audio/midi', Soup.MemoryUse.COPY, bytes);
+                return;
+            }
             case '/api/settings':
                 respondJson(message, 200, {schema: settings.describe(), values: settings.values()});
                 return;
@@ -357,7 +402,8 @@ export function loadStaticFiles(projectDir) {
     add('/settings.css', 'service/settings-page/settings.css', 'text/css; charset=utf-8');
     add('/settings.js', 'service/settings-page/settings.js', 'text/javascript; charset=utf-8');
     add('/preview.js', 'service/settings-page/preview.js', 'text/javascript; charset=utf-8');
-    for (const name of ['lyrics-status.js', 'overlay-geometry.js', 'pitch-layout.js', 'scales.js', 'text-ink.js'])
+    add('/lead-sheet.js', 'service/settings-page/lead-sheet.js', 'text/javascript; charset=utf-8');
+    for (const name of ['lyrics-status.js', 'overlay-geometry.js', 'pitch-layout.js', 'scales.js', 'score-layout.js', 'score-midi.js', 'text-ink.js'])
         add(`/shared/${name}`, `shared/${name}`, 'text/javascript; charset=utf-8');
     // The extension's icon is the product's one mark, so the favicon is that file.
     add('/favicon.svg', 'firefox/icon.svg', 'image/svg+xml');

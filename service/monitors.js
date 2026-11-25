@@ -7,13 +7,15 @@
 
 import Gio from 'gi://Gio';
 
+import {orderMonitors} from '../shared/overlay-geometry.js';
+
 const FALLBACK = Object.freeze([
     Object.freeze({index: 0, x: 0, y: 0, width: 1920, height: 1080, scale: 1, primary: true, label: 'Primary (1920\u00d71080)'}),
 ]);
 
 /**
  * Parses Mutter's GetCurrentState tuple into generic monitor records ordered
- * identically to Mutter's logical monitor list (Main.layoutManager.monitors).
+ * canonically (left-to-right, top-to-bottom) to match desktop/monitors.js.
  */
 export function parseDisplayState(unpacked) {
     const [, rawMonitors, rawLogical] = unpacked;
@@ -24,8 +26,8 @@ export function parseDisplayState(unpacked) {
         if (current)
             sizeByConnector.set(connector, {width: current[1], height: current[2]});
     }
-    const result = [];
-    rawLogical.forEach((entry, index) => {
+    const raw = [];
+    for (const entry of rawLogical) {
         const [x, y, scale, transform, primary, attached] = entry;
         const firstConnector = attached[0]?.[0];
         const physical = sizeByConnector.get(firstConnector) ?? {width: 1920, height: 1080};
@@ -35,18 +37,22 @@ export function parseDisplayState(unpacked) {
         const factor = scale > 0 ? scale : 1;
         const width = Math.max(1, Math.round(rawWidth / factor));
         const height = Math.max(1, Math.round(rawHeight / factor));
-        result.push({
-            index,
+        raw.push({
             x,
             y,
             width,
             height,
             scale: factor,
             primary: Boolean(primary),
-            label: primary ? `Primary (${width}\u00d7${height})` : `Monitor ${index + 1} (${width}\u00d7${height})`,
         });
-    });
-    return result.length ? result : [...FALLBACK];
+    }
+    if (!raw.length)
+        return [...FALLBACK];
+    return orderMonitors(raw).map((mon, index) => ({
+        index,
+        ...mon,
+        label: mon.primary ? `Primary (${mon.width}\u00d7${mon.height})` : `Monitor ${index + 1} (${mon.width}\u00d7${mon.height})`,
+    }));
 }
 
 /** @returns {Promise<Array<{index: number, x: number, y: number, width: number, height: number, scale: number, primary: boolean, label: string}>>} */

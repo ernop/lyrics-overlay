@@ -15,6 +15,17 @@ export const MIN_GEOMETRY_HEIGHT = 0.02;
 export const FONT_SIZE_MIN = 16;
 export const FONT_SIZE_MAX = 256;
 
+/**
+ * Canonical monitor ordering shared by the desktop frontend (GDK) and the
+ * service (Mutter DisplayConfig) so monitor indices always match across
+ * desktop and settings: left-to-right, then top-to-bottom, primary first on
+ * identical origins.
+ */
+export function orderMonitors(monitors) {
+    return [...monitors].sort((a, b) =>
+        (a.x - b.x) || (a.y - b.y) || (Number(Boolean(b.primary)) - Number(Boolean(a.primary))));
+}
+
 /** Named placement presets for the lyric box, as monitor work-area fractions. */
 export const PLACEMENT_PRESETS = Object.freeze([
     Object.freeze({id: 'bottom-center', label: 'Bottom', box: Object.freeze({cx: 0.5, cy: 0.75, width: 0.6, height: 0.14})}),
@@ -141,7 +152,7 @@ export function verticalAnchorFor(cy, pitchDock = 'below', pitchEnabled = false)
  * @param {{x: number, y: number, width: number, height: number}} area
  */
 export function expandedRenderBox(box, requiredHeight, anchor, area) {
-    const height = clamp(Math.max(box.height, Math.ceil(requiredHeight)), MIN_BOX_HEIGHT, area.height);
+    const height = clamp(Math.max(box.height, Math.ceil(requiredHeight)), 1, area.height);
     let y;
     if (anchor === 'bottom')
         y = box.y + box.height - height;
@@ -151,6 +162,59 @@ export function expandedRenderBox(box, requiredHeight, anchor, area) {
         y = box.y + (box.height - height) / 2;
     y = clamp(y, area.y, area.y + area.height - height);
     return {x: box.x, y, width: box.width, height};
+}
+
+/**
+ * Builds the lyric wrap box from saved fractional geometry, replacing any
+ * stale container height with the tight single-line `contentHeight` while
+ * preserving the anchored vertical edge (`top`, `center`, or `bottom`).
+ * @param {{cx: number, cy: number, width: number, height: number}} geometry
+ * @param {{x: number, y: number, width: number, height: number}} area
+ * @param {number} contentHeight
+ * @param {'top'|'center'|'bottom'} anchor
+ */
+export function normalizedLyricBox(geometry, area, contentHeight, anchor) {
+    const stored = boxFromGeometry(geometry, area);
+    const height = clamp(Math.max(1, Math.ceil(contentHeight)), 1, area.height);
+    let y;
+    if (anchor === 'bottom')
+        y = stored.y + stored.height - height;
+    else if (anchor === 'top')
+        y = stored.y;
+    else
+        y = stored.y + (stored.height - height) / 2;
+    y = clamp(y, area.y, area.y + area.height - height);
+    return {x: stored.x, y, width: stored.width, height};
+}
+
+/**
+ * Converts a dropped or resized visible lyric rectangle into validated
+ * fractional geometry whose anchored vertical edge round-trips cleanly through
+ * `normalizedLyricBox()` + `expandedRenderBox()` with zero pixel shift.
+ * @param {{x: number, y: number, width: number, height: number}} visibleBox
+ * @param {{x: number, y: number, width: number, height: number}} area
+ * @param {number} baseHeight
+ * @param {string} [pitchDock]
+ * @param {boolean} [pitchEnabled]
+ */
+export function commitLyricGeometry(visibleBox, area, baseHeight, pitchDock = 'below', pitchEnabled = false) {
+    const width = clamp(visibleBox.width, Math.min(MIN_BOX_WIDTH, area.width), area.width);
+    const x = clamp(visibleBox.x, area.x, area.x + area.width - width);
+    const visH = clamp(Math.max(1, visibleBox.height), 1, area.height);
+    const visY = clamp(visibleBox.y, area.y, area.y + area.height - visH);
+    const dropCy = (visY + visH / 2 - area.y) / area.height;
+    const anchor = verticalAnchorFor(dropCy, pitchDock, pitchEnabled);
+    const minH = Math.ceil(MIN_GEOMETRY_HEIGHT * area.height);
+    const h = clamp(Math.max(Math.ceil(baseHeight), minH), 1, area.height);
+    let y;
+    if (anchor === 'bottom')
+        y = visY + visH - h;
+    else if (anchor === 'top')
+        y = visY;
+    else
+        y = visY + (visH - h) / 2;
+    y = clamp(y, area.y, area.y + area.height - h);
+    return clampGeometry(geometryFromBox({x, y, width, height: h}, area));
 }
 
 /** The docked panel's edge away from the lyric: the one that resizes it. */
@@ -278,7 +342,17 @@ export function snapBox(box, area, threshold) {
         y = area.y + area.height - height;
         guidesY.push(area.y + area.height);
     }
-    return {box: clampBox({x, y, width, height}, area), guides: {x: guidesX, y: guidesY}};
+    const clampedW = clamp(width, Math.min(MIN_BOX_WIDTH, area.width), area.width);
+    const clampedH = clamp(height, 1, area.height);
+    return {
+        box: {
+            x: clamp(x, area.x, area.x + area.width - clampedW),
+            y: clamp(y, area.y, area.y + area.height - clampedH),
+            width: clampedW,
+            height: clampedH,
+        },
+        guides: {x: guidesX, y: guidesY},
+    };
 }
 
 /**

@@ -241,15 +241,17 @@ async function desktopScenario(h, releaseFile) {
         return s.lyricVisible && s.inkBox && s.inkBox.width > 80 && s;
     }, 'second lyric line');
 
-    // 1. Per-pixel click-through: clicking transparent padding outside inkBox must NOT fire FocusSong.
+    // 1. Per-pixel click-through: clicking transparent wrap-box padding outside inkBox
+    //    must NOT fire FocusSong.
     await focusOther();
     let accidentalFocus = false;
     const clickThroughGuard = h.answerNextCommand(() => { accidentalFocus = true; return {ok: true, windowTitle: songWindow}; });
-    const emptySpot = [line2.lyricBox.x + 8, line2.lyricBox.y + 8];
-    assert.ok(emptySpot[0] < line2.lyricBox.x + line2.inkBox.x - 8, `empty spot ${emptySpot} must lie outside inkBox ${JSON.stringify(line2.inkBox)}`);
+    const emptySpot = [line2.lyricBox.x + 8, line2.lyricBox.y + Math.round(line2.lyricBox.height / 2)];
+    assert.ok(emptySpot[0] < line2.lyricBox.x + line2.inkBox.x - 8,
+        `empty spot ${emptySpot} must lie inside wrap box outside inkBox ${JSON.stringify(line2.inkBox)}`);
     await h.evalJs(inputScript([{move: emptySpot, wait: 30}, {button: 1, down: true, wait: 40}, {button: 1, down: false, wait: 60}]));
     await sleep(150);
-    assert.equal(accidentalFocus, false, 'clicking empty transparent space around the lyric must pass through');
+    assert.equal(accidentalFocus, false, 'clicking transparent wrap-box space outside inkBox must pass through');
 
     // 2. Plain left-press on ink fires FocusSong immediately (before release!)
     //    and raises the exact matching Wayland browser window past focus-stealing prevention.
@@ -382,6 +384,79 @@ loop.run();
     assert.ok(near(afterEsc.savedBox.x, moved.savedBox.x) && near(afterEsc.savedBox.y, moved.savedBox.y),
         `Escape must cancel Ctrl+drag: ${JSON.stringify([moved.savedBox, afterEsc.savedBox])}`);
 
+    // 6b. Live lyric transitions AND an empty gap mid-drag must freeze the drag frame
+    //     (never popping size, never hiding, never canceling the drag), and a stale oversized
+    //     box.height must never block moving flush against the bottom of the work area.
+    await h.gsettings.set('box', "{'cx': 0.5, 'cy': 0.55, 'width': 0.6, 'height': 0.35}");
+    const preBottom = await h.waitFor(async () => {
+        const s = await h.desktopStatus();
+        return s.lyricVisible && s.lyricBox && s.lyricBox.height < 160 && s;
+    }, 'stale oversized box.height to normalize to tight lyric height');
+    assert.ok(preBottom.savedBox.height < 160, `stale height must not persist in savedBox: ${JSON.stringify(preBottom.savedBox)}`);
+    const workAreaBottom = await h.evalJs('Main.layoutManager.getWorkAreaForMonitor(Main.layoutManager.primaryIndex).y + Main.layoutManager.getWorkAreaForMonitor(Main.layoutManager.primaryIndex).height');
+
+    // Start Ctrl+drag, hold it while stepping playback into an empty gap (t=50s past last line + 8s hold),
+    // drag all the way to the bottom edge, verify frame size stays frozen, then release.
+    await focusOther();
+    const startDragFrom = inkCenter(preBottom);
+    await h.evalJs(inputScript([
+        {move: startDragFrom, wait: 30},
+        {key: 'KEY_Control_L', down: true, wait: 40},
+        {button: 1, down: true, wait: 40},
+        {move: [startDragFrom[0], startDragFrom[1] + 60], wait: 40},
+    ]));
+    const midDrag1 = await h.desktopStatus();
+    assert.equal(midDrag1.lyricBox.width, preBottom.lyricBox.width, 'drag frame width stays constant during move');
+    assert.equal(midDrag1.lyricBox.height, preBottom.lyricBox.height, 'drag frame height stays constant during move');
+    // Push an empty-line state (past last lyric's 8 s hold) while Ctrl+drag is active.
+    await h.report({tabId: 4, sampledAt: Date.now(), heartbeatMs: 5000, media: media(60), metadata: METADATA, next: null});
+    await sleep(180);
+    await h.evalJs(inputScript([
+        {move: [startDragFrom[0], workAreaBottom - 10], wait: 50},
+    ]));
+    const midDragDuringGap = await h.desktopStatus();
+    assert.equal(midDragDuringGap.lyricVisible, true, 'empty gap during Ctrl+drag must never hide or cancel drag');
+    assert.equal(midDragDuringGap.lyricBox.width, preBottom.lyricBox.width, 'gap mid-drag must not pop frame width');
+    assert.equal(midDragDuringGap.lyricBox.height, preBottom.lyricBox.height, 'gap mid-drag must not pop frame height');
+    assert.ok(near(midDragDuringGap.lyricBox.y + midDragDuringGap.lyricBox.height, workAreaBottom, 3),
+        `lyric must reach flush bottom (${workAreaBottom}), got ${JSON.stringify(midDragDuringGap.lyricBox)}`);
+    // Restore active line before release so lyric stays visible for subsequent assertions.
+    await h.report({tabId: 4, sampledAt: Date.now(), heartbeatMs: 5000, media: media(8), metadata: METADATA, next: null});
+    await sleep(120);
+    await h.evalJs(inputScript([
+        {button: 1, down: false, wait: 80},
+        {key: 'KEY_Control_L', down: false, wait: 60},
+    ]));
+    const atBottom = await h.waitFor(async () => {
+        const s = await h.desktopStatus();
+        return s.lyricVisible && near(s.lyricBox.y + s.lyricBox.height, workAreaBottom, 3) && s;
+    }, 'flush-bottom drop to commit and stay flush after release');
+    // Line 2 ("Second line arrives here") has no descenders, so bottom gap is just descender room (~12 px) + 2 px AA margin.
+    assert.ok(atBottom.lyricBox.height - (atBottom.inkBox.y + atBottom.inkBox.height) <= 16,
+        `bottom transparent gap must be trimmed tight, got ${JSON.stringify([atBottom.lyricBox, atBottom.inkBox])}`);
+
+    // 6c. Ctrl+drag on the right edge of the painted lyric resizes max wrap width and persists.
+    const rightInkEdge = [
+        atBottom.lyricBox.x + atBottom.inkBox.x + atBottom.inkBox.width - 4,
+        atBottom.lyricBox.y + atBottom.inkBox.y + atBottom.inkBox.height / 2,
+    ];
+    await focusOther();
+    await h.evalJs(drag({from: rightInkEdge, by: [-160, 0], modifier: 'KEY_Control_L'}));
+    const resized = await h.waitFor(async () => {
+        const s = await h.desktopStatus();
+        return near(s.lyricBox.width, atBottom.lyricBox.width - 160, 8) && s;
+    }, 'Ctrl+drag right edge to shrink wrap width');
+    assert.ok(near(resized.lyricBox.x, atBottom.lyricBox.x, 4), 'right-edge resize keeps left edge anchored');
+    assert.ok(near(resized.lyricBox.y + resized.lyricBox.height, workAreaBottom, 3), 'edge resize keeps bottom flush');
+
+    // Restore moved position for subsequent pitch-panel and restart checks.
+    await h.gsettings.set('box', storedBox);
+    const restoredMoved = await h.waitFor(async () => {
+        const s = await h.desktopStatus();
+        return near(s.savedBox.x, moved.savedBox.x, 4) && near(s.savedBox.y, moved.savedBox.y, 4) && s;
+    }, 'restored position after flush-bottom and edge-resize tests');
+    assert.ok(restoredMoved);
+
     // 7. Right-click on the lyric fires openSettings (consumes the armed ctrlTapGuard)
     //    and raises the settings browser window.
     await focusOther();
@@ -406,15 +481,15 @@ loop.run();
     }, 'pitch panel docked below');
     assert.ok(near(pitchBelow.pitchBox.x, pitchBelow.savedBox.x)
         && near(pitchBelow.pitchBox.width, pitchBelow.savedBox.width)
-        && near(pitchBelow.pitchBox.y, pitchBelow.savedBox.y + pitchBelow.savedBox.height + 4),
-    JSON.stringify([pitchBelow.pitchBox, pitchBelow.savedBox]));
+        && near(pitchBelow.pitchBox.y, pitchBelow.lyricBox.y + pitchBelow.lyricBox.height + 4),
+    JSON.stringify([pitchBelow.pitchBox, pitchBelow.lyricBox, pitchBelow.savedBox]));
     await h.screenshot('desktop-pitch-docked');
 
     // Dock above so we have plenty of room to drag upward/resize.
     await h.gsettings.set('pitch-dock', "'above'");
     const pitchAbove = await h.waitFor(async () => {
         const s = await h.desktopStatus();
-        return near(s.pitchBox.y + s.pitchBox.height + 4, s.savedBox.y) && s;
+        return near(s.pitchBox.y + s.pitchBox.height + 4, s.lyricBox.y) && s;
     }, 'pitch panel docked above');
 
     // Plain drag on pitch panel does nothing.
@@ -438,6 +513,90 @@ loop.run();
 
     await h.gsettings.set('pitch-enabled', 'false');
     await h.waitFor(async () => !(await h.desktopStatus()).pitchVisible, 'pitch panel to hide when disabled');
+
+    // 9b. Piano Lead Sheet + Options panel: mapping/re-mapping while another
+    //     maximized window holds focus must never steal focus, never leave
+    //     demands_attention set, and never post a "... is ready" notification,
+    //     while remaining focusable on explicit click and present in Alt+Tab.
+    const scoreWindows = `(async () => {
+        const {default: Meta} = await import('gi://Meta');
+        const tabList = global.display.get_tab_list(Meta.TabList.NORMAL, null)
+            .filter(x => !x.is_skip_taskbar())
+            .map(x => x.get_title());
+        return global.display.list_all_windows()
+            .filter(w => (w.get_title() ?? '').startsWith('Piano Lead Sheet') || w.get_title() === 'Lead Sheet Options')
+            .map(w => ({
+                title: w.get_title(),
+                demands_attention: w.demands_attention,
+                skip_taskbar: w.is_skip_taskbar(),
+                above: w.is_above(),
+                inAltTab: tabList.includes(w.get_title()),
+            }));
+    })()`;
+    const readyNotifications = `Main.messageTray.getSources()
+        .flatMap(s => s.notifications.map(n => ({title: n.title, body: n.body})))
+        .filter(n => /is ready|Piano Lead Sheet|Lead Sheet Options/u.test(n.body ?? ''))`;
+    await h.evalJs(`(() => {
+        const w = global.display.list_all_windows().find(x => x.get_title() === 'Another window');
+        w.maximize(3);
+        Main.activateWindow(w);
+        return true;
+    })()`);
+    await h.evalJs(inputScript([{move: [120, 120], wait: 30}, {button: 1, down: true, wait: 30}, {button: 1, down: false, wait: 60}]));
+    await h.gsettings.set('score-enabled', 'true');
+    const scoreFirst = await h.waitFor(async () => {
+        const list = await h.evalJs(scoreWindows);
+        const w = list.find(x => x.title.startsWith('Piano Lead Sheet'));
+        return w && !w.skip_taskbar && !w.demands_attention && w;
+    }, 'Piano Lead Sheet to map quietly without demanding attention');
+    assert.equal(scoreFirst.inAltTab, true);
+    assert.equal(await h.evalJs(focusedTitle), 'Another window', 'mapping Lead Sheet must not steal focus');
+    assert.deepEqual(await h.evalJs(readyNotifications), [], 'mapping Lead Sheet must not post an "is ready" notification');
+
+    // Re-mapping after explicit click (stale X11 user_time) with always-on-top
+    // enabled also stays quiet and preserves always-on-top + click-to-focus.
+    // Even if legacy score-click-action='focus' sits in dconf, plain left-click
+    // on the main body must focus and keep the Lead Sheet visible (never vanish!).
+    await h.gsettings.set('score-click-action', "'focus'");
+    await h.gsettings.set('score-always-on-top', 'true');
+    const scoreStatus = await h.desktopStatus();
+    const scoreMid = center(scoreStatus.scoreBox);
+    await h.evalJs(inputScript([{move: scoreMid, wait: 30}, {button: 1, down: true, wait: 40}, {button: 1, down: false, wait: 60}]));
+    await h.waitFor(async () => ((await h.evalJs(focusedTitle)) ?? '').startsWith('Piano Lead Sheet'),
+        'explicit click on Piano Lead Sheet to focus it');
+    assert.equal((await h.desktopStatus()).scoreVisible, true, 'clicking main body must keep Lead Sheet visible');
+    await h.gsettings.set('score-click-action', "'move'");
+    await focusOther();
+    await h.evalJs(inputScript([{move: [120, 120], wait: 30}, {button: 1, down: true, wait: 30}, {button: 1, down: false, wait: 60}]));
+    await h.gsettings.set('score-enabled', 'false');
+    await h.waitFor(async () => !(await h.desktopStatus()).scoreVisible, 'Piano Lead Sheet to hide');
+    await h.gsettings.set('score-enabled', 'true');
+    const scoreRemapped = await h.waitFor(async () => {
+        const list = await h.evalJs(scoreWindows);
+        const w = list.find(x => x.title.startsWith('Piano Lead Sheet'));
+        return w && !w.skip_taskbar && !w.demands_attention && w;
+    }, 'Piano Lead Sheet to re-map quietly after prior focus');
+    assert.equal(scoreRemapped.above, true, 'always-on-top must persist across hide/show');
+    assert.equal(await h.evalJs(focusedTitle), 'Another window', 're-mapping Lead Sheet must not steal focus');
+    assert.deepEqual(await h.evalJs(readyNotifications), [], 're-mapping Lead Sheet must not post an "is ready" notification');
+
+    // Right-clicking Lead Sheet opens Options panel quietly without demanding attention.
+    await h.evalJs(inputScript([{move: scoreMid, wait: 30}, {button: 3, down: true, wait: 40}, {button: 3, down: false, wait: 60}]));
+    await h.waitFor(async () => {
+        const list = await h.evalJs(scoreWindows);
+        const cfg = list.find(x => x.title === 'Lead Sheet Options');
+        return cfg && !cfg.demands_attention && cfg;
+    }, 'Lead Sheet Options panel to map quietly');
+    assert.deepEqual(await h.evalJs(readyNotifications), [], 'opening Lead Sheet Options must not post an "is ready" notification');
+
+    await h.gsettings.set('score-enabled', 'false');
+    await h.gsettings.set('score-always-on-top', 'false');
+    await h.waitFor(async () => !(await h.desktopStatus()).scoreVisible, 'Piano Lead Sheet to hide cleanly');
+    await h.evalJs(`(() => {
+        const w = global.display.list_all_windows().find(x => x.get_title() === 'Another window');
+        w?.unmaximize(3);
+        return true;
+    })()`);
 
     // 10. Generating status pill -> smoothly replaced by generated lyric.
     playing.stop();

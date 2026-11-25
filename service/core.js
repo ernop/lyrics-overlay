@@ -8,14 +8,22 @@
 
 import {LRCLIB_WINDOWS, ProviderRateLimit, loadedBudgetState, pauseBudget, takeBudget} from '../shared/budget.js';
 import {parseSyncedLyrics, plainLyricsFromSynced, shiftSyncedLyrics} from '../shared/lrc.js';
+import {generateLrcFromTranscript} from '../shared/lyric-align.js';
 import {OFFSET_STEP_SECONDS, displayAt, nudgedOffset} from '../shared/lyric-display.js';
 import {
     buildLookupCandidates, candidateKey, chooseAutomatic, rankRecords, searchSettlesLookup,
 } from '../shared/lyric-text.js';
+import {SCALES} from '../shared/scales.js';
 import {deriveIdentity, deriveNextIdentity, describeIdentity} from '../shared/song-identity.js';
+import {countScoreVoices, projectAnalysisState} from './analyzer.js';
+import {
+    buildVocalFusedCandidate, patchScoreEdits, preserveSongLevelEdits, referencePlainLyrics,
+    selectReferenceLyrics, summarizeIngest, upsertVocalFusedCandidate,
+} from './ingest.js';
 
 export const SEARCH_VERSION = 1;
 export const GENERATE_VERSION = 1;
+export const SCORE_VERSION = 2;
 // The indicator stays this long after YouTube stops sounding.
 export const SOUNDING_GRACE_MS = 120_000;
 // A tab that promised a heartbeat (report heartbeatMs) and misses this many
@@ -26,6 +34,7 @@ export const SEARCH_CACHE_MS = 7 * 24 * 3600 * 1000;
 export const MISS_RECHECK_MS = 7 * 24 * 3600 * 1000;
 export const ERROR_RECHECK_MS = 10 * 60 * 1000;
 export const GENERATE_ERROR_RECHECK_MS = 10 * 60 * 1000;
+export const SCORE_ERROR_RECHECK_MS = 10 * 60 * 1000;
 export const DEFAULT_MAX_GENERATE_DURATION_SECONDS = 900;
 // Above MIN_ACCEPT_SCORE (0.58) so an auto-timed set wins over untimed LRCLIB
 // text, below strong LRCLIB timed matches so a later LRCLIB timed match wins.
@@ -34,7 +43,7 @@ export const MAX_STORED_CANDIDATES = 20;
 
 const LRC_META_TAG = /^\s*\[(ar|ti|al|length|by|re|ve|offset):([^\]]*)\]\s*$/iu;
 const KANJI_RE = /[\u4e00-\u9fff\u3400-\u4dbf\u3005]/u;
-const SYNTHETIC_ALBUM_RE = /^(?:Auto-transcribed from audio|Auto-timed from lyrics|Local file|Edited lyrics|File:\s.*)$/iu;
+const SYNTHETIC_ALBUM_RE = /^(?:Auto-transcribed from audio|Auto-timed from lyrics|Vocal-isolated(?:\s*\u00b7\s*.*)?|Local file|Edited lyrics|File:\s.*)$/iu;
 
 function realAlbumName(candidateAlbum, identityAlbum) {
     const clean = String(candidateAlbum ?? '').trim();
@@ -205,11 +214,164 @@ function generationStageMessage(hasPlain, stage) {
     }
 }
 
+function scoreStageMessage(stage) {
+    const raw = String(stage ?? '');
+    const audioProgress = /^audio:(\d+)\/(\d+)$/u.exec(raw);
+    if (audioProgress) {
+        const done = Number(audioProgress[1]);
+        const total = Number(audioProgress[2]);
+        if (Number.isFinite(done) && Number.isFinite(total) && (done > 0 || total > 0))
+            return `Extracting melody \u00b7 loading audio ${formatBytesProgress(done, total)}`;
+    }
+    if (raw.startsWith('gpu-wait:')) {
+        const why = raw.slice('gpu-wait:'.length).trim();
+        if (why)
+            return `Extracting melody \u00b7 waiting for GPU (${why})`;
+    }
+    switch (raw) {
+    case 'audio':
+        return 'Extracting melody \u00b7 loading audio';
+    case 'gpu-wait':
+        return 'Extracting melody \u00b7 waiting for GPU';
+    case 'separate':
+        return 'Extracting melody \u00b7 isolating lead vocal';
+    case 'beats':
+        return 'Extracting melody \u00b7 tracking beats & chords';
+    case 'words':
+        return 'Extracting melody \u00b7 timing words';
+    case 'melody':
+        return 'Extracting melody \u00b7 transcribing vocal notes';
+    case 'harmony':
+        return 'Extracting melody \u00b7 detecting harmonizing voices';
+    case 'quantize':
+        return 'Extracting melody \u00b7 fitting key, chords & rhythm';
+    default:
+        return 'Extracting melody\u2026';
+    }
+}
+
+function sanitizeScoreEdits(raw) {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw))
+        return {};
+    const out = {};
+    if (raw.tempoMul === 0.5 || raw.tempoMul === 1 || raw.tempoMul === 2)
+        out.tempoMul = raw.tempoMul;
+    if (Array.isArray(raw.meter) && raw.meter.length === 2) {
+        const num = Math.round(Number(raw.meter[0]));
+        const den = Math.round(Number(raw.meter[1]));
+        if ([2, 3, 4, 5, 6].includes(num) && (den === 4 || den === 8))
+            out.meter = [num, den];
+    }
+    if (raw.keyOverride && typeof raw.keyOverride === 'object') {
+        const root = Math.round(Number(raw.keyOverride.root));
+        const type = String(raw.keyOverride.type ?? '');
+        if (root >= 0 && root <= 11 && type in SCALES)
+            out.keyOverride = {root, type};
+    }
+    if (raw.clef === 'auto' || raw.clef === 'treble' || raw.clef === 'treble-8vb')
+        out.clef = raw.clef;
+    if (Number.isFinite(Number(raw.beatShift))) {
+        const shift = Math.max(-8, Math.min(8, Math.round(Number(raw.beatShift))));
+        if (shift !== 0)
+            out.beatShift = shift;
+    }
+    if (raw.noteOverrides && typeof raw.noteOverrides === 'object' && !Array.isArray(raw.noteOverrides)) {
+        const clean = {};
+        let count = 0;
+        for (const [k, v] of Object.entries(raw.noteOverrides)) {
+            if (++count > 4000 || !v || typeof v !== 'object')
+                continue;
+            const entry = {};
+            if (Number.isFinite(Number(v.pitch)))
+                entry.pitch = Math.max(24, Math.min(108, Number(v.pitch)));
+            if (Number.isFinite(Number(v.start)))
+                entry.start = Math.max(0, Number(v.start));
+            if (Number.isFinite(Number(v.end)))
+                entry.end = Math.max(0, Number(v.end));
+            if (Number.isFinite(Number(v.durBeats)))
+                entry.durBeats = Math.max(0.25, Math.min(8, Number(v.durBeats)));
+            if (Number.isFinite(Number(v.beat)))
+                entry.beat = Math.max(0, Number(v.beat));
+            if (Object.keys(entry).length)
+                clean[String(k)] = entry;
+        }
+        if (Object.keys(clean).length)
+            out.noteOverrides = clean;
+    }
+    if (Array.isArray(raw.deletedNoteIds)) {
+        const deleted = [...new Set(raw.deletedNoteIds.map(id => String(id)).filter(Boolean))].slice(0, 4000);
+        if (deleted.length)
+            out.deletedNoteIds = deleted;
+    }
+    if (Array.isArray(raw.addedNotes)) {
+        const added = [];
+        for (const n of raw.addedNotes.slice(0, 1000)) {
+            if (!n || typeof n !== 'object')
+                continue;
+            const id = String(n.id ?? '').trim();
+            const start = Number(n.start);
+            const end = Number(n.end);
+            const pitch = Number(n.pitch);
+            if (!id || !Number.isFinite(start) || !Number.isFinite(end) || end <= start || !Number.isFinite(pitch))
+                continue;
+            added.push({
+                id,
+                start: Math.max(0, start),
+                end: Math.max(0.05, end),
+                pitch: Math.max(24, Math.min(108, pitch)),
+                ...(Number.isFinite(Number(n.beat)) ? {beat: Math.max(0, Number(n.beat))} : {}),
+                ...(Number.isFinite(Number(n.durBeats)) ? {durBeats: Math.max(0.25, Math.min(8, Number(n.durBeats)))} : {}),
+            });
+        }
+        if (added.length)
+            out.addedNotes = added;
+    }
+    if (raw.chordOverrides && typeof raw.chordOverrides === 'object' && !Array.isArray(raw.chordOverrides)) {
+        const chords = {};
+        let count = 0;
+        for (const [k, v] of Object.entries(raw.chordOverrides)) {
+            if (++count > 2000)
+                break;
+            if (typeof v === 'string')
+                chords[String(k)] = v.trim().slice(0, 16);
+        }
+        if (Object.keys(chords).length)
+            out.chordOverrides = chords;
+    }
+    return out;
+}
+
+function normalizeLoadedScore(record) {
+    if (!record || typeof record !== 'object')
+        return null;
+    if (record.status === 'ready' && Array.isArray(record.notes)) {
+        let needsIds = false;
+        for (const n of record.notes) {
+            if (n.id == null) {
+                needsIds = true;
+                break;
+            }
+        }
+        if (needsIds) {
+            record = {
+                ...record,
+                notes: record.notes.map((n, idx) => (n.id == null ? {id: idx + 1, ...n} : n)),
+            };
+        }
+        if (!Array.isArray(record.chords))
+            record = {...record, chords: []};
+        if (!record.edits || typeof record.edits !== 'object')
+            record = {...record, edits: {}};
+    }
+    return record;
+}
+
 // Song commands accepted from the settings page (/api/command) and D-Bus.
 export const PAGE_COMMAND_OPS = new Set([
     'tooFast', 'tooSlow', 'resetOffset', 'choose', 'reject',
     'searchAgain', 'lookUp', 'searchQuery', 'importLyrics', 'saveEditedLyrics',
     'generate', 'generateFromScratch', 'cancelGenerate',
+    'generateScore', 'cancelScore', 'refreshAll', 'analyzeSong', 'editScore',
 ]);
 
 export class LyricsCore {
@@ -243,32 +405,41 @@ export class LyricsCore {
         this._deps = deps;
         this._budgetWindows = deps.budgetWindows ?? LRCLIB_WINDOWS;
         this._maxGenerateDurationSeconds = deps.maxGenerateDurationSeconds ?? DEFAULT_MAX_GENERATE_DURATION_SECONDS;
+        this._maxScoreDurationSeconds = deps.maxScoreDurationSeconds ?? DEFAULT_MAX_GENERATE_DURATION_SECONDS;
         this._furiganaEnabled = Boolean(deps.furiganaEnabled);
+        this._scoreEnabled = Boolean(deps.scoreEnabled);
         this._furiganaWarmedKey = '';
         this._budget = loadedBudgetState(deps.store.loadBudget());
         this._sessions = new Map();
         this._videos = new Map();
+        this._scores = new Map();
         this._lines = new Map();
         this._queue = [];
         this._running = null;
         this._generating = null;
+        this._scoring = null;
         this._generateSeq = 0;
         this._customSeq = 0;
         this._userRequestedNow = null;
+        this._pendingRefreshAll = null; // {videoId, identity, quality} queued after fresh LRCLIB check
         this._waitingUntil = 0;
         this._timers = {line: null, activity: null, budget: null};
         this._lastState = '';
         this._lastPresence = '';
         this._lastLine = {text: '', key: 'none'};
         this._lastLineJson = JSON.stringify(this._lastLine);
+        this._lastScore = {active: false, videoId: null, title: '', status: 'idle', stage: null, message: '', score: null, lyricsLines: [], clock: null};
+        this._lastScoreStableJson = JSON.stringify({...this._lastScore, clock: null});
+        this._lastScoreClock = null;
         this._pitch = {capturing: false, error: '', microphone: ''};
         /** @type {{videoId: string, root: number, type: 'major'|'minor'}|null} */
         this._songKey = null;
     }
 
-    /** Stops any active lyric generation subprocess cleanly on service shutdown. */
+    /** Stops any active lyric or score generation subprocess cleanly on service shutdown. */
     shutdown() {
         this._cancelGeneration('service stopping');
+        this._cancelScore('service stopping');
     }
 
     // ----- browser reports
@@ -534,6 +705,79 @@ export class LyricsCore {
             this._refresh();
             return {ok: true, cancelled: true};
         }
+        case 'generateScore': {
+            if (!this._deps.generateScore)
+                return {ok: false, error: 'vocal sheet music extraction is not configured'};
+            if (!record || !session.identity)
+                return {ok: false, error: 'No active video'};
+            const quality = command.quality === 'high' ? 'high' : 'standard';
+            const freshAudio = Boolean(command.freshAudio);
+            if (this._scoring?.videoId === session.videoId && this._scoring.quality === quality && !freshAudio)
+                return {ok: true};
+            if (this._scoring)
+                this._cancelScore('replaced by user request');
+            record.userRequested = true;
+            this._deps.store.saveVideo(record);
+            this._startScore(session.videoId, session.identity, {force: true, quality, freshAudio});
+            this._refresh();
+            return {ok: true};
+        }
+        case 'analyzeSong':
+        case 'refreshAll': {
+            if (!record || !session.identity)
+                return {ok: false, error: 'No active video'};
+            const quality = command.quality === 'high' ? 'high' : 'standard';
+            record.userRequested = true;
+            this._userRequestedNow = session.videoId;
+            this._deps.store.saveVideo(record);
+            if (this._generating)
+                this._cancelGeneration('replaced by full refresh');
+            if (this._scoring)
+                this._cancelScore('replaced by full refresh');
+            if (this._deps.generateScore) {
+                this._pendingRefreshAll = {videoId: session.videoId, identity: session.identity, quality};
+            }
+            // Consult LRCLIB fresh (within rate-limit budget) first so its words & timing
+            // hints fuse with the vocal-isolated audio run.
+            this._enqueue({videoId: session.videoId, identity: session.identity, force: true, current: true});
+            this._maybeRunPendingRefreshAll();
+            this._refresh();
+            return {ok: true};
+        }
+        case 'editScore': {
+            const targetId = command.videoId || session?.videoId;
+            if (!targetId)
+                return {ok: false, error: 'No active video'};
+            const existing = this._score(targetId);
+            if (!existing || existing.status !== 'ready')
+                return {ok: false, error: 'No extracted score for this song yet'};
+            const merged = command.patch && typeof command.patch === 'object'
+                ? patchScoreEdits(existing.edits, command.patch)
+                : (command.edits && typeof command.edits === 'object' ? command.edits : {});
+            return this.editScore({videoId: targetId, edits: merged});
+        }
+        case 'cancelScore': {
+            if (this._pendingRefreshAll?.videoId === session?.videoId)
+                this._pendingRefreshAll = null;
+            if (!this._scoring)
+                return {ok: true, cancelled: false};
+            const {videoId} = this._scoring;
+            this._cancelScore('cancelled by user');
+            const existing = this._score(videoId);
+            if (!existing || existing.status !== 'ready') {
+                const next = {
+                    version: SCORE_VERSION,
+                    videoId,
+                    status: 'skipped',
+                    at: this._deps.clock.now(),
+                    error: 'Cancelled',
+                };
+                this._scores.set(videoId, next);
+                this._deps.store.saveScore?.(next);
+            }
+            this._refresh();
+            return {ok: true, cancelled: true};
+        }
         default:
             return {ok: false, error: `unknown command ${command.op}`};
         }
@@ -563,6 +807,41 @@ export class LyricsCore {
         if (!next)
             this._furiganaWarmedKey = '';
         this._refresh();
+    }
+
+    /** Turns lead-vocal rough sheet music extraction & per-line score emission on or off. */
+    setScoreEnabled(enabled) {
+        const next = Boolean(enabled);
+        if (this._scoreEnabled === next)
+            return;
+        this._scoreEnabled = next;
+        this._refresh();
+    }
+
+    /** Full active lead-sheet payload (`GET /api/score` & D-Bus `GetScore` / `ScoreChanged`). */
+    scorePayload() {
+        return {...this._lastScore};
+    }
+
+    /** Backwards-compatible alias for `scorePayload()`. */
+    activeScore() {
+        return this.scorePayload();
+    }
+
+    /** Persists non-destructive user edits onto the cached score record for `videoId` (or active video). */
+    editScore({videoId = null, edits = {}}) {
+        const targetId = videoId || this._activeSession()?.videoId;
+        if (!targetId)
+            return {ok: false, error: 'No active video'};
+        const existing = this._score(targetId);
+        if (!existing || existing.status !== 'ready')
+            return {ok: false, error: 'No extracted score for this song yet'};
+        const nextEdits = sanitizeScoreEdits(edits);
+        const updated = {...existing, edits: nextEdits, editedAt: this._deps.clock.now()};
+        this._scores.set(targetId, updated);
+        this._deps.store.saveScore?.(updated);
+        this._refresh();
+        return {ok: true, score: updated};
     }
 
     /**
@@ -847,6 +1126,14 @@ export class LyricsCore {
         return record;
     }
 
+    _score(videoId) {
+        if (this._scores.has(videoId))
+            return this._scores.get(videoId);
+        const loaded = normalizeLoadedScore(this._deps.store.loadScore?.(videoId) ?? null);
+        this._scores.set(videoId, loaded);
+        return loaded;
+    }
+
     _effective(record) {
         const rejected = new Set(record.rejectedIds);
         if (record.chosenId !== null && !rejected.has(record.chosenId)) {
@@ -960,8 +1247,26 @@ export class LyricsCore {
             log(`lookup for ${job.videoId} failed: ${error.message}`);
         }).finally(() => {
             this._running = null;
+            this._maybeRunPendingRefreshAll();
             this._refresh();
             this._pump();
+        });
+    }
+
+    _maybeRunPendingRefreshAll() {
+        const pending = this._pendingRefreshAll;
+        if (!pending || !this._deps.generateScore)
+            return;
+        if (this._running?.videoId === pending.videoId || this._queue.some(j => j.videoId === pending.videoId))
+            return;
+        this._pendingRefreshAll = null;
+        if (this._scoring)
+            this._cancelScore('replaced by full refresh');
+        this._startScore(pending.videoId, pending.identity, {
+            force: true,
+            quality: pending.quality,
+            freshAudio: true,
+            activateLyrics: true,
         });
     }
 
@@ -1259,6 +1564,339 @@ export class LyricsCore {
         this._refresh();
     }
 
+    // ----- automatic lead-vocal melody score extraction
+
+    _cancelScore(reason) {
+        const active = this._scoring;
+        if (!active)
+            return;
+        this._scoring = null;
+        this._deps.log(`score ${active.videoId}: cancelled (${reason})`);
+        active.handle.cancel();
+    }
+
+    _scoreWanted(session, record, now) {
+        if (!this._scoreEnabled || !this._deps.generateScore || !session.identity)
+            return false;
+        if (!this._sounding(session))
+            return false;
+        if (!session.identity.musical && !record.userRequested)
+            return false;
+        // Let active lyric timing finish first so both don't contend on the GPU.
+        if (this._generating)
+            return false;
+        const existing = this._score(session.videoId);
+        if (existing && existing.version === SCORE_VERSION) {
+            if (existing.status === 'ready')
+                return false;
+            if (existing.status === 'skipped') {
+                const duration = Number(session.identity.durationSeconds) || Number(session.media?.duration) || 0;
+                const wasDurationSkip = Boolean(existing.maxDurationSeconds) || /^Video is longer than /u.test(existing.error ?? '');
+                const nowWithinCap = wasDurationSkip && duration > 0
+                    && (this._maxScoreDurationSeconds <= 0 || duration <= this._maxScoreDurationSeconds);
+                if (!nowWithinCap)
+                    return false;
+            }
+            if (existing.status === 'error' && now - existing.at <= SCORE_ERROR_RECHECK_MS)
+                return false;
+        }
+        return true;
+    }
+
+    _syncScore(session, now) {
+        if (!this._deps.generateScore)
+            return;
+        if (this._scoring && !this._scoring.force && (!this._scoreEnabled || !session || session.videoId !== this._scoring.videoId))
+            this._cancelScore(!this._scoreEnabled ? 'sheet music disabled' : (session ? 'switched to another video' : 'playback ended'));
+        if (this._scoring || !session)
+            return;
+        // Wait for an active LRCLIB lookup on this song before auto-starting score
+        // extraction, so LRCLIB wording & reference timing feed into the vocal pass.
+        if (this._running?.videoId === session.videoId || this._queue.some(j => j.videoId === session.videoId))
+            return;
+        const record = this._video(session.videoId);
+        if (!this._scoreWanted(session, record, now))
+            return;
+        const duration = Number(session.identity.durationSeconds) || Number(session.media?.duration) || 0;
+        if (this._maxScoreDurationSeconds > 0 && duration > this._maxScoreDurationSeconds) {
+            const mins = Math.round(this._maxScoreDurationSeconds / 60);
+            const skipped = {
+                version: SCORE_VERSION,
+                videoId: session.videoId,
+                status: 'skipped',
+                at: now,
+                error: `Video is longer than ${mins} minutes`,
+                maxDurationSeconds: this._maxScoreDurationSeconds,
+            };
+            this._scores.set(session.videoId, skipped);
+            this._deps.store.saveScore?.(skipped);
+            this._deps.log(`score ${session.videoId}: skipped (${skipped.error})`);
+            return;
+        }
+        this._startScore(session.videoId, session.identity, {force: false});
+    }
+
+    /**
+     * Best non-generated reference lyrics (LRCLIB or user-supplied) for fusing
+     * canonical wording & relative timing with isolated-vocal audio extraction.
+     */
+    _referenceLyricsFor(record) {
+        return selectReferenceLyrics(record, record ? this._effective(record) : null);
+    }
+
+    _startScore(videoId, identity, {force, quality = 'standard', freshAudio = false, activateLyrics = false}) {
+        const startedAt = this._deps.clock.now();
+        const record = this._video(videoId);
+        const refCandidate = this._referenceLyricsFor(record);
+        const refPlain = referencePlainLyrics(refCandidate);
+        const job = {
+            videoId,
+            label: describeIdentity(identity) || videoId,
+            force: Boolean(force),
+            freshAudio: Boolean(freshAudio),
+            activateLyrics: Boolean(activateLyrics),
+            quality: quality === 'high' ? 'high' : 'standard',
+            stage: 'audio',
+            handle: null,
+        };
+        this._scoring = job;
+        const handle = this._deps.generateScore({
+            videoId,
+            identity,
+            plainLyrics: refPlain,
+            force: Boolean(force),
+            freshAudio: Boolean(freshAudio),
+            quality: job.quality,
+            onStage: stage => {
+                if (this._scoring !== job || job.stage === stage)
+                    return;
+                job.stage = stage;
+                this._refresh();
+            },
+        });
+        job.handle = handle;
+        handle.promise.then(result => {
+            if (this._scoring !== job)
+                return;
+            this._scoring = null;
+            this._finishScore(videoId, identity, result, {
+                elapsedMs: this._deps.clock.now() - startedAt,
+                quality: job.quality,
+                activateLyrics: job.activateLyrics,
+            });
+        }).catch(error => {
+            if (this._scoring !== job)
+                return;
+            this._scoring = null;
+            this._finishScore(videoId, identity, {ok: false, error: error.message}, {
+                elapsedMs: this._deps.clock.now() - startedAt,
+                quality: job.quality,
+                activateLyrics: job.activateLyrics,
+            });
+        });
+    }
+
+    _finishScore(videoId, identity, result, {elapsedMs, quality = 'standard', activateLyrics = false}) {
+        const {store, clock, log} = this._deps;
+        const now = clock.now();
+        if (result?.cancelled)
+            return;
+        if (!result?.ok || !Array.isArray(result.notes) || !result.notes.length) {
+            const status = result?.skip ? 'skipped' : 'error';
+            const error = String(result?.error || 'Could not extract vocal melody');
+            const record = {version: SCORE_VERSION, videoId, status, at: now, error};
+            this._scores.set(videoId, record);
+            store.saveScore?.(record);
+            log(`score ${videoId}: ${status} (${error}), ${elapsedMs} ms`);
+            this._refresh();
+            return;
+        }
+        const prev = this._score(videoId);
+        const preservedEdits = preserveSongLevelEdits(prev?.edits);
+        const notes = result.notes.map((n, idx) => (n.id == null ? {id: idx + 1, ...n} : n));
+        const voiceCount = Number.isFinite(result.voiceCount) && result.voiceCount >= 1
+            ? Math.round(result.voiceCount)
+            : countScoreVoices({status: 'ready', notes});
+        const record = {
+            version: SCORE_VERSION,
+            videoId,
+            status: 'ready',
+            quality: result.quality === 'high' ? 'high' : quality,
+            at: now,
+            error: '',
+            duration: Number(result.duration) || 0,
+            language: String(result.language ?? ''),
+            bpm: Number(result.bpm) || 120,
+            meter: Array.isArray(result.meter) && result.meter.length === 2 ? result.meter : [4, 4],
+            key: result.key ?? {root: 0, type: 'major'},
+            tuningCents: Number(result.tuningCents) || 0,
+            medianMidi: Number(result.medianMidi) || 64,
+            voiceCount,
+            beats: Array.isArray(result.beats) ? result.beats : [],
+            downbeats: Array.isArray(result.downbeats) ? result.downbeats : [],
+            chords: Array.isArray(result.chords) ? result.chords : [],
+            notes,
+            words: Array.isArray(result.words) ? result.words : [],
+            edits: preservedEdits,
+        };
+        this._scores.set(videoId, record);
+        store.saveScore?.(record);
+
+        // Reuse the isolated lead-vocal Whisper transcript to produce fused
+        // lyrics (combining LRCLIB's exact words & relative timing with the
+        // exact isolated-vocal audio timestamps) at zero extra GPU cost.
+        let lyricNote = '';
+        if (Array.isArray(result.segments) && result.segments.length) {
+            const videoRec = this._video(videoId);
+            const refCandidate = this._referenceLyricsFor(videoRec);
+            const fused = buildVocalFusedCandidate({
+                segments: result.segments,
+                refCandidate,
+                identity,
+                duration: record.duration,
+                now,
+                seq: ++this._generateSeq,
+                generatedCandidateScore: GENERATED_CANDIDATE_SCORE,
+            });
+            if (fused) {
+                upsertVocalFusedCandidate(videoRec, fused.candidate, {
+                    effective: this._effective(videoRec),
+                    activateLyrics,
+                    generateVersion: GENERATE_VERSION,
+                    now,
+                });
+                store.saveVideo(videoRec);
+                this._deps.emit.videoUpdated?.(videoId);
+                const cov = fused.built.coverage !== undefined ? `, ${Math.round(fused.built.coverage * 100)}% fused` : '';
+                lyricNote = `, lyrics ${fused.candidate.generated} (${fused.built.lineCount} lines${cov})`;
+            }
+        }
+
+        const voiceNote = voiceCount >= 2 ? `, ${voiceCount} voices` : '';
+        log(`score ${videoId}: ready (${record.quality}), ${record.notes.length} notes${voiceNote}, ${record.chords.length} chords, ${record.bpm} BPM${lyricNote}, ${elapsedMs} ms`);
+        this._refresh();
+    }
+
+    _scoreState(session) {
+        const available = Boolean(this._deps.generateScore);
+        const background = this._scoring && this._scoring.videoId !== session?.videoId
+            ? {
+                videoId: this._scoring.videoId,
+                label: this._scoring.label,
+                stage: this._scoring.stage,
+                message: scoreStageMessage(this._scoring.stage),
+            }
+            : null;
+        if (!session) {
+            return {
+                available,
+                status: 'idle',
+                stage: null,
+                message: '',
+                bpm: null,
+                meter: null,
+                key: null,
+                noteCount: 0,
+                ...(background ? {background} : {}),
+            };
+        }
+        if (this._scoring?.videoId === session.videoId) {
+            return {
+                available,
+                status: 'running',
+                stage: this._scoring.stage,
+                message: scoreStageMessage(this._scoring.stage),
+                bpm: null,
+                meter: null,
+                key: null,
+                noteCount: 0,
+            };
+        }
+        if (this._pendingRefreshAll?.videoId === session.videoId) {
+            return {
+                available,
+                status: 'running',
+                stage: 'lyrics',
+                message: 'Checking LRCLIB before re-analyzing vocal audio\u2026',
+                bpm: null,
+                meter: null,
+                key: null,
+                noteCount: 0,
+            };
+        }
+        const existing = this._score(session.videoId);
+        if (!existing) {
+            return {
+                available,
+                status: 'idle',
+                stage: null,
+                message: '',
+                bpm: null,
+                meter: null,
+                key: null,
+                noteCount: 0,
+                ...(background ? {background} : {}),
+            };
+        }
+        return {
+            available,
+            status: existing.status,
+            quality: existing.quality ?? 'standard',
+            stage: null,
+            message: existing.error ?? '',
+            bpm: existing.bpm ?? null,
+            meter: existing.meter ?? null,
+            key: existing.edits?.keyOverride ?? existing.key ?? null,
+            noteCount: Array.isArray(existing.notes) ? existing.notes.length : 0,
+            chordCount: Array.isArray(existing.chords) ? existing.chords.length : 0,
+            voiceCount: countScoreVoices(existing),
+            edited: Boolean(existing.edits && Object.keys(existing.edits).length),
+            ...(background ? {background} : {}),
+        };
+    }
+
+    _buildScorePayload(session, lines, offsetSeconds, now) {
+        if (!session) {
+            return {
+                stable: {
+                    active: false,
+                    videoId: null,
+                    title: '',
+                    status: 'idle',
+                    quality: null,
+                    stage: null,
+                    message: '',
+                    score: null,
+                    lyricsLines: [],
+                },
+                clock: null,
+            };
+        }
+        const st = this._scoreState(session);
+        const existing = this._score(session.videoId);
+        const readyScore = existing?.status === 'ready' ? existing : null;
+        const lyricsLines = Array.isArray(lines) && lines.length
+            ? lines.filter(l => l.text).map(l => ({time: Math.round((l.time - offsetSeconds) * 1000) / 1000, text: l.text}))
+            : [];
+        const mediaTime = this._mediaTime(session, now);
+        const playing = this._advancing(session);
+        const rate = Number(session.media?.playbackRate) || 1;
+        return {
+            stable: {
+                active: true,
+                videoId: session.videoId,
+                title: session.identity ? describeIdentity(session.identity) : session.videoId,
+                status: st.status,
+                quality: st.quality ?? null,
+                stage: st.stage,
+                message: st.message,
+                score: readyScore,
+                lyricsLines,
+            },
+            clock: {mediaTime, rate, playing, sentAtMs: now},
+        };
+    }
+
     _waitFor(retryAtMs, job, reason) {
         this._queue.unshift(job);
         this._waitingUntil = retryAtMs;
@@ -1362,14 +2000,31 @@ export class LyricsCore {
     _stateJson(now) {
         const session = this._activeSession();
         if (!session) {
+            const genState = this._generationState(null, null, now);
+            const scState = this._scoreState(null);
             return JSON.stringify({active: false, sounding: false, videoId: null, identityText: '', musical: false,
                 lyrics: 'idle', chosen: null, userChose: false, offsetSeconds: 0, candidates: [],
                 publishAvailable: Boolean(this._deps.publish), publishedAt: null,
-                generation: this._generationState(null, null, now), pitch: this._pitch, key: null});
+                generation: genState,
+                score: scState,
+                ingest: summarizeIngest(),
+                analysis: projectAnalysisState({scoreState: scState, generationState: genState}),
+                pitch: this._pitch, key: null});
         }
         const record = this._video(session.videoId);
         const effective = this._effective(record);
         const rejected = new Set(record.rejectedIds);
+        const cachedScore = this._score(session.videoId);
+        const scoreKey = cachedScore?.status === 'ready'
+            ? (cachedScore.edits?.keyOverride ?? cachedScore.key ?? null)
+            : null;
+        const effectiveKey = scoreKey && cachedScore?.edits?.keyOverride
+            ? {root: scoreKey.root, type: scoreKey.type}
+            : (this._songKey?.videoId === session.videoId
+                ? {root: this._songKey.root, type: this._songKey.type}
+                : (scoreKey ? {root: scoreKey.root, type: scoreKey.type} : null));
+        const genState = this._generationState(session, record, now);
+        const scState = this._scoreState(session);
         return JSON.stringify({
             active: true,
             sounding: this._sounding(session),
@@ -1393,9 +2048,18 @@ export class LyricsCore {
                 ...(candidate.generated ? {generated: candidate.generated} : {}),
                 ...(candidate.custom ? {custom: true} : {}),
             })),
-            generation: this._generationState(session, record, now),
+            generation: genState,
+            score: scState,
+            ingest: summarizeIngest({record, effective, scoreRecord: cachedScore}),
+            analysis: projectAnalysisState({
+                scoreState: scState,
+                generationState: genState,
+                scoreRecord: cachedScore,
+                effectiveLyric: effective,
+                effectiveKey,
+            }),
             pitch: this._pitch,
-            key: this._songKey?.videoId === session.videoId ? {root: this._songKey.root, type: this._songKey.type} : null,
+            key: effectiveKey,
         });
     }
 
@@ -1413,19 +2077,21 @@ export class LyricsCore {
         });
     }
 
-    _lineAt(session, now) {
+    _lineContextAt(session, now) {
         if (!session || session.media.adShowing || session.media.ended)
-            return {text: '', key: 'none', nextChangeAt: Infinity};
+            return {line: {text: '', key: 'none', nextChangeAt: Infinity}, lines: [], offsetSeconds: 0};
         const record = this._video(session.videoId);
         const effective = this._effective(record);
         const mediaTime = this._mediaTime(session, now);
         const scratchActive = this._generating?.videoId === session.videoId && this._generating.fromScratch;
-        if (effective?.timed && !scratchActive)
-            return displayAt({lines: this._linesFor(effective), offsetSeconds: record.offsetSeconds, mediaTime});
+        if (effective?.timed && !scratchActive) {
+            const lines = this._linesFor(effective);
+            return {line: displayAt({lines, offsetSeconds: record.offsetSeconds, mediaTime}), lines, offsetSeconds: record.offsetSeconds};
+        }
         const partial = this._generating?.videoId === session.videoId ? this._generating.partial : null;
         if (partial && this._partialCovers(partial, mediaTime))
-            return displayAt({lines: partial.lines, offsetSeconds: record.offsetSeconds, mediaTime});
-        return {text: '', key: 'none', nextChangeAt: Infinity};
+            return {line: displayAt({lines: partial.lines, offsetSeconds: record.offsetSeconds, mediaTime}), lines: partial.lines, offsetSeconds: record.offsetSeconds};
+        return {line: {text: '', key: 'none', nextChangeAt: Infinity}, lines: [], offsetSeconds: 0};
     }
 
     _refresh() {
@@ -1435,6 +2101,7 @@ export class LyricsCore {
         this._dropUnwantedJobs();
         const session = this._activeSession();
         this._syncGeneration(session, now);
+        this._syncScore(session, now);
 
         const state = this._stateJson(now);
         if (state !== this._lastState) {
@@ -1450,7 +2117,7 @@ export class LyricsCore {
             }
         }
 
-        const line = this._lineAt(session, now);
+        const {line, lines, offsetSeconds} = this._lineContextAt(session, now);
         let ruby = null;
         if (this._furiganaEnabled && this._deps.furigana) {
             if (session) {
@@ -1479,12 +2146,42 @@ export class LyricsCore {
         }
         // A line is keyed by the session so a new video always transitions.
         const key = session ? `${session.videoId}:${line.key}` : 'none';
-        const nextLine = ruby ? {text: line.text, key, ruby} : {text: line.text, key};
+        const nextLine = {
+            text: line.text,
+            key,
+            ...(ruby ? {ruby} : {}),
+        };
         const nextLineJson = JSON.stringify(nextLine);
         if (nextLineJson !== this._lastLineJson) {
             this._lastLine = nextLine;
             this._lastLineJson = nextLineJson;
             emit.line({...this._lastLine});
+        }
+
+        // Separate floating lead-sheet payload (song score + aligned lyrics + playback clock).
+        const builtScore = this._buildScorePayload(session, lines, offsetSeconds, now);
+        const nextScoreStableJson = JSON.stringify(builtScore.stable);
+        let scoreClockChanged = false;
+        const nextClock = builtScore.clock;
+        if (nextClock) {
+            const prev = this._lastScoreClock;
+            if (!prev || prev.playing !== nextClock.playing || prev.rate !== nextClock.rate) {
+                scoreClockChanged = true;
+            } else if (nextClock.playing) {
+                const predicted = prev.mediaTime + ((now - prev.sentAtMs) / 1000) * prev.rate;
+                if (Math.abs(predicted - nextClock.mediaTime) > 0.25)
+                    scoreClockChanged = true;
+            } else if (Math.abs(prev.mediaTime - nextClock.mediaTime) > 0.1) {
+                scoreClockChanged = true;
+            }
+        } else if (this._lastScoreClock !== null) {
+            scoreClockChanged = true;
+        }
+        if (nextScoreStableJson !== this._lastScoreStableJson || scoreClockChanged) {
+            this._lastScore = {...builtScore.stable, clock: nextClock};
+            this._lastScoreStableJson = nextScoreStableJson;
+            this._lastScoreClock = nextClock;
+            emit.score?.({...this._lastScore});
         }
 
         if (this._timers.line !== null) {

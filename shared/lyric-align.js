@@ -9,6 +9,8 @@
 // Pure ES module (no GNOME or Node dependencies) so both service/ (gjs)
 // and tests/ (node) run the exact same code.
 
+import {parseSyncedLyrics} from './lrc.js';
+
 // Minimum fraction of reference lyric words that must align for plain-lyric
 // alignment to be trusted; below this we fall back to transcribed lyrics.
 export const MIN_ALIGN_COVERAGE = 0.18;
@@ -393,7 +395,23 @@ export function parsePlainLines(plainLyrics) {
         const tokens = tokenizeWords(text);
         if (!tokens.length)
             continue;
-        lines.push({text, tokens});
+        lines.push({text, tokens, refTime: null});
+    }
+    return lines;
+}
+
+/** Parses synced reference LRC into singable lines retaining original reference timestamps. */
+function parseSyncedReferenceLines(syncedLyrics) {
+    const parsed = parseSyncedLyrics(syncedLyrics);
+    const lines = [];
+    for (const entry of parsed) {
+        const text = String(entry.text ?? '').replace(/\s+/gu, ' ').trim();
+        if (!text || SECTION_HEADER.test(text))
+            continue;
+        const tokens = tokenizeWords(text);
+        if (!tokens.length)
+            continue;
+        lines.push({text, tokens, refTime: Number.isFinite(entry.time) ? entry.time : null});
     }
     return lines;
 }
@@ -420,12 +438,17 @@ export function formatTimedLrc(timedLines, durationSeconds = 0) {
 }
 
 /**
- * Mode A: Aligns known plain lyrics onto Whisper's timed word stream.
- * @returns {{ok: true, mode: 'aligned', lrc: string, plainText: string, coverage: number, lineCoverage: number, lineCount: number}
+ * Mode A: Aligns known plain or synced reference lyrics onto Whisper's timed
+ * word stream. When `referenceSyncedLyrics` is supplied, matched lines lock to
+ * the exact vocal-audio timestamps while unmatched (hard-to-hear / soft) lines
+ * inherit relative timing from the reference LRC instead of naive linear guesses.
+ * @returns {{ok: true, mode: 'aligned', lrc: string, plainText: string, coverage: number, lineCoverage: number, lineCount: number, fused?: boolean}
  *          |{ok: false, reason: string, coverage?: number}}
  */
-export function alignPlainLyrics(plainLyrics, segments, durationSeconds = 0) {
-    const lines = parsePlainLines(plainLyrics);
+export function alignPlainLyrics(plainLyrics, segments, durationSeconds = 0, {referenceSyncedLyrics = ''} = {}) {
+    const syncedLines = referenceSyncedLyrics ? parseSyncedReferenceLines(referenceSyncedLyrics) : [];
+    const lines = syncedLines.length ? syncedLines : parsePlainLines(plainLyrics);
+    const hasRefTimes = syncedLines.length > 0;
     if (!lines.length)
         return {ok: false, reason: 'no-plain-lines'};
 
@@ -514,29 +537,44 @@ export function alignPlainLyrics(plainLyrics, segments, durationSeconds = 0) {
     if (!anchoredIndices.length)
         return {ok: false, reason: 'no-anchors', coverage};
 
-    // Interpolate unmatched lines smoothly between anchored neighbors.
+    // Interpolate unmatched lines smoothly between anchored neighbors, using
+    // reference LRC relative timing when available and monotonic.
     const resolved = anchors.map(a => (a ? {...a} : null));
     const weightOf = idx => Math.max(3, lines[idx].text.length);
 
     // Leading unmatched lines before the first anchor.
     const firstAnchor = anchoredIndices[0];
     if (firstAnchor > 0) {
-        let totalWords = 0;
-        for (let i = 0; i < firstAnchor; i++)
-            totalWords += lines[i].tokens.length;
-        const estDuration = Math.min(resolved[firstAnchor].start, totalWords * 0.35);
-        const startAt = Math.max(0, resolved[firstAnchor].start - estDuration);
-        const span = Math.max(0.2 * firstAnchor, resolved[firstAnchor].start - startAt);
-        let weightSum = 0;
-        for (let i = 0; i < firstAnchor; i++)
-            weightSum += weightOf(i);
-        let acc = 0;
-        for (let i = 0; i < firstAnchor; i++) {
-            const w = weightOf(i);
-            const s = startAt + (acc / weightSum) * span;
-            acc += w;
-            const e = startAt + (acc / weightSum) * span;
-            resolved[i] = {start: s, end: Math.max(s + 0.3, e - 0.1)};
+        const anchorRef = lines[firstAnchor].refTime;
+        const canUseRef = hasRefTimes && Number.isFinite(anchorRef)
+            && lines.slice(0, firstAnchor).every((l, idx) =>
+                Number.isFinite(l.refTime) && l.refTime <= anchorRef && (idx === 0 || l.refTime >= lines[idx - 1].refTime));
+        if (canUseRef) {
+            const shift = resolved[firstAnchor].start - anchorRef;
+            for (let i = 0; i < firstAnchor; i++) {
+                const s = Math.max(0, lines[i].refTime + shift);
+                const nextRef = i + 1 < firstAnchor ? lines[i + 1].refTime : anchorRef;
+                const e = Math.max(s + 0.3, Math.min(resolved[firstAnchor].start - 0.05, nextRef + shift - 0.1));
+                resolved[i] = {start: s, end: e};
+            }
+        } else {
+            let totalWords = 0;
+            for (let i = 0; i < firstAnchor; i++)
+                totalWords += lines[i].tokens.length;
+            const estDuration = Math.min(resolved[firstAnchor].start, totalWords * 0.35);
+            const startAt = Math.max(0, resolved[firstAnchor].start - estDuration);
+            const span = Math.max(0.2 * firstAnchor, resolved[firstAnchor].start - startAt);
+            let weightSum = 0;
+            for (let i = 0; i < firstAnchor; i++)
+                weightSum += weightOf(i);
+            let acc = 0;
+            for (let i = 0; i < firstAnchor; i++) {
+                const w = weightOf(i);
+                const s = startAt + (acc / weightSum) * span;
+                acc += w;
+                const e = startAt + (acc / weightSum) * span;
+                resolved[i] = {start: s, end: Math.max(s + 0.3, e - 0.1)};
+            }
         }
     }
 
@@ -546,39 +584,79 @@ export function alignPlainLyrics(plainLyrics, segments, durationSeconds = 0) {
         const right = anchoredIndices[k + 1];
         if (right - left <= 1)
             continue;
-        const startAt = Math.min(resolved[right].start, resolved[left].end + 0.15);
-        const span = Math.max(0.2 * (right - left - 1), resolved[right].start - startAt);
-        let weightSum = 0;
-        for (let i = left + 1; i < right; i++)
-            weightSum += weightOf(i);
-        let acc = 0;
-        for (let i = left + 1; i < right; i++) {
-            const w = weightOf(i);
-            const s = startAt + (acc / weightSum) * span;
-            acc += w;
-            const e = startAt + (acc / weightSum) * span;
-            resolved[i] = {start: s, end: Math.max(s + 0.3, e - 0.1)};
+        const leftRef = lines[left].refTime;
+        const rightRef = lines[right].refTime;
+        const canUseRef = hasRefTimes && Number.isFinite(leftRef) && Number.isFinite(rightRef)
+            && rightRef - leftRef > 0.2
+            && lines.slice(left + 1, right).every((l, idx) => {
+                const prev = idx === 0 ? leftRef : lines[left + idx].refTime;
+                return Number.isFinite(l.refTime) && l.refTime >= prev && l.refTime <= rightRef;
+            });
+        if (canUseRef) {
+            const refSpan = rightRef - leftRef;
+            const audStart = resolved[left].start;
+            const audSpan = Math.max(0.2 * (right - left), resolved[right].start - audStart);
+            for (let i = left + 1; i < right; i++) {
+                const frac = (lines[i].refTime - leftRef) / refSpan;
+                const nextRef = i + 1 < right ? lines[i + 1].refTime : rightRef;
+                const nextFrac = (nextRef - leftRef) / refSpan;
+                const s = Math.max(resolved[left].end + 0.05, audStart + frac * audSpan);
+                const e = Math.max(s + 0.3, Math.min(resolved[right].start - 0.05, audStart + nextFrac * audSpan - 0.1));
+                resolved[i] = {start: s, end: e};
+            }
+        } else {
+            const startAt = Math.min(resolved[right].start, resolved[left].end + 0.15);
+            const span = Math.max(0.2 * (right - left - 1), resolved[right].start - startAt);
+            let weightSum = 0;
+            for (let i = left + 1; i < right; i++)
+                weightSum += weightOf(i);
+            let acc = 0;
+            for (let i = left + 1; i < right; i++) {
+                const w = weightOf(i);
+                const s = startAt + (acc / weightSum) * span;
+                acc += w;
+                const e = startAt + (acc / weightSum) * span;
+                resolved[i] = {start: s, end: Math.max(s + 0.3, e - 0.1)};
+            }
         }
     }
 
     // Trailing unmatched lines after the last anchor.
     const lastAnchor = anchoredIndices[anchoredIndices.length - 1];
     if (lastAnchor < lines.length - 1) {
-        const startAt = resolved[lastAnchor].end + 0.25;
-        let totalWords = 0;
-        for (let i = lastAnchor + 1; i < lines.length; i++)
-            totalWords += lines[i].tokens.length;
-        const estSpan = Math.min(Math.max(1, audioEnd - startAt), totalWords * 0.38);
-        let weightSum = 0;
-        for (let i = lastAnchor + 1; i < lines.length; i++)
-            weightSum += weightOf(i);
-        let acc = 0;
-        for (let i = lastAnchor + 1; i < lines.length; i++) {
-            const w = weightOf(i);
-            const s = startAt + (acc / weightSum) * estSpan;
-            acc += w;
-            const e = startAt + (acc / weightSum) * estSpan;
-            resolved[i] = {start: s, end: Math.max(s + 0.3, e - 0.1)};
+        const anchorRef = lines[lastAnchor].refTime;
+        const canUseRef = hasRefTimes && Number.isFinite(anchorRef)
+            && lines.slice(lastAnchor + 1).every((l, idx) => {
+                const prev = idx === 0 ? anchorRef : lines[lastAnchor + idx].refTime;
+                return Number.isFinite(l.refTime) && l.refTime >= prev;
+            });
+        if (canUseRef) {
+            const shift = resolved[lastAnchor].start - anchorRef;
+            for (let i = lastAnchor + 1; i < lines.length; i++) {
+                const s = Math.max(resolved[lastAnchor].end + 0.1, Math.min(audioEnd - 0.5, lines[i].refTime + shift));
+                const nextRef = i + 1 < lines.length ? lines[i + 1].refTime : null;
+                const e = nextRef !== null
+                    ? Math.max(s + 0.3, Math.min(audioEnd, nextRef + shift - 0.1))
+                    : Math.min(audioEnd, s + Math.max(1.2, lines[i].tokens.length * 0.35));
+                resolved[i] = {start: s, end: e};
+            }
+        } else {
+            const startAt = resolved[lastAnchor].end + 0.25;
+            let totalWords = 0;
+            for (let i = lastAnchor + 1; i < lines.length; i++)
+                totalWords += lines[i].tokens.length;
+            const estSpan = Math.min(Math.max(1, audioEnd - startAt), totalWords * 0.38);
+            let weightSum = 0;
+            for (let i = lastAnchor + 1; i < lines.length; i++)
+                weightSum += weightOf(i);
+            let acc = 0;
+            for (let i = lastAnchor + 1; i < lines.length; i++) {
+                const w = weightOf(i);
+                const s = startAt + (acc / weightSum) * estSpan;
+                acc += w;
+                const e = startAt + (acc / weightSum) * estSpan;
+                resolved[i] = {start: s, end: Math.max(s + 0.3, e - 0.1)};
+            }
         }
     }
 
@@ -595,6 +673,7 @@ export function alignPlainLyrics(plainLyrics, segments, durationSeconds = 0) {
     return {
         ok: true,
         mode: 'aligned',
+        fused: hasRefTimes,
         lrc: formatTimedLrc(timedLines, durationSeconds),
         plainText: lines.map(l => l.text).join('\n'),
         coverage: Math.round(coverage * 1000) / 1000,
@@ -716,13 +795,14 @@ export function buildTranscribedLyrics(segments, durationSeconds = 0) {
 }
 
 /**
- * Top-level entry point: aligns plain lyrics when available and well-matched,
- * otherwise builds singable timed lines directly from Whisper's transcript.
+ * Top-level entry point: aligns plain or synced reference lyrics when available
+ * and well-matched, otherwise builds singable timed lines directly from Whisper.
  */
-export function generateLrcFromTranscript({segments, duration = 0, plainLyrics = ''}) {
+export function generateLrcFromTranscript({segments, duration = 0, plainLyrics = '', referenceSyncedLyrics = ''}) {
+    const trimmedSynced = String(referenceSyncedLyrics ?? '').trim();
     const trimmedPlain = String(plainLyrics ?? '').trim();
-    if (trimmedPlain) {
-        const aligned = alignPlainLyrics(trimmedPlain, segments, duration);
+    if (trimmedSynced || trimmedPlain) {
+        const aligned = alignPlainLyrics(trimmedPlain, segments, duration, {referenceSyncedLyrics: trimmedSynced});
         if (aligned.ok)
             return aligned;
     }

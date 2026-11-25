@@ -580,9 +580,9 @@ button, a.button {
     font-weight: 600;
     color: #fff;
     background: var(--control-bg);
-    border: 1px solid transparent;
+    border: 3px solid transparent;
     border-radius: 6px;
-    padding: 0.25rem 0.56rem;
+    padding: 0.2rem 0.52rem;
     cursor: pointer;
     white-space: nowrap;
     text-decoration: none;
@@ -599,7 +599,7 @@ button:hover, a.button:hover {
 
 button[aria-pressed="true"], button.primary, a.button.primary {
     background: var(--accent);
-    border-color: var(--accent-bright);
+    border: 3px solid #93c5fd;
     color: #fff;
     font-weight: 700;
 }
@@ -658,20 +658,20 @@ button:disabled:hover {
 
 .seg button {
     background: transparent;
-    border-color: transparent;
+    border: 3px solid transparent;
     border-radius: 5px;
-    padding: 0.22rem 0.56rem;
+    padding: 0.18rem 0.52rem;
     font-size: 0.84rem;
 }
 
 .seg button:hover {
     background: var(--control-hover);
-    border-color: transparent;
+    border-color: var(--border-strong);
 }
 
 .seg button[aria-pressed="true"] {
     background: var(--accent);
-    border-color: transparent;
+    border: 3px solid #93c5fd;
     color: #fff;
 }
 
@@ -1315,4 +1315,366 @@ kbd {
     align-items: center;
     gap: 0.55rem;
     flex-wrap: wrap;
+}
+
+/* ----- Interactive White-Paper Piano Lead Sheet Modal ----- */
+
+.ls-modal {
+    width: min(96vw, 1440px);
+    height: min(92vh, 980px);
+    display: flex;
+    flex-direction: column;
+    background: var(--surface);
+    border: 2px solid var(--hairline);
+    border-radius: 12px;
+    overflow: hidden;
+    position: relative;
+}
+
+.ls-meta {
+    font-size: 0.92rem;
+    font-weight: 700;
+    color: #ffffff;
+    font-variant-numeric: tabular-nums;
+}
+
+.ls-status {
+    font-size: 0.85rem;
+    font-weight: 700;
+    color: #000000;
+    background: #fde047;
+    padding: 0.15rem 0.55rem;
+    border-radius: 6px;
+}
+
+.ls-toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.55rem 0.9rem;
+    padding: 0.55rem 0.95rem;
+    border-bottom: 1px solid var(--hairline);
+    background: var(--bg);
+}
+
+.ls-tool-group {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+}
+
+.ls-tool-right {
+    margin-left: auto;
+    flex-wrap: wrap;
+}
+
+.ls-tool-lbl {
+    font-size: 0.82rem;
+    font-weight: 700;
+    color: #ffffff;
+}
+
+.ls-shift-val {
+    min-width: 1.8rem;
+    text-align: center;
+    font-weight: 800;
+    font-variant-numeric: tabular-nums;
+    color: #ffffff;
+}
+
+.ls-select {
+    background: var(--surface);
+    color: #ffffff;
+    border: 2px solid var(--hairline);
+    border-radius: 6px;
+    padding: 0.25rem 0.45rem;
+    font-size: 0.86rem;
+    font-weight: 700;
+}
+
+.ls-inspector {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+    padding: 0.45rem 0.95rem;
+    border-bottom: 2px solid #000000;
+    background: #ffffff;
+    color: #000000;
+    flex-wrap: wrap;
+}
+
+.ls-note-readout {
+    font-size: 0.9rem;
+    font-weight: 700;
+    color: #000000;
+    font-variant-numeric: tabular-nums;
+}
+
+.ls-note-actions {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    flex-wrap: wrap;
+}
+
+.ls-inspector button {
+    background: #ffffff;
+    color: #000000;
+    border: 2px solid #000000;
+    font-weight: 700;
+}
+
+.ls-inspector button:hover:not(:disabled) {
+    background: #fde047;
+    color: #000000;
+}
+
+.ls-inspector button:disabled {
+    opacity: 0.35;
+}
+
+.ls-inspector button.danger {
+    background: #ffffff;
+    color: #991b1b;
+    border-color: #991b1b;
+}
+
+.ls-body {
+    flex: 1;
+    overflow-y: auto;
+    background: #ffffff;
+    color: #000000;
+    padding: 0.8rem 1rem 2rem;
+}
+
+.ls-paper {
+    width: 100%;
+    background: #ffffff;
+    color: #000000;
+}
+
+.ls-paper-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 1rem;
+    padding: 0.2rem 0.5rem 0.55rem;
+    margin-bottom: 0.5rem;
+    border-bottom: 2px solid #000000;
+}
+
+.ls-paper-title {
+    font-size: 1.25rem;
+    font-weight: 800;
+    color: #000000;
+}
+
+.ls-paper-meta {
+    font-size: 0.95rem;
+    font-weight: 700;
+    color: #000000;
+    font-variant-numeric: tabular-nums;
+}
+
+.ls-paper-banner {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+    padding: 0.6rem 0.9rem;
+    margin-bottom: 0.75rem;
+    background: #fef08a;
+    color: #000000;
+    border: 2px solid #000000;
+    border-radius: 8px;
+    font-weight: 700;
+}
+
+.ls-systems-wrap {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+    width: 100%;
+}
+
+.ls-system-svg {
+    width: 100%;
+    height: auto;
+    display: block;
+    user-select: none;
+    background: #ffffff;
+}
+
+.ls-measure-bg.ls-bar-active {
+    fill: rgba(254, 240, 138, 0.52);
+}
+
+.ls-chord-slot .ls-chord-add-hint {
+    opacity: 0;
+    transition: opacity 120ms ease;
+}
+
+.ls-chord-slot:hover .ls-chord-add-hint {
+    opacity: 1;
+}
+
+.ls-chord-slot:hover rect,
+.ls-chord-chip:hover .ls-chord-box {
+    fill: #fde047;
+    stroke: #000000;
+    stroke-width: 1.2;
+}
+
+.ls-note:hover ellipse {
+    stroke: #1d4ed8;
+    stroke-width: 2;
+}
+
+.ls-chord-popover {
+    position: absolute;
+    top: 112px;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 20;
+    background: #ffffff;
+    color: #000000;
+    border: 3px solid #000000;
+    border-radius: 10px;
+    padding: 0.75rem 0.9rem;
+    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.35);
+    display: flex;
+    flex-direction: column;
+    gap: 0.55rem;
+    min-width: 340px;
+}
+
+.ls-chord-pop-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+    color: #000000;
+}
+
+.ls-chord-pop-row {
+    display: flex;
+    align-items: center;
+    gap: 0.45rem;
+}
+
+.ls-chord-input {
+    flex: 1;
+    background: #ffffff;
+    color: #000000;
+    border: 2px solid #000000;
+    border-radius: 6px;
+    padding: 0.35rem 0.55rem;
+    font-size: 1rem;
+    font-weight: 800;
+}
+
+.ls-chord-picks {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.35rem;
+}
+
+.ls-chord-popover button {
+    background: #ffffff;
+    color: #000000;
+    border: 2px solid #000000;
+    font-weight: 700;
+}
+
+.ls-chord-popover button[aria-pressed="true"] {
+    background: #fde047;
+    color: #000000;
+    border: 3px solid #000000;
+}
+
+.ls-chord-popover button.primary {
+    background: #000000;
+    color: #ffffff;
+}
+
+.ls-chord-popover button.danger {
+    color: #991b1b;
+    border-color: #991b1b;
+}
+
+/* Collapsible live sheet-config drawer inside the Lead Sheet modal */
+.ls-config-drawer {
+    background: #111622;
+    color: #ffffff;
+    border-bottom: 2px solid #ffffff;
+    padding: 0.65rem 1rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.55rem;
+}
+
+.ls-cfg-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.7rem 1.1rem;
+}
+
+.ls-cfg-item {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.45rem;
+    flex-wrap: wrap;
+}
+
+.ls-cfg-toggles {
+    display: inline-flex;
+    flex-wrap: wrap;
+    gap: 0.35rem;
+}
+
+.ls-cfg-toggles button[aria-pressed="true"] {
+    background: #facc15;
+    color: #000000;
+    border: 3px solid #93c5fd;
+    font-weight: 800;
+}
+
+.ls-cfg-slider {
+    display: flex;
+    flex-direction: column;
+    gap: 0.15rem;
+    min-width: 170px;
+    flex: 1 1 180px;
+}
+
+.ls-cfg-slider-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 0.45rem;
+}
+
+.ls-cfg-val {
+    color: #facc15;
+    font-weight: 800;
+    font-size: 0.92rem;
+    font-variant-numeric: tabular-nums;
+}
+
+.ls-cfg-range {
+    width: 100%;
+    margin: 0;
+    accent-color: #facc15;
+    cursor: pointer;
+}
+
+.ls-cfg-ticks {
+    display: flex;
+    justify-content: space-between;
+    color: #ffffff;
+    font-size: 0.74rem;
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
 }

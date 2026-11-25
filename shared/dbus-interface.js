@@ -10,6 +10,7 @@ export const INTERFACE_XML = `<node>
   <interface name="net.fuseki.LyricsOverlay1">
     <method name="GetState"><arg type="s" direction="out" name="state"/></method>
     <method name="GetLine"><arg type="s" direction="out" name="line"/></method>
+    <method name="GetScore"><arg type="s" direction="out" name="score"/></method>
     <method name="Command">
       <arg type="s" direction="in" name="command"/>
       <arg type="s" direction="out" name="result"/>
@@ -18,6 +19,7 @@ export const INTERFACE_XML = `<node>
     <method name="OpenSettings"><arg type="s" direction="out" name="result"/></method>
     <signal name="StateChanged"><arg type="s" name="state"/></signal>
     <signal name="LineChanged"><arg type="s" name="line"/></signal>
+    <signal name="ScoreChanged"><arg type="s" name="score"/></signal>
     <signal name="PitchFrames"><arg type="s" name="frames"/></signal>
   </interface>
 </node>`;

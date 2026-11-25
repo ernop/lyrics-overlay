@@ -7,7 +7,8 @@ import {LYRICS_STATUS_TEXT} from '/shared/lyrics-status.js';
 import {BORDER_DEFAULTS, PLACEMENT_PRESETS, borderSpec} from '/shared/overlay-geometry.js';
 import {keyName, noteLabel, pitchClassNames, SCALES} from '/shared/scales.js';
 import {TEXT_COLORS, hexColor, nearestNamedColor, parseHexColor, resolveRingColors, resolveTextColor} from '/shared/text-ink.js';
-import {LyricPreviewCanvas, PitchPreviewCanvas, ScreenPlacementMap} from '/preview.js';
+import {createLeadSheetModal} from '/lead-sheet.js';
+import {LeadSheetPreviewCanvas, LyricPreviewCanvas, PitchPreviewCanvas, ScreenPlacementMap} from '/preview.js';
 
 const POLL_MS = 1000;
 const MICROPHONE_POLL_MS = 10_000;
@@ -54,10 +55,11 @@ const model = {
     held: new Set(),
     views: [],
     stateViews: [],
-    stageMode: 'lyric', // 'lyric' | 'pitch' | 'map'
+    stageMode: 'lyric', // 'lyric' | 'score' | 'pitch' | 'map'
     previewScene: 'video',
     customSample: '',
     lyricPreview: null,
+    leadSheetPreview: null,
     placementMap: null,
     pitchPreview: null,
     stageSync: null,
@@ -152,6 +154,7 @@ function render() {
     const text = activeSampleText();
     const ruby = rubyForPreview(text);
     model.lyricPreview?.render(model.values, monitor, text, model.previewScene, ruby);
+    model.leadSheetPreview?.render(model.values, activeMonitor('score-box-monitor'));
     model.placementMap?.update(model.values, monitor, text);
     model.pitchPreview?.render(model.values, model.state?.key ?? null);
 }
@@ -370,12 +373,19 @@ function buildTopBar() {
         class: 'compact',
         disabled: 'disabled',
     });
+    const leadSheetBtn = pressButton('Lead sheet', () => model.scoreModal?.open(), {
+        class: 'compact',
+        title: 'Open interactive white-paper piano lead sheet & editor (shortcut S)',
+    });
     const overlayBtn = pressButton('', () => set('overlay-enabled', !model.values['overlay-enabled']), {class: 'switch'});
+    const scoreBtn = pressButton('', () => set('score-enabled', !model.values['score-enabled']), {class: 'switch'});
     const pitchBtn = pressButton('', () => set('pitch-enabled', !model.values['pitch-enabled']), {class: 'switch'});
 
     view(values => {
         overlayBtn.setAttribute('aria-pressed', String(values['overlay-enabled']));
         overlayBtn.textContent = values['overlay-enabled'] ? 'Lyrics: On' : 'Lyrics: Off';
+        scoreBtn.setAttribute('aria-pressed', String(values['score-enabled']));
+        scoreBtn.textContent = values['score-enabled'] ? 'Lead sheet: On' : 'Lead sheet: Off';
         pitchBtn.setAttribute('aria-pressed', String(values['pitch-enabled']));
         pitchBtn.textContent = values['pitch-enabled'] ? 'Pitch: On' : 'Pitch: Off';
     });
@@ -408,7 +418,7 @@ function buildTopBar() {
             el('span', {class: 'topbar-sep', 'aria-hidden': 'true'}),
             el('div', {class: 'topbar-song'}, songTitle, statusPill, markMusicBtn),
         ),
-        el('div', {class: 'topbar-actions'}, fullLyricsBtn, overlayBtn, pitchBtn),
+        el('div', {class: 'topbar-actions'}, fullLyricsBtn, leadSheetBtn, overlayBtn, scoreBtn, pitchBtn),
     );
 }
 
@@ -421,6 +431,10 @@ function buildStage() {
         model.stageMode = 'lyric';
         model.stageSync();
     });
+    const scoreModeBtn = pressButton('Lead sheet', () => {
+        model.stageMode = 'score';
+        model.stageSync();
+    });
     const pitchModeBtn = pressButton('Pitch', () => {
         model.stageMode = 'pitch';
         model.stageSync();
@@ -429,7 +443,7 @@ function buildStage() {
         model.stageMode = 'map';
         model.stageSync();
     });
-    const modeSeg = el('div', {class: 'seg compact'}, lyricModeBtn, pitchModeBtn, mapModeBtn);
+    const modeSeg = el('div', {class: 'seg compact'}, lyricModeBtn, scoreModeBtn, pitchModeBtn, mapModeBtn);
 
     // Scene toggle (Video / Dark / Light) for lyric preview
     const sceneButtons = {};
@@ -453,7 +467,9 @@ function buildStage() {
     const lyricCanvas = el('canvas', {'aria-label': 'Live lyric preview'});
     const telemetryLine = el('span', {class: 'metric-value'}, '48 px');
     model.lyricPreview = new LyricPreviewCanvas(lyricCanvas, layout => {
-        telemetryLine.textContent = `${Math.round(layout.fontSize)} px \u00b7 ${layout.lines.length} ${layout.lines.length === 1 ? 'line' : 'lines'} \u00b7 ${layout.boxW}\u00d7${layout.boxH}`;
+        const shrunk = layout.requestedSize && layout.fontSize < layout.requestedSize - 0.5
+            ? ` (fit ${Math.round(layout.fontSize)} px)` : '';
+        telemetryLine.textContent = `${Math.round(layout.requestedSize ?? layout.fontSize)} px${shrunk} \u00b7 ${layout.lines.length} ${layout.lines.length === 1 ? 'line' : 'lines'} \u00b7 ${layout.boxW}\u00d7${layout.renderH}`;
     });
 
     const sampleInput = el('input', {
@@ -483,11 +499,26 @@ function buildStage() {
             clearSampleBtn),
         el('div', {class: 'stage-meta'},
             telemetryLine,
-            el('span', {class: 'hint-line'}, 'Ctrl+drag on desktop to move'),
+            el('span', {class: 'hint-line'}, 'Ctrl+drag body to move, left/right edges for width \u00b7 Ctrl+scroll to size'),
         ),
     );
 
-    // 2. Pitch preview pane
+    // 2. Lead sheet preview pane
+    const scoreCanvas = el('canvas', {'aria-label': 'Live piano lead sheet preview'});
+    const scoreTelemetry = el('span', {class: 'metric-value'});
+    model.leadSheetPreview = new LeadSheetPreviewCanvas(scoreCanvas, dims => {
+        const pagingLabel = (model.values?.['score-paging'] ?? 'page') === 'page' ? 'Flip page' : 'Scroll 1 row';
+        scoreTelemetry.textContent = `${dims.width}\u00d7${dims.height} px \u00b7 ${dims.cols} bars/line \u00b7 ${dims.rows} ${dims.rows === 1 ? 'row' : 'rows'} \u00b7 ${pagingLabel}`;
+    });
+    const scorePane = el('div', {class: 'stage-pane', hidden: 'hidden'},
+        el('div', {class: 'stage-canvas-frame'}, scoreCanvas),
+        el('div', {class: 'stage-meta'},
+            scoreTelemetry,
+            pressButton('Open interactive lead sheet (S)', () => model.scoreModal?.open(), {class: 'compact primary'}),
+        ),
+    );
+
+    // 3. Pitch preview pane
     const pitchCanvas = el('canvas', {'aria-label': 'Live pitch panel preview'});
     model.pitchPreview = new PitchPreviewCanvas(pitchCanvas);
     const pitchMeta = el('span', {class: 'metric-value'});
@@ -543,8 +574,7 @@ function buildStage() {
     view(values => {
         const mon = activeMonitor('box-monitor');
         const pxW = Math.round(values.box.width * mon.width);
-        const pxH = Math.round(values.box.height * mon.height);
-        mapMetrics.textContent = `${pxW}\u00d7${pxH} px (${Math.round(values.box.width * 100)}%\u00d7${Math.round(values.box.height * 100)}%)`;
+        mapMetrics.textContent = `${pxW} px (${Math.round(values.box.width * 100)}% width) \u00b7 ${Math.round(values['font-size'])} px`;
     });
 
     const snapBar = el('div', {class: 'controls'},
@@ -556,19 +586,22 @@ function buildStage() {
     const mapPane = el('div', {class: 'map-stage-wrap', hidden: 'hidden'},
         monitorBar,
         mapStage,
-        el('div', {class: 'stage-meta'}, mapMetrics, el('span', {class: 'hint-line'}, 'Drag box or edge; Shift disables snap')),
+        el('div', {class: 'stage-meta'}, mapMetrics, el('span', {class: 'hint-line'}, 'Drag lyric to move, left/right edges to resize width; Shift disables snap')),
         snapBar,
     );
 
     model.stageSync = () => {
         const isMap = model.stageMode === 'map';
         const isPitch = model.stageMode === 'pitch';
+        const isScore = model.stageMode === 'score';
         const isLyric = model.stageMode === 'lyric';
         lyricModeBtn.setAttribute('aria-pressed', String(isLyric));
+        scoreModeBtn.setAttribute('aria-pressed', String(isScore));
         pitchModeBtn.setAttribute('aria-pressed', String(isPitch));
         mapModeBtn.setAttribute('aria-pressed', String(isMap));
         sceneSeg.hidden = !isLyric;
         lyricPane.hidden = !isLyric;
+        scorePane.hidden = !isScore;
         pitchPane.hidden = !isPitch;
         mapPane.hidden = !isMap;
         requestAnimationFrame(() => render());
@@ -577,6 +610,7 @@ function buildStage() {
     stage.replaceChildren(
         el('div', {class: 'stage-bar'}, modeSeg, sceneSeg),
         lyricPane,
+        scorePane,
         pitchPane,
         mapPane,
         buildSongDeck(),
@@ -955,6 +989,15 @@ function buildLyricsGrid() {
         ...borderCells(),
         cell('Style', {}, el('div', {class: 'seg'}, boldBtn, italicBtn)),
         furiganaCell(),
+        (() => {
+            const choices = [[0, 'Auto'], [1, '1 line'], [2, '2'], [3, '3'], [4, '4']];
+            const buttons = choices.map(([n, text]) => {
+                const b = pressButton(text, () => set('lyric-max-lines', n));
+                view(values => b.setAttribute('aria-pressed', String((values['lyric-max-lines'] ?? 0) === n)));
+                return b;
+            });
+            return cell('Lines', {}, el('div', {class: 'seg'}, ...buttons));
+        })(),
         segmentedCell('text-align', 'Alignment', {left: 'Left', center: 'Center', right: 'Right'}),
         segmentedCell('transition', 'Transition', {'fade-in': 'Fade (0.15 s)', instant: 'Instant'}),
         segmentedCell('text-backdrop', 'Backdrop', {none: 'None', pill: 'Behind text', box: 'Full bar'}),
@@ -962,6 +1005,71 @@ function buildLyricsGrid() {
             ticks: [0, 0.25, 0.5, 0.75, 1], format: percent, stepBy: 0.05,
         }), v => v['text-backdrop'] !== 'none'),
         backdropColorCell(),
+    );
+}
+
+// ----- Sheet music (floating white-paper Piano Lead Sheet + browser editor)
+
+function buildScoreGrid() {
+    const openEditorBtn = pressButton('Open interactive lead sheet (S)', () => model.scoreModal?.open(), {class: 'primary compact'});
+    const previewSheetBtn = pressButton('Preview in stage', () => {
+        model.stageMode = 'score';
+        model.stageSync();
+        document.getElementById('stage')?.scrollIntoView({behavior: 'smooth', block: 'start'});
+    }, {class: 'compact'});
+    const placeOnMapBtn = pressButton('Place on Screen map', () => {
+        model.stageMode = 'map';
+        model.stageSync();
+        document.getElementById('stage')?.scrollIntoView({behavior: 'smooth', block: 'start'});
+    }, {class: 'compact'});
+    const resetBoxBtn = pressButton('Reset position', () => setMany({
+        'score-box': {cx: 0.5, cy: 0.25, width: 0.62, height: 0.36},
+        'score-box-monitor': -1,
+    }), {class: 'compact'});
+
+    const showToggle = (key, label) => {
+        const b = pressButton(label, () => set(key, !model.values?.[key]), {class: 'compact'});
+        view(values => b.setAttribute('aria-pressed', String(Boolean(values[key]))));
+        return b;
+    };
+
+    return el('div', {class: 'grid-2'},
+        switchCell('score-enabled', 'Piano lead sheet window'),
+        switchCell('score-always-on-top', 'Always on top'),
+        sliderCell('score-scale', 'Zoom', {
+            ticks: [0.6, 1.0, 1.75, 2.5, 3.5], format: percent, stepBy: 0.05,
+        }),
+        sliderCell('score-bars-per-system', 'Bars per row', {
+            ticks: [0, 2, 4, 6, 8, 12], format: v => (v <= 0 ? 'Auto' : `${Math.round(v)} bars`), integer: true, stepBy: 1,
+        }),
+        segmentedCell('score-spacing', 'Spacing', {compact: 'Compact', normal: 'Normal', spacious: 'Spacious'}),
+        segmentedCell('score-paging', 'Page turns', {page: 'Flip full page', scroll: 'Scroll 1 row'}),
+        segmentedCell('score-scale-snap', 'Scale snap', {soft: 'Soft', strict: 'Strict', off: 'Off'}),
+        segmentedCell('score-voices', 'Vocal voices', {both: 'Both', top: 'Top', bottom: 'Bottom'}),
+        segmentedCell('score-note-names', 'Note labels', {letters: 'Letters', degrees: 'Degrees', off: 'Off'}),
+        segmentedCell('score-harmony', 'Harmony 3rds', {off: 'Off', above: 'Above', below: 'Below', both: 'Both'}),
+        cell('Show on sheet', {span: true}, el('div', {class: 'controls'},
+            showToggle('score-show-measure-numbers', 'Bar #'),
+            showToggle('score-show-chords', 'Chords'),
+            showToggle('score-show-lyrics', 'Lyrics'),
+            showToggle('score-show-playhead', 'Red playhead'),
+            showToggle('score-show-active-measure', 'Yellow active bar'),
+            showToggle('score-show-snap-moves', 'Snap arrows'),
+        )),
+        cell('Header bar & upper-right info', {span: true}, el('div', {class: 'controls'},
+            showToggle('score-show-header', 'Show header'),
+            showToggle('score-header-title', 'Title'),
+            showToggle('score-header-key', 'Key'),
+            showToggle('score-header-time', 'Time sig'),
+            showToggle('score-header-bpm', 'BPM'),
+            showToggle('score-header-clef', '8vb'),
+            showToggle('score-header-bars', 'Bars'),
+            showToggle('score-header-page', 'Page'),
+        )),
+        sliderCell('score-background-opacity', 'Paper opacity', {
+            ticks: [0.75, 0.85, 0.95, 1], format: percent, stepBy: 0.05,
+        }),
+        cell('Lead sheet tools', {span: true}, openEditorBtn, previewSheetBtn, placeOnMapBtn, resetBoxBtn),
     );
 }
 
@@ -1130,9 +1238,13 @@ function buildPitchGrid() {
 
 function buildSongDeck() {
     const timing = el('span', {class: 'value'});
+    const pipelineIngest = el('span', {class: 'pill'}, '1. Ingest: Idle');
+    const pipelineAnalyze = el('span', {class: 'pill'}, '2. Analyze: Idle');
+    const pipelineDisplay = el('span', {class: 'pill'}, '3. Display: Ready');
     const statusNote = el('div', {class: 'song-status-note', hidden: 'hidden'});
     const microphone = el('span', {class: 'foot-stat-value'});
     const heardKey = el('span', {class: 'foot-stat-value'});
+    const melodyInfo = el('span', {class: 'foot-stat-value'});
     const addonVersion = el('span', {class: 'foot-stat-value'});
     const install = el('a', {class: 'button primary compact', href: ADDON_DOWNLOAD, hidden: 'hidden'});
     const updateService = el('span', {class: 'note', hidden: 'hidden'}, 'Update service: ', el('kbd', {}, 'git pull && scripts/install.sh'));
@@ -1154,6 +1266,14 @@ function buildSongDeck() {
     const generate = pressButton('Generate timed', () => command({op: 'generate'}), {class: 'compact', hidden: 'hidden'});
     const generateFresh = pressButton('Generate from scratch', () => command({op: 'generateFromScratch'}), {class: 'compact', hidden: 'hidden'});
     const cancelGenerate = pressButton('Cancel timing', () => command({op: 'cancelGenerate'}), {class: 'compact', hidden: 'hidden'});
+    const openLeadSheet = pressButton('Lead sheet', () => model.scoreModal?.open(), {class: 'compact', hidden: 'hidden'});
+    const extractScore = pressButton('Extract melody', () => command({op: 'generateScore', force: Boolean(model.state?.score?.status === 'ready'), quality: 'standard'}), {class: 'compact', hidden: 'hidden'});
+    const refineScore = pressButton('Refine (HQ)', () => command({op: 'generateScore', force: true, quality: 'high'}), {class: 'compact', hidden: 'hidden'});
+    const refreshAllBtn = pressButton('Analyze song (fresh audio)', () => command({op: 'analyzeSong'}), {
+        class: 'primary compact',
+        title: 'Stage 1+2: Re-check LRCLIB, re-download fresh audio, and rebuild vocal-isolated lyrics + multi-voice lead sheet',
+    });
+    const cancelScore = pressButton('Cancel melody', () => command({op: 'cancelScore'}), {class: 'compact', hidden: 'hidden'});
     const timingButtons = [
         pressButton('Too fast (\u22120.5 s)', () => command({op: 'tooFast'}), {class: 'compact'}),
         pressButton('Too slow (+0.5 s)', () => command({op: 'tooSlow'}), {class: 'compact'}),
@@ -1210,6 +1330,14 @@ function buildSongDeck() {
                 ? `${detail} \u00b7 Background: ${bgGen.message} (${bgGen.label})`
                 : `Background: ${bgGen.message} (${bgGen.label})`;
         }
+        const sc = state.score;
+        const bgScore = sc?.background ?? null;
+        if (sc?.status === 'running' && sc.message)
+            detail = detail ? `${detail} \u00b7 ${sc.message}` : sc.message;
+        else if (sc?.status === 'error' && sc.message)
+            detail = detail ? `${detail} \u00b7 Melody: ${sc.message}` : `Melody: ${sc.message}`;
+        else if (bgScore?.message)
+            detail = detail ? `${detail} \u00b7 Background: ${bgScore.message} (${bgScore.label})` : `Background: ${bgScore.message} (${bgScore.label})`;
         statusNote.textContent = detail;
         statusNote.hidden = !detail;
 
@@ -1251,6 +1379,70 @@ function buildSongDeck() {
             generate.textContent = 'Generate timed';
         generateFresh.textContent = transcribingNow ? 'Generating from scratch\u2026' : 'Generate from scratch';
 
+        const canScore = Boolean(sc?.available);
+        const scoreRunning = sc?.status === 'running' || Boolean(bgScore);
+        openLeadSheet.hidden = !state.active;
+        openLeadSheet.disabled = !state.active;
+        extractScore.hidden = !canScore;
+        extractScore.disabled = !state.active || sc?.status === 'running';
+        refineScore.hidden = !canScore || sc?.status !== 'ready';
+        refineScore.disabled = !state.active || sc?.status === 'running';
+        refineScore.textContent = sc?.quality === 'high' ? 'Refine (HQ \u2713)' : 'Refine (HQ)';
+        refreshAllBtn.disabled = !state.active || sc?.status === 'running';
+        cancelScore.hidden = !canScore || !scoreRunning;
+        cancelScore.disabled = !scoreRunning;
+        if (sc?.status === 'running')
+            extractScore.textContent = 'Extracting melody\u2026';
+        else if (sc?.status === 'ready')
+            extractScore.textContent = 'Re-extract melody';
+        else if (sc?.status === 'error')
+            extractScore.textContent = 'Retry melody';
+        else
+            extractScore.textContent = 'Extract melody';
+
+        if (!canScore) {
+            melodyInfo.textContent = 'Not installed';
+        } else if (sc?.status === 'ready') {
+            const parts = [];
+            if (sc.key) parts.push(keyName(sc.key));
+            if (sc.meter) parts.push(`${sc.meter[0]}/${sc.meter[1]}`);
+            if (sc.bpm) parts.push(`${Math.round(sc.bpm)} BPM`);
+            if (sc.noteCount) parts.push(`${sc.noteCount} notes`);
+            if (sc.voiceCount >= 2) parts.push(`${sc.voiceCount} voices`);
+            if (sc.chordCount) parts.push(`${sc.chordCount} chords`);
+            if (sc.edited) parts.push('edited');
+            melodyInfo.textContent = parts.join(' \u00b7 ') || 'Ready';
+        } else if (sc?.status === 'running') {
+            melodyInfo.textContent = sc.stage || 'Extracting\u2026';
+        } else if (sc?.status === 'error') {
+            melodyInfo.textContent = 'Error';
+        } else {
+            melodyInfo.textContent = state.active ? 'Not extracted' : 'Idle';
+        }
+
+        // Update unified 1. Ingest -> 2. Analyze -> 3. Display pipeline badges
+        const ing = state.ingest;
+        const ana = state.analysis;
+        const srcName = {
+            'vocal-fused': 'Vocal fused',
+            'vocal-transcribed': 'Vocal isolated',
+            custom: 'Local file',
+            lrclib: 'LRCLIB',
+            aligned: 'Aligned',
+            transcribed: 'Transcribed',
+            none: state.active ? 'No lyrics' : 'Idle',
+        }[ing?.lyricSource ?? 'none'] ?? ing?.lyricSource ?? 'Idle';
+        pipelineIngest.textContent = `1. Ingest: ${srcName}${ing?.candidateCount ? ` (${ing.candidateCount})` : ''}`;
+        pipelineIngest.className = `pill${ing?.timedCount ? ' pill-good' : ''}`;
+        pipelineAnalyze.textContent = `2. Analyze: ${ana?.label || (state.active ? 'Idle' : 'Idle')}`;
+        pipelineAnalyze.className = `pill${ana?.status === 'ready' ? ' pill-good' : (ana?.status === 'running' ? ' pill-warn' : (ana?.status === 'error' ? ' pill-alert' : ''))}`;
+        const activeDisplays = [];
+        if (model.values?.['score-enabled']) activeDisplays.push('Lead Sheet');
+        if (model.values?.['pitch-enabled']) activeDisplays.push('Pitch');
+        activeDisplays.unshift('Lyrics');
+        pipelineDisplay.textContent = `3. Display: ${activeDisplays.join(' + ')}`;
+        pipelineDisplay.className = 'pill pill-good';
+
         microphone.textContent = state.pitch.error ? `Stopped: ${state.pitch.error}`
             : state.pitch.capturing ? state.pitch.microphone || 'On' : 'Off';
         const scale = model.values['pitch-scale'];
@@ -1271,7 +1463,10 @@ function buildSongDeck() {
             const tags = [
                 el('span', {class: candidate.timed ? 'pill pill-good' : 'pill pill-warn'}, timedText),
                 ...(candidate.custom ? [el('span', {class: 'pill'}, 'Local file')] : []),
-                ...(candidate.generated ? [el('span', {class: 'pill'}, candidate.generated === 'aligned' ? 'Aligned' : 'Transcribed')] : []),
+                ...(candidate.generated ? [el('span', {class: 'pill'},
+                    candidate.generated === 'vocal-fused' ? 'Vocal fused'
+                        : candidate.generated === 'vocal-transcribed' ? 'Vocal isolated'
+                            : candidate.generated === 'aligned' ? 'Aligned' : 'Transcribed')] : []),
                 ...(!candidate.matches ? [el('span', {class: 'pill pill-warn'}, 'Weak match')] : []),
                 ...(candidate.rejected ? [el('span', {class: 'pill pill-alert'}, 'Hidden')] : []),
             ];
@@ -1286,17 +1481,23 @@ function buildSongDeck() {
         emptySets.hidden = Boolean(state.candidates.length);
     });
 
+    const pipelineRow = el('div', {class: 'deck-offset-row'},
+        el('span', {class: 'deck-label'}, 'Pipeline'),
+        pipelineIngest,
+        pipelineAnalyze,
+        pipelineDisplay);
+
     const offsetRow = el('div', {class: 'deck-offset-row'},
         el('span', {class: 'deck-label'}, 'Offset'),
         timing,
         ...timingButtons);
 
     const actionsBar = el('div', {class: 'deck-actions'},
-        markMusic, publishBtn, wrong, again, generate, generateFresh, cancelGenerate);
+        refreshAllBtn, openLeadSheet, markMusic, publishBtn, wrong, again, generate, generateFresh, cancelGenerate, extractScore, refineScore, cancelScore);
 
     const setsBlock = el('div', {class: 'deck-sets'},
         el('div', {class: 'deck-sets-head'},
-            el('h3', {class: 'deck-sets-title'}, 'Lyric sets'),
+            el('h3', {class: 'deck-sets-title'}, '1. Ingest \u2014 Lyric sources'),
             el('div', {class: 'section-head-actions'}, setsCount, loadFileBtn, fileInput)),
         manualSearchForm,
         emptySets,
@@ -1305,11 +1506,13 @@ function buildSongDeck() {
     const foot = el('div', {class: 'deck-foot'},
         el('span', {class: 'foot-stat'}, el('span', {class: 'foot-stat-label'}, 'Mic:'), microphone),
         el('span', {class: 'foot-stat'}, el('span', {class: 'foot-stat-label'}, 'Scale:'), heardKey),
+        el('span', {class: 'foot-stat'}, el('span', {class: 'foot-stat-label'}, 'Melody:'), melodyInfo),
         el('span', {class: 'foot-stat'}, el('span', {class: 'foot-stat-label'}, 'Add-on:'), addonVersion),
         install,
         updateService);
 
     return el('div', {class: 'song-deck', id: 'song'},
+        pipelineRow,
         offsetRow,
         actionsBar,
         statusNote,
@@ -1808,6 +2011,7 @@ function buildWorkspace() {
     const workspace = document.getElementById('workspace');
     workspace.replaceChildren(
         pageSection('lyrics', 'Lyrics', buildLyricsGrid()),
+        pageSection('score', 'Sheet music', buildScoreGrid()),
         pageSection('pitch', 'Pitch', buildPitchGrid()),
     );
 }
@@ -1819,6 +2023,7 @@ async function start() {
     buildTopBar();
     buildStage();
     buildLyricsModal();
+    createLeadSheetModal({model, call, command, set, showBanner, view});
     buildWorkspace();
     render();
     pollState();

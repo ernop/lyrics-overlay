@@ -187,3 +187,33 @@ test('buildTranscribedLyrics reports no-vocals for purely instrumental or halluc
     assert.equal(result.ok, false);
     assert.equal(result.reason, 'no-vocals');
 });
+
+test('alignPlainLyrics fuses isolated-vocal timestamps with referenceSyncedLyrics preserving unmatched relative spacing', () => {
+    const referenceLrc = [
+        '[00:10.00] First line loud and clear',
+        '[00:13.00] Buried backing phrase here',
+        '[00:19.00] Final chorus comes back strong',
+    ].join('\n');
+    // Video has a +2.0 s intro offset compared to the studio reference; middle line missed by ASR.
+    const segments = [
+        makeSegment(12.0, ['First', 'line', 'loud', 'and', 'clear']),
+        makeSegment(21.0, ['Final', 'chorus', 'comes', 'back', 'strong']),
+    ];
+    const result = generateLrcFromTranscript({
+        segments,
+        duration: 30,
+        referenceSyncedLyrics: referenceLrc,
+    });
+    assert.equal(result.ok, true);
+    assert.equal(result.mode, 'aligned');
+    const nonEmpty = parseSyncedLyrics(result.lrc).filter(l => l.text);
+    assert.deepEqual(nonEmpty.map(l => l.text), [
+        'First line loud and clear',
+        'Buried backing phrase here',
+        'Final chorus comes back strong',
+    ]);
+    assert.ok(Math.abs(nonEmpty[0].time - 12.0) < 0.25, `first matched line at ~12 s, got ${nonEmpty[0].time}`);
+    assert.ok(Math.abs(nonEmpty[2].time - 21.0) < 0.25, `third matched line at ~21 s, got ${nonEmpty[2].time}`);
+    // Reference had line 2 at 1/3 of the way between 10 s and 19 s -> 12 + (3/9)*9 = 15.0 s!
+    assert.ok(Math.abs(nonEmpty[1].time - 15.0) < 0.4, `unmatched middle line preserves 1/3 reference ratio (~15 s), got ${nonEmpty[1].time}`);
+});

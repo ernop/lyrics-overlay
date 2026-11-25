@@ -16,6 +16,7 @@ import {loadStaticFiles, startHttp} from './http.js';
 import {createLrclibPublisher, createLrclibSearch} from './lrclib.js';
 import {createLyricGenerator, validateGeneratorConfig} from './lyric-generator.js';
 import {PitchCapture} from './pitch-capture.js';
+import {createScoreGenerator, validateScoreGeneratorConfig} from './score-generator.js';
 import {SettingsStore} from './settings-store.js';
 import {SongKey} from './song-key.js';
 import {JsonStore} from './store.js';
@@ -39,6 +40,7 @@ function readSettings(path) {
     if (settings.ytarchiveUrl !== null && typeof settings.ytarchiveUrl !== 'string')
         throw new Error(`${path}: "ytarchiveUrl" must be an address or null`);
     settings.lyricsGenerator = validateGeneratorConfig(settings.lyricsGenerator, path);
+    settings.scoreGenerator = validateScoreGeneratorConfig(settings.scoreGenerator, path);
     return settings;
 }
 
@@ -85,6 +87,13 @@ const generator = createLyricGenerator({
     ytarchiveUrl: settings.ytarchiveUrl,
     log,
 });
+const scoreGenerator = createScoreGenerator({
+    config: settings.scoreGenerator,
+    projectDir,
+    runtimeDir,
+    ytarchiveUrl: settings.ytarchiveUrl,
+    log,
+});
 const furigana = new FuriganaWorker({projectDir, log});
 const core = new LyricsCore({
     store,
@@ -92,6 +101,9 @@ const core = new LyricsCore({
     publish: createLrclibPublisher(settings.lrclibBaseUrl, {projectDir}),
     generate: generator ?? undefined,
     maxGenerateDurationSeconds: settings.lyricsGenerator?.maxDurationSeconds,
+    generateScore: scoreGenerator ?? undefined,
+    maxScoreDurationSeconds: settings.scoreGenerator?.maxDurationSeconds,
+    scoreEnabled: look.get('score-enabled'),
     furigana,
     furiganaEnabled: look.get('text-furigana'),
     clock: {now: () => Date.now()},
@@ -105,6 +117,7 @@ const core = new LyricsCore({
         presence: presence => archive?.observePresence(presence),
         videoUpdated: videoId => archive?.observeVideoLyrics(videoId),
         line: line => bus?.emitLine(line),
+        score: score => bus?.emitScore(score),
     },
     log,
 });
@@ -132,6 +145,8 @@ look.onChanged(name => {
         syncSongKey(core.state());
     else if (name === 'text-furigana')
         core.setFuriganaEnabled(look.get('text-furigana'));
+    else if (name === 'score-enabled')
+        core.setScoreEnabled(look.get('score-enabled'));
 });
 
 const browser = new BrowserCommands({timers, log});

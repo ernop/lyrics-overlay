@@ -10,18 +10,45 @@
 
 import {
     OUTER_EDGE, backdropMetrics, balancedWrapWidth, borderSpec, boxFromGeometry, boxZoneAt,
-    dockedPanelBox, edgeResizedBox, geometryFromBox, movedBox, normalizedSpaceScale, snapBox,
-    snappedDock, verticalAnchorFor,
+    commitLyricGeometry, dockedPanelBox, edgeResizedBox, expandedRenderBox, geometryFromBox,
+    movedBox, normalizedLyricBox, normalizedSpaceScale, snapBox, snappedDock, verticalAnchorFor,
 } from '/shared/overlay-geometry.js';
 import {labeledLines, noteLines} from '/shared/pitch-layout.js';
 import {keyName, noteLabel, pitchClassNames, scalePitchClasses} from '/shared/scales.js';
+import {
+    STAFF_BOTTOM_STEP, STAFF_TOP_STEP, layoutSystemLyrics, planLeadSheetPage, sampleLeadSheetForPreview,
+} from '/shared/score-layout.js';
 import {hexColor, parseHexColor, resolveRingColors, resolveTextColor} from '/shared/text-ink.js';
 
 const EDGE_PIXELS = 4;
 const RUBY_SIZE_RATIO = 0.44;
 const MIN_RUBY_FONT_SIZE = 12;
+const MIN_FIT_FONT_SIZE = 14;
 const DOCKED_HEIGHT_RANGE = [0.03, 0.6];
 const DOCKED_WIDTH_RANGE = [0.05, 0.6];
+
+function naturalScoreMonitorDims(values, area, leadSheet = null) {
+    const saved = values['score-box'];
+    const targetW = saved ? Math.max(360, Math.round(saved.width * area.width)) : Math.max(360, area.width - 16);
+    const targetH = saved ? Math.max(220, Math.round(saved.height * area.height)) : Math.max(220, area.height - 16);
+    const plan = planLeadSheetPage(leadSheet, {
+        width: targetW,
+        height: targetH,
+        scale: Number(values['score-scale']) || 1.0,
+        barsPerSystem: Math.round(Number(values['score-bars-per-system'] ?? 0)),
+        spacing: values['score-spacing'] ?? 'normal',
+        showHeader: values['score-show-header'] !== false,
+        showMeasureNumbers: values['score-show-measure-numbers'] !== false,
+        showChords: values['score-show-chords'] !== false,
+        showLyrics: values['score-show-lyrics'] !== false,
+        noteNames: values['score-note-names'] ?? 'letters',
+        showSnapMoves: Boolean(values['score-show-snap-moves']),
+    });
+    return {
+        ...plan,
+        cols: plan.barsPerSystem,
+    };
+}
 
 function clamp(value, low, high) {
     return Math.min(high, Math.max(low, value));
@@ -129,21 +156,52 @@ function normalizeRubySegments(text, ruby) {
 }
 
 /**
- * Computes exact monitor-pixel layout at the constant `font-size` without
- * ever shrinking text: long lines wrap cleanly and expand surface height.
+ * Computes monitor-pixel lyric layout inside the user's wrap width (`box.width`)
+ * at constant `font-size` (default `lyric-max-lines = 0`), wrapping evenly into
+ * balanced lines and sizing height tightly to painted content.
  */
 export function computeLyricLayout(ctx, text, values, monitor, ruby = null) {
     const boxW = Math.max(160, Math.round(values.box.width * monitor.width));
-    const boxH = Math.max(48, Math.round(values.box.height * monitor.height));
-    const fontSize = values['font-size'];
-    const ring = borderSpec(values['text-border'], fontSize, borderOpts(values));
-    const pad = edgePad(values, fontSize);
-    const maxWidth = Math.max(1, boxW - 2 * pad.x);
-    const lineStep = fontSize * 1.24;
+    const maxLines = clamp(Math.round(Number(values['lyric-max-lines'] ?? 0)), 0, 4);
+    const requestedSize = values['font-size'];
+    const shrinkFloor = Math.min(requestedSize, Math.max(18, Math.round(requestedSize * 0.56)));
 
+    const probe = size => {
+        const ring = borderSpec(values['text-border'], size, borderOpts(values));
+        const pad = edgePad(values, size);
+        const maxWidth = Math.max(1, boxW - 2 * pad.x);
+        ctx.font = fontCss(values, size);
+        ctx.textBaseline = 'middle';
+        const spaceScale = applyNormalizedWordSpacing(ctx, size, ring.targetSpaceEm);
+        const lines = wrapLines(ctx, text, maxWidth);
+        return {size, ring, pad, maxWidth, spaceScale, lines};
+    };
+
+    let attempt = probe(requestedSize);
+    if (maxLines > 0 && attempt.lines.length > maxLines && requestedSize > shrinkFloor) {
+        let lo = shrinkFloor;
+        let hi = requestedSize;
+        let best = probe(lo);
+        if (best.lines.length <= maxLines) {
+            for (let i = 0; i < 10; i++) {
+                const mid = (lo + hi) / 2;
+                const p = probe(mid);
+                if (p.lines.length <= maxLines) {
+                    best = p;
+                    lo = mid;
+                } else {
+                    hi = mid;
+                }
+            }
+        }
+        attempt = best;
+    }
+
+    const {size: fontSize, ring, pad, maxWidth, spaceScale} = attempt;
+    const lineStep = fontSize * 1.24;
     ctx.font = fontCss(values, fontSize);
     ctx.textBaseline = 'middle';
-    const spaceScale = applyNormalizedWordSpacing(ctx, fontSize, ring.targetSpaceEm);
+    applyNormalizedWordSpacing(ctx, fontSize, ring.targetSpaceEm);
     const xBox = ctx.measureText('x');
     const xMetrics = {
         ascent: xBox.actualBoundingBoxAscent,
@@ -155,47 +213,50 @@ export function computeLyricLayout(ctx, text, values, monitor, ruby = null) {
     const lineWidths = lines.map(line => ctx.measureText(line).width);
     const blockW = Math.max(...lineWidths, 1);
 
+    // Locate each wrapped line's character span in `text` (shared by furigana).
+    const lineRanges = [];
+    let scanCursor = 0;
+    for (const line of lines) {
+        const idx = text.indexOf(line, scanCursor);
+        const start = idx >= 0 ? idx : scanCursor;
+        lineRanges.push({start, end: start + line.length, spans: []});
+        scanCursor = start + line.length;
+    }
+
     const rubySpans = values['text-furigana'] ? normalizeRubySegments(text, ruby) : null;
+
     let rubyInfo = null;
-    let lineYs = lines.map((_, idx) => (idx + 0.5) * lineStep);
-    let blockH = lines.length * lineStep;
-
+    let rubyFontSize = 0;
+    let rubyRing = null;
+    let rubyGap = 0;
+    let rubyRise = 0;
     if (rubySpans) {
-        const rubyFontSize = Math.max(MIN_RUBY_FONT_SIZE, Math.round(fontSize * RUBY_SIZE_RATIO));
-        const rubyRing = borderSpec(values['text-border'], rubyFontSize, borderOpts(values));
+        rubyFontSize = Math.max(MIN_RUBY_FONT_SIZE, Math.round(fontSize * RUBY_SIZE_RATIO));
+        rubyRing = borderSpec(values['text-border'], rubyFontSize, borderOpts(values));
         const baseInner = ring.rings[0]?.width ?? 0;
-        const rubyGap = Math.max(Math.round(fontSize * 0.11), Math.round(baseInner));
-        const rubyRise = rubyFontSize + rubyGap;
-
-        // Locate each wrapped line's character span in `text`.
-        const lineRanges = [];
-        let cursor = 0;
-        for (const line of lines) {
-            const idx = text.indexOf(line, cursor);
-            const start = idx >= 0 ? idx : cursor;
-            lineRanges.push({start, end: start + line.length, spans: []});
-            cursor = start + line.length;
-        }
+        rubyGap = Math.max(Math.round(fontSize * 0.11), Math.round(baseInner));
+        rubyRise = rubyFontSize + rubyGap;
         for (const span of rubySpans) {
             const entry = lineRanges.find(r => span.start >= r.start && span.start < r.end);
             if (entry)
                 entry.spans.push(span);
         }
+    }
 
-        // Compute per-line vertical positions with extra headroom above any
-        // wrapped line that carries furigana.
-        lineYs = [];
-        let yCursor = 0;
-        for (let i = 0; i < lines.length; i++) {
-            const hasRuby = lineRanges[i].spans.length > 0;
-            const headroom = hasRuby ? rubyRise + (i > 0 ? Math.max(Math.round(fontSize * 0.16), Math.round(rubyRing.totalReach)) : 0) : 0;
-            yCursor += headroom;
-            lineYs.push(yCursor + 0.5 * lineStep);
-            yCursor += lineStep;
-        }
-        blockH = yCursor;
+    const lineYs = [];
+    let yCursor = 0;
+    for (let i = 0; i < lines.length; i++) {
+        const hasRuby = rubySpans && lineRanges[i].spans.length > 0;
+        const headroom = hasRuby
+            ? rubyRise + (i > 0 ? Math.max(Math.round(fontSize * 0.16), Math.round(rubyRing.totalReach)) : 0)
+            : 0;
+        yCursor += headroom;
+        lineYs.push(yCursor + 0.5 * lineStep);
+        yCursor += lineStep;
+    }
+    const blockH = yCursor;
 
-        // Measure relative horizontal center of every ruby span within its line.
+    if (rubySpans) {
         const perLineRuns = [];
         ctx.font = fontCss(values, fontSize);
         applyNormalizedWordSpacing(ctx, fontSize, ring.targetSpaceEm);
@@ -226,13 +287,17 @@ export function computeLyricLayout(ctx, text, values, monitor, ruby = null) {
     }
 
     const requiredH = Math.ceil(blockH + 2 * pad.y);
-    const renderH = Math.min(monitor.height, Math.max(boxH, requiredH));
+    const renderH = Math.min(monitor.height, Math.max(24, requiredH));
+    const reqPad = edgePad(values, requestedSize);
+    const singleLineH = Math.min(monitor.height, Math.max(24, Math.ceil(requestedSize * 1.24 + 2 * reqPad.y)));
 
     return {
         boxW,
-        boxH,
+        boxH: renderH,
         renderH,
+        singleLineH,
         fontSize,
+        requestedSize,
         ring,
         spaceScale,
         xMetrics,
@@ -321,7 +386,8 @@ export class LyricPreviewCanvas {
 
         paintSceneBackground(ctx, w, h, scene);
 
-        const layout = computeLyricLayout(ctx, sampleText || 'Amazing grace, how sweet the sound', values, monitor, ruby);
+        const displayText = sampleText || 'Amazing grace, how sweet the sound';
+        const layout = computeLyricLayout(ctx, displayText, values, monitor, ruby);
         this._onTelemetry?.(layout);
 
         // Fit the monitor-pixel surface proportionally inside the preview canvas.
@@ -634,7 +700,12 @@ export class ScreenPlacementMap {
 
     _boxes() {
         const area = this._area();
-        const lyric = boxFromGeometry(this._values.box, area);
+        const ctx = this._canvas.getContext('2d');
+        const layout = computeLyricLayout(ctx, this._sampleText, this._values, this._monitor, null);
+        const anchor = verticalAnchorFor(this._values.box.cy, this._values['pitch-dock'], this._values['pitch-enabled']);
+        const baseLyric = normalizedLyricBox(this._values.box, area, layout.singleLineH, anchor);
+        const lyric = expandedRenderBox(baseLyric, layout.renderH, anchor, area);
+
         let pitch = null;
         if (this._values['pitch-enabled']) {
             const dock = this._values['pitch-dock'];
@@ -647,7 +718,11 @@ export class ScreenPlacementMap {
                 pitch = dockedPanelBox(lyric, dock, thickness, area);
             }
         }
-        return {area, lyric, pitch};
+        let score = null;
+        if (this._values['score-enabled'] && this._values['score-box']) {
+            score = boxFromGeometry(this._values['score-box'], area);
+        }
+        return {area, lyric, baseHeight: layout.singleLineH, pitch, score};
     }
 
     _stagePoint(event) {
@@ -660,10 +735,25 @@ export class ScreenPlacementMap {
     }
 
     _hitTest(point) {
-        const {lyric, pitch} = this._boxes();
+        const {lyric, pitch, score} = this._boxes();
         const edgeMon = Math.max(18, 11 / point.pxPerMon);
-        if (inside(point, lyric))
-            return {target: 'lyric', zone: boxZoneAt(point, lyric, edgeMon)};
+        const handlePad = Math.max(8, 6 / point.pxPerMon);
+        const lyricHit = {
+            x: lyric.x - handlePad,
+            y: lyric.y - 4 / point.pxPerMon,
+            width: lyric.width + handlePad * 2,
+            height: lyric.height + 8 / point.pxPerMon,
+        };
+        if (inside(point, lyricHit)) {
+            if (Math.abs(point.x - lyric.x) <= edgeMon)
+                return {target: 'lyric', zone: {edges: {left: true}}};
+            if (Math.abs(point.x - (lyric.x + lyric.width)) <= edgeMon)
+                return {target: 'lyric', zone: {edges: {right: true}}};
+            if (inside(point, lyric))
+                return {target: 'lyric', zone: 'move'};
+        }
+        if (score && inside(point, score))
+            return {target: 'score', zone: boxZoneAt(point, score, edgeMon)};
         if (pitch && inside(point, pitch)) {
             const dock = this._values['pitch-dock'];
             if (dock === 'separate')
@@ -686,17 +776,22 @@ export class ScreenPlacementMap {
             return;
         event.preventDefault();
         this._canvas.setPointerCapture(event.pointerId);
-        const {lyric, pitch} = this._boxes();
-        const start = hit.target === 'lyric' ? lyric : pitch;
+        const {lyric, baseHeight, pitch, score} = this._boxes();
+        const start = hit.target === 'lyric' ? lyric : (hit.target === 'score' ? score : pitch);
         const heldKeys = hit.target === 'lyric'
             ? ['box']
-            : ['pitch-dock', 'pitch-box', 'pitch-docked-height', 'pitch-docked-width'];
+            : (hit.target === 'score'
+                ? ['score-box', 'score-scale', 'score-bars-per-system']
+                : ['pitch-dock', 'pitch-box', 'pitch-docked-height', 'pitch-docked-width']);
         this._onHold(heldKeys, true);
         this._drag = {
             ...hit,
             pointerId: event.pointerId,
             press: point,
             start,
+            baseHeight,
+            startScoreScale: Number(this._values['score-scale']) || 1.0,
+            startScoreBars: Number(this._values['score-bars-per-system']) || 0,
             dock: this._values['pitch-dock'],
             heldKeys,
         };
@@ -725,9 +820,45 @@ export class ScreenPlacementMap {
         const snapMon = 10 / point.pxPerMon;
 
         if (drag.target === 'lyric') {
+            if (drag.zone !== 'move') {
+                this._guides = {x: [], y: []};
+                const resized = edgeResizedBox(drag.start, drag.zone.edges, dx, 0, area);
+                const nextGeom = commitLyricGeometry(
+                    resized, area, drag.baseHeight,
+                    this._values['pitch-dock'], this._values['pitch-enabled'],
+                );
+                this._onChange({box: nextGeom});
+                this._paint();
+                return;
+            }
+            const raw = {
+                x: clamp(drag.start.x + dx, area.x, area.x + area.width - drag.start.width),
+                y: clamp(drag.start.y + dy, area.y, area.y + area.height - drag.start.height),
+                width: drag.start.width,
+                height: drag.start.height,
+            };
             let nextBox;
+            if (event.shiftKey) {
+                this._guides = {x: [], y: []};
+                nextBox = raw;
+            } else {
+                const snapped = snapBox(raw, area, snapMon);
+                this._guides = snapped.guides;
+                nextBox = snapped.box;
+            }
+            const nextGeom = commitLyricGeometry(
+                nextBox, area, drag.baseHeight,
+                this._values['pitch-dock'], this._values['pitch-enabled'],
+            );
+            this._onChange({box: nextGeom});
+            this._paint();
+            return;
+        }
+
+        if (drag.target === 'score') {
             if (drag.zone === 'move') {
                 const raw = movedBox(drag.start, dx, dy, area);
+                let nextBox;
                 if (event.shiftKey) {
                     this._guides = {x: [], y: []};
                     nextBox = raw;
@@ -736,11 +867,12 @@ export class ScreenPlacementMap {
                     this._guides = snapped.guides;
                     nextBox = snapped.box;
                 }
+                this._onChange({'score-box': geometryFromBox(nextBox, area)});
             } else {
                 this._guides = {x: [], y: []};
-                nextBox = edgeResizedBox(drag.start, drag.zone.edges, dx, dy, area);
+                const resized = edgeResizedBox(drag.start, drag.zone.edges, dx, dy, area);
+                this._onChange({'score-box': geometryFromBox(resized, area)});
             }
-            this._onChange({box: geometryFromBox(nextBox, area)});
             this._paint();
             return;
         }
@@ -851,9 +983,47 @@ export class ScreenPlacementMap {
             ctx.stroke();
         }
 
-        const {lyric, pitch} = this._boxes();
+        const {area, lyric, pitch, score} = this._boxes();
         const activeTarget = this._drag?.target ?? this._hover?.target ?? null;
         const activeZone = zoneKey(this._drag?.zone ?? this._hover?.zone ?? null);
+
+        if (score) {
+            const sx0 = score.x * sx, sy0 = score.y * sy, sw = score.width * sx, sh = score.height * sy;
+            roundedRectPath(ctx, sx0, sy0, sw, sh, 4);
+            ctx.fillStyle = `rgba(255, 255, 255, ${Math.max(0.85, this._values['score-background-opacity'] ?? 0.96)})`;
+            ctx.fill();
+            ctx.strokeStyle = activeTarget === 'score' ? '#facc15' : '#000000';
+            ctx.lineWidth = activeTarget === 'score' ? 2.5 : 1.5;
+            ctx.stroke();
+
+            ctx.save();
+            ctx.beginPath();
+            ctx.rect(sx0 + 3, sy0 + 3, Math.max(1, sw - 6), Math.max(1, sh - 6));
+            ctx.clip();
+            ctx.fillStyle = '#000000';
+            ctx.font = `800 ${clamp(sh * 0.14, 7, 11)}px system-ui, sans-serif`;
+            ctx.textAlign = 'left';
+            ctx.textBaseline = 'top';
+            ctx.fillText('Lead Sheet', sx0 + 5, sy0 + 4);
+            // Draw miniature 5-line black staves matching auto-fitted rows.
+            const rows = clamp(naturalScoreMonitorDims(this._values, area).rows, 1, 8);
+            ctx.strokeStyle = '#000000';
+            ctx.lineWidth = 0.7;
+            const headOff = this._values['score-show-header'] === false ? 5 : 16;
+            const availH = Math.max(10, sh - headOff - 4);
+            for (let r = 0; r < rows; r++) {
+                const top = sy0 + headOff + r * (availH / rows) + 2;
+                const gap = Math.min(2.4, (availH / rows) * 0.14);
+                for (let li = 0; li < 5; li++) {
+                    ctx.beginPath();
+                    ctx.moveTo(sx0 + 6, top + li * gap);
+                    ctx.lineTo(sx0 + sw - 6, top + li * gap);
+                    ctx.stroke();
+                }
+            }
+            ctx.restore();
+            this._drawHandles(ctx, sx0, sy0, sw, sh, activeTarget === 'score' ? activeZone : '', '#fde047');
+        }
 
         if (pitch) {
             const px = pitch.x * sx, py = pitch.y * sy, pw = pitch.width * sx, ph = pitch.height * sy;
@@ -917,7 +1087,16 @@ export class ScreenPlacementMap {
         ctx.fillText(this._sampleText, tx, ty);
         ctx.restore();
 
-        this._drawHandles(ctx, lx, ly, lw, lh, activeTarget === 'lyric' ? activeZone : '', '#ffffff');
+        // Left and right wrap-width resize handles on the lyric box.
+        for (const [side, hx] of [['left', lx], ['right', lx + lw]]) {
+            const hot = activeTarget === 'lyric' && activeZone === side;
+            const s = 7;
+            ctx.fillStyle = hot ? '#facc15' : '#60a5fa';
+            ctx.strokeStyle = '#000000';
+            ctx.lineWidth = 1.25;
+            ctx.fillRect(hx - s / 2, ly + lh / 2 - s / 2, s, s);
+            ctx.strokeRect(hx - s / 2, ly + lh / 2 - s / 2, s, s);
+        }
         ctx.restore();
     }
 
@@ -1164,6 +1343,374 @@ export class PitchPreviewCanvas {
                 ctx.fillText('+4', rx, ry + noteSize * 1.15);
             }
         }
+        ctx.restore();
+    }
+}
+
+// ----- 4. Live White-Paper Piano Lead Sheet Preview Canvas
+
+export class LeadSheetPreviewCanvas {
+    constructor(canvas, onTelemetry = null) {
+        this._canvas = canvas;
+        this._onTelemetry = onTelemetry;
+        this._last = null;
+        this._observer = new ResizeObserver(() => {
+            if (this._last)
+                this.render(...this._last);
+        });
+        this._observer.observe(canvas);
+    }
+
+    render(values, monitor) {
+        this._last = [values, monitor];
+        const canvas = this._canvas;
+        const rect = canvas.getBoundingClientRect();
+        if (rect.width < 10 || rect.height < 10)
+            return;
+        const dpr = window.devicePixelRatio || 1;
+        const cw = Math.round(rect.width * dpr);
+        const ch = Math.round(rect.height * dpr);
+        if (canvas.width !== cw || canvas.height !== ch) {
+            canvas.width = cw;
+            canvas.height = ch;
+        }
+        const ctx = canvas.getContext('2d');
+        ctx.save();
+        ctx.scale(dpr, dpr);
+        const w = rect.width;
+        const h = rect.height;
+
+        // Subtle dark desk backdrop behind the white sheet paper.
+        ctx.fillStyle = '#0c1324';
+        ctx.fillRect(0, 0, w, h);
+
+        const area = {x: 0, y: 0, width: monitor.width, height: monitor.height};
+        const dims = naturalScoreMonitorDims(values, area);
+        this._onTelemetry?.(dims);
+
+        const barsPerSystem = dims.cols;
+        const sheet = sampleLeadSheetForPreview({
+            scaleSnap: values['score-scale-snap'] ?? 'soft',
+            harmony: values['score-harmony'] ?? 'off',
+            barsPerSystem,
+        });
+
+        const margin = 10;
+        const fitScale = Math.min((w - margin * 2) / dims.width, (h - margin * 2) / dims.height);
+        const drawW = dims.width * fitScale;
+        const drawH = dims.height * fitScale;
+        const ox = (w - drawW) / 2;
+        const oy = (h - drawH) / 2;
+
+        ctx.save();
+        ctx.translate(ox, oy);
+        ctx.scale(fitScale, fitScale);
+
+        const effScale = dims.effectiveScale;
+        const headerScale = dims.headerScale;
+        const sp = dims.sp;
+        const padX = dims.padX;
+        const padY = dims.padY;
+        const showHeader = values['score-show-header'] !== false;
+        const showBarNums = values['score-show-measure-numbers'] !== false;
+        const showChords = values['score-show-chords'] !== false;
+        const showLyrics = values['score-show-lyrics'] !== false;
+        const showPlayhead = Boolean(values['score-show-playhead']);
+        const showActive = Boolean(values['score-show-active-measure']);
+        const showSnapMoves = Boolean(values['score-show-snap-moves']);
+        const noteNames = values['score-note-names'] ?? 'letters';
+        const opacity = clamp(Number(values['score-background-opacity'] ?? 0.96), 0.75, 1.0);
+
+        // White sheet paper + crisp black frame
+        roundedRectPath(ctx, 1, 1, dims.width - 2, dims.height - 2, Math.round(10 * headerScale));
+        ctx.fillStyle = `rgba(255, 255, 255, ${opacity})`;
+        ctx.fill();
+        ctx.strokeStyle = '#000000';
+        ctx.lineWidth = Math.max(2, 2 * headerScale);
+        ctx.stroke();
+
+        let bodyTop = dims.bodyTop;
+        if (showHeader) {
+            ctx.fillStyle = '#000000';
+            if (values['score-header-title'] !== false) {
+                ctx.font = `800 ${Math.round(14.5 * headerScale)}px system-ui, sans-serif`;
+                ctx.textAlign = 'left';
+                ctx.textBaseline = 'top';
+                ctx.fillText('Amazing Grace (Sample)', padX, padY + 2);
+            }
+            const metaParts = [];
+            if (values['score-header-key'] !== false)
+                metaParts.push(sheet.keyLabel);
+            if (values['score-header-time'] === true)
+                metaParts.push(`${sheet.meter[0]}/${sheet.meter[1]}`);
+            if (values['score-header-bpm'] !== false)
+                metaParts.push(`${sheet.bpm} BPM`);
+            if (values['score-header-clef'] === true && sheet.clef === 'treble-8vb')
+                metaParts.push('8vb');
+            if (values['score-header-bars'] !== false)
+                metaParts.push(`Bars 1\u2013${Math.min(sheet.totalBars, dims.cols * dims.rows)}/${sheet.totalBars}`);
+            if (values['score-header-page'] !== false)
+                metaParts.push((values['score-paging'] ?? 'page') === 'page' ? 'Page 1/1' : 'Scroll');
+            if (metaParts.length > 0) {
+                ctx.font = `700 ${Math.round(12.5 * headerScale)}px system-ui, sans-serif`;
+                ctx.textAlign = 'right';
+                ctx.textBaseline = 'top';
+                ctx.fillText(metaParts.join(' \u00b7 '), dims.width - padX - 28 * headerScale, padY + 3);
+            }
+            // Mini gear icon preview
+            const gs = Math.round(22 * headerScale);
+            const gx = dims.width - padX - gs;
+            const gy = padY + 1;
+            roundedRectPath(ctx, gx, gy, gs, gs, 4);
+            ctx.strokeStyle = '#000000';
+            ctx.lineWidth = 1.4;
+            ctx.stroke();
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText('\u2699', gx + gs / 2, gy + gs / 2 + 1);
+
+            ctx.beginPath();
+            ctx.moveTo(padX, padY + dims.headerH);
+            ctx.lineTo(dims.width - padX, padY + dims.headerH);
+            ctx.lineWidth = 1.5;
+            ctx.stroke();
+            bodyTop = dims.bodyTop;
+        }
+
+        const visRows = dims.rows;
+        const sysH = dims.systemH;
+        const sysGap = dims.systemGap;
+        const topOffset = bodyTop + dims.topMargin;
+        const staffH = sp * 4;
+        for (let slot = 0; slot < visRows; slot++) {
+            const sys = sheet.systems[slot];
+            if (!sys)
+                break;
+            const sy = topOffset + slot * (sysH + sysGap);
+            const staffTopY = Math.round(sy + (showChords ? sp * 3.8 : sp * 2.0));
+            const staffBottomY = staffTopY + staffH;
+            const yForStep = step => staffBottomY - (step - STAFF_BOTTOM_STEP) * (sp * 0.5);
+            const innerPad = Math.round(clamp(4 * effScale, 3, 10));
+            const staffLeft = padX + innerPad;
+            const staffRight = dims.width - padX - innerPad;
+            const measuresLeft = staffLeft + sp * (slot === 0 ? 6.4 : 4.6);
+            const mCount = sys.measures.length;
+            const fullW = Math.max(60, staffRight - measuresLeft);
+            const effW = mCount < barsPerSystem ? fullW * (mCount / barsPerSystem) : fullW;
+            const weights = sys.measures.map(m => Math.max(0.85, m.visualWeight || 1.4));
+            const sumW = weights.reduce((a, b) => a + b, 0) || mCount;
+
+            // Optional active measure highlight on bar 2 of row 1
+            let mxCur = measuresLeft;
+            const mRects = weights.map(wt => {
+                const mw = effW * (wt / sumW);
+                const r = {x0: mxCur, w: mw};
+                mxCur += mw;
+                return r;
+            });
+            const usedRight = Math.min(staffRight, mxCur);
+
+            if (showActive && slot === 0 && mRects[1]) {
+                ctx.fillStyle = 'rgba(254, 240, 138, 0.55)';
+                ctx.fillRect(mRects[1].x0, staffTopY - sp * 1.2, mRects[1].w, staffH + sp * 2.4);
+            }
+
+            // 5 black staff lines
+            ctx.strokeStyle = '#000000';
+            ctx.lineWidth = Math.max(1, sp * 0.11);
+            for (let li = 0; li < 5; li++) {
+                const ly = Math.round(staffTopY + li * sp) + 0.5;
+                ctx.beginPath();
+                ctx.moveTo(staffLeft, ly);
+                ctx.lineTo(usedRight, ly);
+                ctx.stroke();
+            }
+            ctx.fillStyle = '#000000';
+            ctx.font = `700 ${Math.round(sp * 3.8)}px serif`;
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText('\u{1D11E}', staffLeft + sp * 1.4, staffTopY + sp * 2.0);
+
+            for (let mi = 0; mi < mCount; mi++) {
+                const m = sys.measures[mi];
+                const {x0: mx0, w: mw} = mRects[mi];
+                const mx1 = mx0 + mw;
+                const innerL = mx0 + sp * 0.9;
+                const innerW = Math.max(12, mw - sp * 1.7);
+
+                ctx.strokeStyle = '#000000';
+                ctx.lineWidth = 1.2;
+                ctx.beginPath();
+                ctx.moveTo(mx1, staffTopY);
+                ctx.lineTo(mx1, staffBottomY);
+                ctx.stroke();
+
+                if (showBarNums) {
+                    ctx.fillStyle = '#000000';
+                    ctx.font = `600 ${Math.max(8, Math.round(sp * 0.95))}px system-ui, sans-serif`;
+                    ctx.textAlign = 'left';
+                    ctx.textBaseline = 'bottom';
+                    ctx.fillText(String(m.barNumber), mx0 + 3, staffTopY - sp * 0.5);
+                }
+                if (showChords) {
+                    ctx.fillStyle = '#000000';
+                    ctx.font = `800 ${Math.max(10, Math.round(sp * 1.45))}px system-ui, sans-serif`;
+                    ctx.textAlign = 'left';
+                    ctx.textBaseline = 'bottom';
+                    for (const ch of m.chords) {
+                        const cx = innerL + (ch.beatInBar / Math.max(1, m.barBeats)) * innerW;
+                        ctx.fillText(ch.symbol, cx, staffTopY - sp * 1.75);
+                    }
+                }
+
+                let maxNoteY = staffBottomY + sp * 1.1;
+                const notes = m.items.filter(it => it.kind === 'note');
+                for (const it of notes)
+                    maxNoteY = Math.max(maxNoteY, yForStep(it.writtenStep) + sp * 0.9);
+                const lblY = Math.max(staffBottomY + sp * 1.5, maxNoteY + sp * 0.5);
+                const lyrY = noteNames === 'off' ? lblY : lblY + sp * 1.5;
+
+                const sysLyricEvents = [];
+                for (let ni = 0; ni < notes.length; ni++) {
+                    const it = notes[ni];
+                    const nx = innerL + (it.beatInBar / Math.max(1, m.barBeats)) * innerW;
+                    const ny = yForStep(it.writtenStep);
+
+                    if (showActive && slot === 0 && mi === 1 && ni === 0) {
+                        ctx.fillStyle = '#fde047';
+                        ctx.beginPath();
+                        ctx.arc(nx, ny, sp * 1.0, 0, Math.PI * 2);
+                        ctx.fill();
+                    }
+
+                    // Scale-snap ghost marker + arrow
+                    if (showSnapMoves && it.snapDelta && it.rawWrittenStep != null) {
+                        const rawY = yForStep(it.rawWrittenStep);
+                        ctx.strokeStyle = '#c2410c';
+                        ctx.lineWidth = 1.4;
+                        ctx.beginPath();
+                        ctx.arc(nx, rawY, sp * 0.34, 0, Math.PI * 2);
+                        ctx.stroke();
+                        ctx.beginPath();
+                        ctx.moveTo(nx, rawY);
+                        ctx.lineTo(nx, ny);
+                        ctx.stroke();
+                    }
+
+                    // Harmony diamonds
+                    for (const hm of (it.harmonies ?? [])) {
+                        const hy = yForStep(hm.writtenStep);
+                        ctx.strokeStyle = hm.direction === 'above' ? '#1d4ed8' : '#15803d';
+                        ctx.lineWidth = 1.3;
+                        ctx.beginPath();
+                        ctx.moveTo(nx, hy - sp * 0.28);
+                        ctx.lineTo(nx + sp * 0.38, hy);
+                        ctx.lineTo(nx, hy + sp * 0.28);
+                        ctx.lineTo(nx - sp * 0.38, hy);
+                        ctx.closePath();
+                        ctx.stroke();
+                    }
+
+                    // Ledger line(s)
+                    ctx.strokeStyle = '#000000';
+                    ctx.lineWidth = 1.1;
+                    for (let st = STAFF_BOTTOM_STEP - 2; st >= it.writtenStep; st -= 2) {
+                        const ly = yForStep(st);
+                        ctx.beginPath();
+                        ctx.moveTo(nx - sp * 0.9, ly);
+                        ctx.lineTo(nx + sp * 0.9, ly);
+                        ctx.stroke();
+                    }
+                    for (let st = STAFF_TOP_STEP + 2; st <= it.writtenStep; st += 2) {
+                        const ly = yForStep(st);
+                        ctx.beginPath();
+                        ctx.moveTo(nx - sp * 0.9, ly);
+                        ctx.lineTo(nx + sp * 0.9, ly);
+                        ctx.stroke();
+                    }
+
+                    // Notehead
+                    ctx.save();
+                    ctx.translate(nx, ny);
+                    ctx.rotate(-0.32);
+                    ctx.beginPath();
+                    ctx.ellipse(0, 0, sp * 0.6, sp * 0.44, 0, 0, Math.PI * 2);
+                    if (it.hollow) {
+                        ctx.fillStyle = '#ffffff';
+                        ctx.fill();
+                        ctx.strokeStyle = '#000000';
+                        ctx.lineWidth = 1.8;
+                        ctx.stroke();
+                    } else {
+                        ctx.fillStyle = '#000000';
+                        ctx.fill();
+                    }
+                    ctx.restore();
+
+                    if (it.stem) {
+                        const sx = nx + (it.stemDir > 0 ? sp * 0.54 : -sp * 0.54);
+                        ctx.strokeStyle = '#000000';
+                        ctx.lineWidth = 1.25;
+                        ctx.beginPath();
+                        ctx.moveTo(sx, ny);
+                        ctx.lineTo(sx, ny - it.stemDir * sp * 3.0);
+                        ctx.stroke();
+                    }
+
+                    if (showSnapMoves && it.snapDelta && it.rawNoteName) {
+                        ctx.fillStyle = '#c2410c';
+                        ctx.font = `800 ${Math.max(8, Math.round(sp * 0.95))}px system-ui, sans-serif`;
+                        ctx.textAlign = 'center';
+                        ctx.textBaseline = 'top';
+                        ctx.fillText(`${it.rawNoteName}\u2192${it.noteName}`, nx, lblY);
+                    } else if (noteNames !== 'off') {
+                        ctx.fillStyle = '#000000';
+                        ctx.font = `700 ${Math.max(8, Math.round(sp * 0.95))}px system-ui, sans-serif`;
+                        ctx.textAlign = 'center';
+                        ctx.textBaseline = 'top';
+                        ctx.fillText(noteNames === 'degrees' ? it.degree : it.noteName, nx, lblY);
+                    }
+                    if (showLyrics && it.lyric)
+                        sysLyricEvents.push({x: nx, text: it.lyric, lyricY: lyrY});
+                }
+
+                if (showLyrics && sysLyricEvents.length > 0) {
+                    const baseLyricPx = Math.max(9, Math.round(sp * 1.15));
+                    const lyricLayout = layoutSystemLyrics(sysLyricEvents, {
+                        leftBound: innerL - sp * 0.3,
+                        rightBound: mx1 + sp * 0.3,
+                        baseFontPx: baseLyricPx,
+                        minScale: 0.78,
+                        maxTiers: 2,
+                        measureWidth: (text, fontPx) => {
+                            ctx.font = `600 ${fontPx}px system-ui, sans-serif`;
+                            return ctx.measureText(text).width;
+                        },
+                    });
+                    const tierStep = Math.max(10, Math.round(baseLyricPx * 1.15));
+                    for (const lp of lyricLayout.placements) {
+                        const ty = lp.lyricY + lp.tier * tierStep;
+                        ctx.fillStyle = '#000000';
+                        ctx.font = `600 ${lp.fontPx}px system-ui, sans-serif`;
+                        ctx.textAlign = 'center';
+                        ctx.textBaseline = 'top';
+                        ctx.fillText(lp.text, lp.drawX, ty);
+                    }
+                }
+
+                if (showPlayhead && slot === 0 && mi === 1) {
+                    const px = innerL + innerW * 0.35;
+                    ctx.strokeStyle = '#b91c1c';
+                    ctx.lineWidth = 2;
+                    ctx.beginPath();
+                    ctx.moveTo(px, staffTopY - sp * 1.0);
+                    ctx.lineTo(px, staffBottomY + sp * 1.0);
+                    ctx.stroke();
+                }
+            }
+        }
+
+        ctx.restore();
         ctx.restore();
     }
 }

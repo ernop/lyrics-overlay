@@ -89,7 +89,7 @@ local `.lrc` or `.txt` file, or edit and publish to LRCLIB:
 | Action | Result |
 |---|---|
 | Click lyric | Jumps to the song's Firefox tab and raises its window |
-| `Ctrl+drag` lyric | Moves it with center/edge snap (`Shift` bypasses snap, `Esc` cancels) |
+| `Ctrl+drag` lyric | Moves it with center/edge snap (`Shift` bypasses snap, `Esc` cancels); `Ctrl+drag` left/right edges resizes wrap width |
 | `Ctrl+scroll` lyric | Resizes the text |
 | `Ctrl+drag` pitch panel | Moves, resizes from any edge, or docks against a side of the lyric |
 | Click top-bar note | Toggles the overlay on or off |
@@ -124,6 +124,15 @@ it.
   `scripts/install-generator.sh` (creates a local `.venv` with `faster-whisper`
   and `sudachipy`), then enable `lyricsGenerator` in `settings.json` or toggle
   **Furigana** on the settings page.
+- **White-paper Piano Lead Sheet (floating desktop window + browser editor):**
+  run `scripts/install-score.sh` (creates a local `.venv-score` with two-pass
+  RoFormer lead-vocal isolation, `Beat This!`, `faster-whisper`, chord
+  detection, and `openvpi/GAME`), configure `scoreGenerator` in
+  `settings.json`, and toggle **Lead sheet** on the settings page — opens a
+  standard resizable white-paper window (rows auto-fill height and zoom
+  reflows bars cleanly) plus a full-song interactive
+  browser editor (`?score=1`, shortcut `S`) for chords, notes, key, tempo,
+  meter, MIDI export/audition, and HQ refinement.
 - **Extra fonts:** `scripts/install-fonts.sh` unpacks extra fonts into
   `~/.local/share/fonts/` for your user.
 - **Update:** `git pull && scripts/install.sh` (overlay and service changes

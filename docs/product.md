@@ -126,14 +126,18 @@ from scratch when they are not.
   - A plain primary press on the lyric (or timing pill) acts immediately on
     press to focus the YouTube song tab and raise its window; it never
     starts a drag.
-  - Moving the lyric requires `Ctrl+drag` (magnetic center/edge snap; hold
-    `Shift` to bypass snap; `Escape` cancels; `Ctrl+press` without movement
-    does nothing). The placement frame, snap guides and dimensions readout
-    show only during an active `Ctrl+drag` and vanish on release.
-  - `Ctrl+scroll` resizes text; box width and height resize lives on the
-    settings page's Screen map.
-  - A secondary press opens or raises the settings page. Position and size
-    persist as fractions of the monitor.
+  - Moving the lyric requires `Ctrl+drag` on the body (freezes the drag frame
+    and queues incoming line changes or silent gaps until release so the border
+    never pops or aborts mid-drag; magnetic center/edge snap; hold `Shift` to
+    bypass snap; `Escape` cancels; `Ctrl+press` without movement does nothing).
+    The placement frame, snap guides and width readout show only during an
+    active `Ctrl+drag` and vanish on release.
+  - `Ctrl+drag` on the left or right edge of the lyric resizes max wrap width
+    live while holding the opposite edge steady (matching left/right width
+    handles on the settings page's Screen map). `Ctrl+scroll` resizes text.
+  - A secondary press opens or raises the settings page. Position and wrap
+    width persist as fractions of the monitor (scaled proportionally when
+    dragged across monitors of different sizes).
   - The pitch panel follows the same rule: plain press does nothing and
     plain hover keeps the default cursor; `Ctrl+drag` moves, docks/detaches
     or resizes its edges (`Escape` cancels).
@@ -146,24 +150,160 @@ from scratch when they are not.
 - **The settings page (owner, 2026-11-10; redesigned 2026-11-19/20/21).**
   Every setting is on one full-width, dense two-column studio page in Firefox,
   `http://localhost:8792/settings`: a compact top bar (title, active song
-  and status pill, `Full lyrics`, `Lyrics: On/Off`, `Pitch: On/Off`), a
+  and status pill, `Full lyrics`, `Lead sheet`, `Lyrics: On/Off`,
+  `Lead sheet: On/Off`, `Pitch: On/Off`), a
   sticky left column (~38%) holding the live preview (`Lyrics` over
-  Video/Dark/Light scenes, `Pitch`, or interactive `Screen map` with exact
-  monitor aspect ratio, 8-handle drag/resize with magnetic snap, multi-monitor
-  picker, placement presets, and pitch panel docking/resizing) **plus** the
-  pinned active-song deck right underneath (timing offset & nudges, song
-  actions including **Generate from scratch**, lyric sets list, manual LRCLIB
-  search, `.lrc`/`.txt` import, and 1-line Mic/Scale/Add-on status) so there
-  is no empty left-side void and everyday song controls stay visible while
-  scrolling; beside a compact 2-column right Inspector (~62%) with only two
-  top-level sections (`Lyrics` and `Pitch`), no nested subheadings, and
-  half-column notched sliders. Action errors appear in a sticky banner below
-  the top bar with a `Dismiss` button and are never cleared by background
-  status polling. Its idle preview uses a
-  familiar English lyric even when furigana is enabled. A right press on the indicator, the lyric
-  or the pitch panel shows it; each change applies live. There is one
-  browser settings tab: a right press selects the open one and raises its window
-  rather than opening another.
+  Video/Dark/Light scenes, `Lead sheet` live white-paper engraving preview,
+  `Pitch`, or interactive `Screen map` with exact monitor aspect ratio,
+  resizable-width snug-height lyric placement, natural content-matched floating
+  lead sheet window, and docked/resizable pitch panel, multi-monitor picker,
+  placement presets, and pitch panel docking/resizing) **plus** the pinned active-song
+  deck right underneath (timing offset & nudges, song actions including
+  **Refresh all** — re-checking LRCLIB, re-downloading fresh audio, and
+  rebuilding both score and vocal-isolated fused lyrics — **Generate from
+  scratch**, **Lead sheet**, **Extract melody**, and **Refine (HQ)**, lyric
+  sets list including vocal-isolated fused sets alongside LRCLIB sets, manual
+  LRCLIB search, `.lrc`/`.txt` import, and 1-line Mic/Scale/Melody/Add-on
+  status) so there is no empty left-side void and everyday song controls stay
+  visible while scrolling; beside a compact 2-column right Inspector (~62%)
+  with three top-level sections (`Lyrics`, `Sheet music`, and `Pitch`), no
+  nested subheadings, and half-column notched sliders. Action errors appear
+  in a sticky banner below the top bar with a `Dismiss` button and are never
+  cleared by background status polling. Its idle preview uses a familiar
+  English lyric even when furigana is enabled. A right press on the
+  indicator, the lyric, or the pitch panel opens it; a right press or `⚙`
+  click on the floating lead sheet toggles its in-sheet live config panel
+  (with a button to open full Settings/Editor). Each change applies live.
+  There is one browser settings tab: a right press selects the open one and
+  raises its window rather than opening another.
+- **Steady wrap width, tight vertical trim, and frozen drag frame (owner,
+  2026-11-25).** Lyrics keep a constant `font-size` and wrap evenly inside the
+  user's chosen max wrap width (`lyric-max-lines`: `Auto` (`0`) default;
+  optional `1` / `2` / `3` / `4` line cap shrinks gently down to `max(18 px,
+  56% of fontSize)` before wrapping). Height is always trimmed tightly to the
+  painted text, borders, and furigana (~2 px vertical AA margin) using shared
+  font ascender/descender metrics so bottom-anchored lyrics sit visually flush
+  on top of the monitor taskbar with a steady baseline across lines (and never
+  inherit a stale phantom container height). Monitor indices follow one
+  canonical left-to-right, top-to-bottom order in both desktop and settings.
+- **White-paper Piano Lead Sheet — standard OS window, auto-reflow up to 350%,
+  multi-tier lyrics, scale-snap arrows, MIDI export/audition, & polyphonic
+  multi-voice duets (owner, 2026-11-22; refined 2026-11-23).** Optional, off
+  by default (`score-enabled`, toggled in the top bar or Settings -> Sheet
+  music). Modeled after a printed piano lead sheet — normal white sheet-music
+  paper (`#ffffff`) with pure black ink (`#000000`), numbered measures, bold
+  chord symbols above the staff, melody notes with ties/beams/rests/accidentals,
+  and aligned lyrics directly below:
+  - **Standard decorated GNOME OS window (`desktop/score-window.js`)**:
+    Behaves like a normal desktop window (`decorated: true`, `resizable: true`,
+    Alt-Tab, maximize, snap/tile to half-screen or quarter-screen, optional
+    `score-always-on-top` default `false`, `×` hides the sheet cleanly), while
+    mapping quietly whenever a song starts or resumes so it never steals focus
+    and never triggers GNOME's `"<title>" is ready` attention notification or
+    taskbar highlight (likewise for its `Lead Sheet Options` panel).
+    Includes a compact dark top toolbar (`−`/`100%`/`+` zoom `60%–350%`,
+    `◀`/`▶`/`Live` page controls, live `Auto · N bars × M rows` readout,
+    `On top`, `Editor & MIDI`, `⚙ Options`). Window geometry persists via
+    `score-box`; plain primary clicks on the sheet body simply focus and keep
+    the Lead Sheet window (never hiding it or stealing focus to Firefox),
+    right-click toggles `⚙ Options`, wheel flips pages, and `Ctrl+wheel` zooms.
+    **Window-fill layout rules (`planLeadSheetPage`)**: vertical rows ALWAYS
+    auto-fill the window height (no manual `Rows` pin and no 6-row cap),
+    System 1 starts cleanly right below the header rule with balanced bounded
+    inter-system gaps (never floating in the middle of a blank page), Zoom
+    directly sets staff size (`sp = 8.4 × scale`), `Spacing` governs Auto
+    bars/row without ever shrinking pinned bars, and zooming past what fits a
+    pinned `Bars/row` automatically releases `score-bars-per-system` back to
+    `Auto` so Zoom always grows smoothly up to `350%`. Multi-bar rests ignore
+    hidden chord markers when `Chords` is switched off.
+  - **Zero-truncation multi-tier lyrics & zero-collision engraving**:
+    `layoutSystemLyrics()` keeps every syllable readable even in narrow
+    windows: tries Tier 0 at full size, then gentle shrink (down to `0.78×`),
+    then drops cleanly onto Tier 1/2 below with a small vertical guide tick
+    under the parent notehead — never truncating or clipping words. Measures
+    receive proportional `visualWeight` (busy bars breathe; rest bars stay
+    compact). Weighted ledger-line excursion minimization in
+    `chooseClef(medianMidi, notes)` automatically picks `treble-8vb` for wide
+    low-register vocal contours while keeping regular `treble` for mid/high
+    voices. Each system computes exact `highestInkY` and `lowestInkY` across
+    all notes, ledger lines, stems, beams, and harmony diamonds so chords,
+    bar numbers, note names, and lyrics never collide with staff ink.
+  - **Scale-snap transparency (`score-show-snap-moves`, default `false`)**:
+    When enabled, every note shifted by scale snapping renders a vivid
+    burnt-orange (`#c2410c`) hollow ghost dot at the raw detected pitch, a
+    vertical arrow to the snapped notehead, and an explicit `F→F♯` move tag.
+  - **Configurable header bar & opt-in tracking cues**: `score-paging`
+    defaults to `'page'` (full-page turns; `'scroll'` shifts one row at a
+    time). Moving red playhead (`score-show-playhead`, default `false`) and
+    yellow active-measure highlight (`score-show-active-measure`, default
+    `false`) stay off until opted in. Each header item is independently
+    toggleable (`score-header-title`, `score-header-key`, `score-header-time`,
+    `score-header-bpm`, `score-header-clef`, `score-header-bars`,
+    `score-header-page`), using clear plain labels (`Bars 1–12/48`, `Page 1/4`).
+  - **Per-song Key & Clef live panel (`desktop/score-config-panel.js`)**:
+    Shows and edits the active song's real key (`D major [Detected]` or
+    `[Override]`) and clef via non-destructive D-Bus `editScore` patches
+    without clobbering existing chord or note overrides.
+  - **MIDI export & built-in WebAudio audition (`shared/score-midi.js`,
+    `GET /api/score/midi`, `service/settings-page/lead-sheet.js`)**: Pure-JS
+    Standard Type-1 MIDI exporter (Conductor + Voice 1 melody/lyrics + optional
+    Voice 2 harmony + Chords) and zero-dependency WebAudio audition player
+    inside the Lead Sheet modal (`▶ Play MIDI` / `⏹ Stop`, `Melody` / `Chords`
+    / `Click` toggles, `50%–125%` speed, click any bar number to play from
+    that bar, `⬇ .mid` download).
+  - **Polyphonic multi-voice duet extraction (`service/generate-score.py`,
+    `score-voices`)**: Pass-1 full vocal stem (`BS-RoFormer`) + Pass-2 backing
+    residual (`mel_band_roformer_karaoke`) + 36-bin/octave CQT harmonic
+    cancellation detect simultaneous harmonizing male/female vocal parts
+    (`voice: 1` upper melody, `voice: 2` lower harmony) while keeping solo
+    songs strictly single-voice. Engraves Voice 1 stems UP in pure black and
+    Voice 2 stems DOWN in deep royal indigo (`#1e3a8a`) with per-voice
+    beaming, 2nd-interval collision horizontal offset, separate MIDI tracks,
+    and a live `Vocal voices` selector (`Both` / `Top` / `Bottom`).
+  - **Unified Ingest → Analyze → Display pipeline (`service/ingest.js`,
+    `service/analyzer.js`, `op: 'analyzeSong'`)**: Song sources/overrides
+    (Stage 1: Ingest), audio separation/beats/chords/multi-voice melody +
+    vocal-isolated lyric fusion (Stage 2: Analyze), and live Lyrics / Lead
+    Sheet / Pitch presentation (Stage 3: Display) are cleanly separated and
+    surfaced as a single pipeline status row on the Settings page.
+  - **Interactive browser Lead Sheet viewer & editor (`?score=1`, shortcut `S`,
+    `Lead sheet` button in topbar & song deck)**: full-song white-paper SVG
+    lead sheet honoring all display toggles, song-level recalculation
+    controls (`½×` / `1×` / `2×` tempo, `4/4` / `3/4` / `6/8` / `2/4` meter,
+    key root/scale override, clef `Auto` / `Treble` / `8vb`, and `±1 beat`
+    barline shift), click-to-edit chord symbols above any bar (with diatonic
+    quick-picks), and click-to-edit notes (pitch `±1 st` / `±1 oct`,
+    shorter/longer duration, split, merge next, delete, add note in bar,
+    `Undo`/`Redo`, `Reset edits`). Edits save non-destructively onto
+    `scores/<videoId>.json` via `POST /api/score/edit` and update the
+    floating desktop Lead Sheet live.
+  - **Multi-source vocal-isolated lyric fusion & coupled refresh**: when
+    extracting a score, `LyricsCore` waits for any in-flight LRCLIB lookup
+    first, passes LRCLIB's canonical text as a Whisper prompt, and reuses the
+    RoFormer-isolated lead-vocal Whisper pass (`result.segments`) at zero
+    extra GPU cost to fuse LRCLIB's exact words, kanji, punctuation, line
+    breaks, and relative spacing on unmatched lines with exact vocal-isolated
+    audio timestamps (`gen:vocal:aligned` / `gen:vocal:transcribed`), adding
+    the fused set alongside LRCLIB's originals without deleting them.
+    **Refresh all** (`op: 'refreshAll'`) re-queries LRCLIB, re-downloads
+    fresh audio (`--fresh-audio`), and rebuilds both score and vocal-fused
+    lyrics in one action.
+  - **Adaptive lead-vocal extraction, tempo folding & chords**: two-pass
+    RoFormer isolation (BS-RoFormer -> Mel-Band RoFormer Karaoke) with
+    adaptive RMS blending back to full vocals wherever Pass-2 over-suppresses
+    duets or quiet verses, peak normalization, `Beat This!` with tempo-octave
+    folding into `[62, 154]` BPM, half-timed intro fill, and regular phase-locked
+    measures, harmonic chroma + Viterbi chord detection (`B`, `G#m`, `F#7`, etc.),
+    `openvpi/GAME-1.0-large` vocal transcription, `faster-whisper large-v3` word
+    timestamps, and optional `Refine (HQ)` (`overlap=4`) re-extraction that
+    preserves song-level edits.
+  - **Key, harmony 3rds & display options**: Krumhansl-Kessler key detection
+    fills the pitch panel's detected scale whenever live detection has not
+    settled (and honors user `keyOverride` edits). `score-scale-snap`
+    (`soft` / `strict` / `off`), `score-harmony` (deep blue 3rd above /
+    forest green 3rd below hollow diamonds on white paper), `score-note-names`
+    (`letters` / `degrees` / `off`), and `score-background-opacity`
+    (`75%–100%`, default `96%`).
 - **Automatic local lyric timing with quiet in-overlay status (owner,
   2026-11-20).** When `lyricsGenerator` is configured in `settings.json`
   (off by default in `settings.example.json`) and a playing song's LRCLIB

@@ -17,14 +17,18 @@ Firefox tab (YouTube)                         Standalone desktop frontend
           v                                             |          | GSettings
   service/ (gjs, systemd user unit lyrics-overlay.service)         | (look, pitch panel)
     http.js -> report-schema.js -> core.js -> dbus.js              |
+          |                        |  ingest.js (Stage 1: sources, vocal-lyric fusion, per-song edit patches)
+          |                        |  analyzer.js (Stage 2: unified analysis status & multi-voice projection)
           |                        |  lrclib.js (LRCLIB, budgeted, cached)
           |                        |  lyric-generator.js -> generate-lyrics.py (optional local Whisper timing)
+          |                        |  score-generator.js -> generate-score.py (vocal sep, beats, chords, GAME + CQT multi-voice melody, vocal Whisper)
           |                        |  furigana.js -> furigana.py (offline SudachiPy Japanese furigana worker)
           |                        |  store.js (~/.local/state/lyrics-overlay)
           |                        |  pitch-capture.js (PipeWire, on request; echo-cancel.js, microphones.js)
           |                        |  song-key.js (what the computer plays, while a detected scale shows)
           |                        |  archive-sync.js -> ytarchive.js (when ytarchiveUrl is set)
           |  browser-commands.js (desktop -> extension: select the song's tab, show the settings tab)
+          |  GET /api/score/midi -> shared/score-midi.js (SMF Type-1 multi-track MIDI export)
           |  settings-page/ (http://localhost:8792/settings) -> settings-store.js -> GSettings
 ```
 
@@ -55,14 +59,22 @@ Firefox tab (YouTube)                         Standalone desktop frontend
   - `lyric-window.js` (`Gtk.WindowType.TOPLEVEL`,
     `Gdk.WindowTypeHint.NOTIFICATION`, `accept_focus=true`,
     `focus_on_map=false`, `skip_taskbar`, `skip_pager`, `keep_above`,
-    `stick`): renders the lyric line with `shared/text-layout.js`, fades in
+    `stick`): renders the lyric line inside the user's max wrap width with
+    `shared/text-layout.js` (tight ~2 px vertical ink trim via
+    `singleLineHeight` + `normalizedLyricBox`/`commitLyricGeometry`), fades in
     composited via `cr.pushGroup()`/`cr.paintWithAlpha()`, renders the quiet
     generating status pill, and clips the X11 input shape tightly to the
     painted ink or pill (+6 px margin) so transparent space passes clicks
-    through. Because `NOTIFICATION` receives focus before `button-press-event`,
-    `Ctrl+drag` receives synchronous `CONTROL_MASK`, `Shift`, and `Escape`
-    even when a native Wayland window previously held focus. Rapid double
-    clicks ignore `Gdk.EventType.TWO_BUTTON_PRESS`.
+    through. During `Ctrl+drag` (body move or left/right edge width resize),
+    incoming `setLine()` updates queue until release so the drag frame never
+    pops or aborts on gaps, same-monitor moves never call `resize()` or refit
+    text, and cross-monitor moves rescale wrap width proportionally. Because
+    `NOTIFICATION` receives focus before `button-press-event`, `Ctrl+drag`
+    receives synchronous `CONTROL_MASK`, `Shift`, and `Escape` even when a
+    native Wayland window previously held focus. Rapid double clicks ignore
+    `Gdk.EventType.TWO_BUTTON_PRESS`. Both `desktop/monitors.js` and
+    `service/monitors.js` sort monitors with `orderMonitors()` so indices agree
+    between desktop and settings.
   - `pitch-window.js` (same `TOPLEVEL` + `NOTIFICATION` window): paints the
     sung-pitch trace with `shared/pitch-painter.js`, docks against any side
     of the lyric or stands separate, and supports `Ctrl+drag` edge resize,
@@ -89,8 +101,16 @@ Firefox tab (YouTube)                         Standalone desktop frontend
     open), falling back to Firefox's MPRIS
     `org.mpris.MediaPlayer2.firefox*.Raise()` on non-GNOME desktops or when
     the helper is absent; sends failures to `org.freedesktop.Notifications`,
-    checks Dash to Panel's `rightBox` visibility, and compiles the GSettings
-    schema from the checkout.
+    checks Dash to Panel's `rightBox` visibility, compiles the GSettings
+    schema from the checkout, and provides `QuietMapGuard` so managed XWayland
+    windows (`score-window.js`, `score-config-panel.js`) map without stealing
+    focus, without triggering GNOME Shell's `"<title>" is ready` notification,
+    and without leaving `_NET_WM_STATE_DEMANDS_ATTENTION` set on the taskbar
+    entry (setting `focus_on_map=false`, `accept_focus=false`,
+    `skip_taskbar_hint=true`, and zeroing X11 `_NET_WM_USER_TIME` across the
+    map transition, then clearing `_NET_WM_STATE_DEMANDS_ATTENTION` via
+    `_NET_WM_STATE_REMOVE` after first paint before restoring `accept_focus`
+    and `skip_taskbar_hint`).
   - `main.js`: single-instance session D-Bus owner
     (`net.fuseki.LyricsOverlayDesktop`, `/net/fuseki/LyricsOverlayDesktop`,
     `net.fuseki.LyricsOverlayDesktop1.GetStatus() -> s` returning read-only
@@ -134,10 +154,13 @@ Firefox tab (YouTube)                         Standalone desktop frontend
   (`pitch-layout.js`: its clock, which lines carry names, the note the
   readout holds), scales and note spelling (`scales.js`), the D-Bus
   interface (`dbus-interface.js`, one definition for service and frontends),
-  the lyric status wording (`lyrics-status.js`) and the letter colors with
+  the lyric status wording (`lyrics-status.js`), rough vocal sheet music
+  layout and Cairo engraving (`score-layout.js`, `score-painter.js`), and
+  the letter colors with
   automatic WCAG contrast rings and custom hex parsing (`text-ink.js`). The
   settings page imports `lyrics-status.js`, `scales.js`, `text-ink.js`,
-  `overlay-geometry.js` and `pitch-layout.js` as the service serves them.
+  `overlay-geometry.js`, `pitch-layout.js` and `score-layout.js` as the
+  service serves them.
   `scripts/install-gnome-extension.sh` scans `gnome-extension/*.js` and
   transitive `./*.js` imports inside `shared/` when installing the legacy
   extension.
@@ -452,18 +475,87 @@ Active only when `lyricsGenerator` is configured in `settings.json`
   `service/lrclib-pow.py` (4 bounded Python workers, never blocking GJS),
   and submits to `POST /api/publish` with the generic `User-Agent`.
 
+## White-paper Piano Lead Sheet (optional)
+
+Active when `scoreGenerator` is configured in `settings.json` and either
+`score-enabled` is switched on in GSettings or the owner triggers
+`Command {op: 'generateScore', quality?: 'standard'|'high'}`
+(`service/score-generator.js`, `service/generate-score.py`,
+`shared/score-layout.js`, `shared/score-painter.js`,
+`desktop/score-window.js`, `service/settings-page/lead-sheet.js`):
+
+- **Extraction worker** (`service/generate-score.py`, isolated `.venv-score`,
+  schema `version: 2`):
+  1. Acquires audio on CPU (opportunistic `ytarchive` soundtrack or `yt-dlp`)
+     into a `TemporaryDirectory` that is always deleted on exit.
+  2. Runs the GPU analysis child under the optional `gpuGate`:
+     two-pass FP16 vocal isolation (`model_bs_roformer_ep_317_sdr_12.9755.ckpt`
+     -> `mel_band_roformer_karaoke_becruily.ckpt` with `use_autocast=True`,
+     `overlap=2` standard or `overlap=4` HQ, adaptive RMS blend back to full
+     vocals where Karaoke over-suppresses quiet verses/duets, peak
+     normalization to `-1 dBFS`), beat/downbeat tracking (`Beat This! final0`)
+     with tempo-octave folding into `[62, 154]` BPM, half-timed intro beat
+     fill, and regular phase-locked measures, beat-synchronous harmonic chroma
+     + Viterbi chord detection (`36` templates), lead-vocal word timestamps
+     (`faster-whisper large-v3`), discrete vocal note transcription
+     (`openvpi/GAME-1.0-large` with `-48 dB` slicer & `0.15` presence
+     threshold), circular tuning-offset estimation, combined mix+vocal
+     Krumhansl-Kessler key detection, and beat-grid quantization. Stages run
+     sequentially with explicit GPU memory release between models; peak VRAM
+     across all sequential stages is ~5.2 GiB (leaving headroom under a 7 GB
+     optional GPU gate reservation).
+  3. Persists the JSON score (including stable per-note `id`, `chords`, and
+     user `edits`) under `~/.local/state/lyrics-overlay/scores/<videoId>.json`
+     via `store.saveScore()`.
+- **Decoupled D-Bus signal, vocal-fused lyrics, floating window & in-sheet
+  live config**: `LineChanged` stays pure `{text, key, ruby?}` for
+  `desktop/lyric-window.js` (which renders constant-size wrapped lyrics inside
+  the user's wrap width with tight vertical ink bounds). Lead-sheet data flows
+  on its own `GetScore()` / `ScoreChanged(s)` channel (`core.scorePayload()`
+  with `{active, videoId, title, status, quality, stage, message, score,
+  lyricsLines, clock}`) and `GET /api/score` / `POST /api/score/edit`.
+  `generate-score.py` accepts `--prompt-file` (0600 temp file from LRCLIB
+  reference lyrics) and `--fresh-audio`, returning `segments` alongside notes
+  and chords so `LyricsCore._finishScore()` fuses vocal-isolated Whisper
+  timestamps with LRCLIB's canonical text/relative spacing (`shared/lyric-align.js`
+  `referenceSyncedLyrics`) into a `gen:vocal:*` candidate while keeping
+  LRCLIB candidates intact; `Command {op: 'refreshAll'}` chains LRCLIB
+  re-search + fresh-audio score extraction.
+  `shared/score-layout.js:applyScoreEdits()` + `buildLeadSheet()` (weighted
+  ledger-line excursion `chooseClef`, proportional `visualWeight`, `1..12`
+  bars per system, `showChords`-aware multi-bar rests) build numbered
+  measures, opening-chord carry, ties across barlines, beat-grouped beams,
+  multi-bar rests, and systems in `<1 ms`. `shared/score-layout.js:planLeadSheetPage()`
+  is the single layout planner shared by `shared/score-painter.js`,
+  `desktop/score-window.js`, and `service/settings-page/preview.js`: vertical
+  rows always auto-fill canvas height top-down (bounded inter-system gaps,
+  no 6-row cap), Zoom sets `sp = 8.4 * scale` honestly (auto-reflowing
+  `barsPerSystem` rather than shrinking staves or letting `Spacious` crush
+  pinned bars), and `paintLeadSheetPage()` renders zero-collision systems with
+  `page` (default full-page flip) or `scroll` paging, default-off
+  `score-show-playhead` & `score-show-active-measure`, and a top-right `⚙`
+  hitbox. `desktop/score-window.js` hosts the standard OS window (plain
+  left-click focuses the window normally, right-click toggles
+  `desktop/score-config-panel.js`, wheel flips pages, `Ctrl+wheel` zooms and
+  auto-releases pinned `score-bars-per-system` when exceeding horizontal fit).
+  `service/settings-page/lead-sheet.js` renders the full-song interactive
+  white-paper SVG viewer & editor (`?score=1`) with a matching collapsible
+  live `⚙ Sheet options` drawer.
+
 ## D-Bus interface
 
 Name `net.fuseki.LyricsOverlay`, path `/net/fuseki/LyricsOverlay`,
 interface `net.fuseki.LyricsOverlay1` (`shared/dbus-interface.js`):
-`GetState() -> s`, `GetLine() -> s`, `Command(s) -> s` (JSON ops: tooFast,
-tooSlow, resetOffset, choose, reject, searchAgain, lookUp, searchQuery,
-importLyrics, saveEditedLyrics, generate, generateFromScratch, cancelGenerate,
-pitch), `FocusSong() -> s`, `OpenSettings() -> s`, signals `StateChanged`,
-`LineChanged`, `PitchFrames`. All payloads are JSON strings. `state`
-includes `generation: {available, status, mode, stage, message}` (plus optional
-`background` when a manual forced run continues while another or no video is
-active).
+`GetState() -> s`, `GetLine() -> s`, `GetScore() -> s`, `Command(s) -> s`
+(JSON ops: tooFast, tooSlow, resetOffset, choose, reject, searchAgain, lookUp,
+searchQuery, importLyrics, saveEditedLyrics, generate, generateFromScratch,
+cancelGenerate, generateScore, cancelScore, refreshAll, pitch),
+`FocusSong() -> s`, `OpenSettings() -> s`, signals `StateChanged`,
+`LineChanged`, `ScoreChanged`, `PitchFrames`. All payloads are JSON strings. `state` includes
+`generation: {available, status, mode, stage, message}` and
+`score: {available, status, quality, stage, message, bpm, meter, key, noteCount, chordCount, edited}`
+(each with optional `background` when a manual forced run continues while
+another or no video is active).
 
 ## GJS lifetime rules (learned 2026-11-09)
 

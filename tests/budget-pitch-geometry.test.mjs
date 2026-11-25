@@ -9,8 +9,9 @@ import {
 import {GlitchFilter, PitchDetector, freqToMidi, noteName, voiceMidi} from '../shared/pitch-mpm.js';
 import {
     DOCK_GAP, MIN_BOX_HEIGHT, MIN_BOX_WIDTH, PLACEMENT_PRESETS, backdropMetrics, balancedWrapWidth, borderSpec,
-    boxFromGeometry, boxZoneAt, clampBox, clampGeometry, dockedPanelBox, edgeResizedBox, expandedRenderBox,
-    geometryFromBox, movedBox, normalizedSpaceScale, snapBox, snappedDock, verticalAnchorFor,
+    boxFromGeometry, boxZoneAt, clampBox, clampGeometry, commitLyricGeometry, dockedPanelBox, edgeResizedBox,
+    expandedRenderBox, geometryFromBox, movedBox, normalizedLyricBox, normalizedSpaceScale, orderMonitors, snapBox,
+    snappedDock, verticalAnchorFor,
 } from '../shared/overlay-geometry.js';
 
 test('budget refuses past any window and names when it reopens', () => {
@@ -242,4 +243,62 @@ test('clampGeometry keeps boxes inside [0, 1] and presets are valid', () => {
     assert.equal(normalizedSpaceScale(0, 0.22), 1);
     const bp = backdropMetrics(64);
     assert.ok(bp.padX > bp.padY && bp.radius > 0);
+});
+
+test('orderMonitors sorts canonically left-to-right then top-to-bottom regardless of API enumeration order', () => {
+    const mutterOrder = [
+        {x: 3840, y: 0, width: 1920, height: 1080, primary: false, name: 'right'},
+        {x: 0, y: 0, width: 3840, height: 2160, primary: true, name: 'left'},
+    ];
+    const gdkOrder = [mutterOrder[1], mutterOrder[0]];
+    assert.deepEqual(orderMonitors(mutterOrder).map(m => m.name), ['left', 'right']);
+    assert.deepEqual(orderMonitors(gdkOrder).map(m => m.name), ['left', 'right']);
+
+    const stacked = [
+        {x: 0, y: 1080, width: 1920, height: 1080, primary: false, name: 'bottom'},
+        {x: 0, y: 0, width: 1920, height: 1080, primary: true, name: 'top'},
+    ];
+    assert.deepEqual(orderMonitors(stacked).map(m => m.name), ['top', 'bottom']);
+});
+
+test('normalizedLyricBox strips stale container height and commitLyricGeometry round-trips flush edges cleanly', () => {
+    const rightMon = {x: 1920, y: 0, width: 1600, height: 868};
+    // Stale huge height (0.30 = 260 px) collapses to tight 88 px while keeping the anchored bottom edge.
+    const staleGeom = {cx: 0.5, cy: 0.70, width: 0.6, height: 0.30};
+    const norm = normalizedLyricBox(staleGeom, rightMon, 88, 'bottom');
+    assert.equal(norm.height, 88);
+    assert.ok(Math.abs((norm.y + norm.height) - (0.85 * rightMon.height)) <= 1);
+
+    // Dropping a 2-line lyric (170 px) flush against the bottom commits geometry that stays flush
+    // across both 2-line and 1-line lyrics AND across font-size changes (including tiny fonts below MIN_GEOMETRY_HEIGHT).
+    const droppedBottom = {x: 2100, y: rightMon.height - 170, width: 900, height: 170};
+    const committedBottom = commitLyricGeometry(droppedBottom, rightMon, 88, 'separate', false);
+    assert.ok(committedBottom.height >= 0.02);
+    const reloaded1 = normalizedLyricBox(committedBottom, rightMon, 88, verticalAnchorFor(committedBottom.cy, 'separate', false));
+    assert.equal(Math.round(reloaded1.y + reloaded1.height), rightMon.height, '1-line lyric stays flush at bottom');
+    const reloaded2 = expandedRenderBox(reloaded1, 170, verticalAnchorFor(committedBottom.cy, 'separate', false), rightMon);
+    assert.deepEqual({x: Math.round(reloaded2.x), y: Math.round(reloaded2.y), width: Math.round(reloaded2.width), height: Math.round(reloaded2.height)},
+        {x: 2100, y: rightMon.height - 170, width: 900, height: 170});
+    const reloadedBigFont = normalizedLyricBox(committedBottom, rightMon, 210, verticalAnchorFor(committedBottom.cy, 'separate', false));
+    assert.equal(Math.round(reloadedBigFont.y + reloadedBigFont.height), rightMon.height, 'larger font stays flush at bottom');
+    const reloadedTinyFont = normalizedLyricBox(committedBottom, rightMon, 24, verticalAnchorFor(committedBottom.cy, 'separate', false));
+    assert.equal(Math.round(reloadedTinyFont.y + reloadedTinyFont.height), rightMon.height, 'tiny font stays flush at bottom');
+
+    // Dropping flush at the top keeps y === area.y across size changes.
+    const droppedTop = {x: 2100, y: 0, width: 900, height: 160};
+    const committedTop = commitLyricGeometry(droppedTop, rightMon, 88, 'separate', false);
+    const reloadedTop = normalizedLyricBox(committedTop, rightMon, 88, verticalAnchorFor(committedTop.cy, 'separate', false));
+    assert.equal(Math.round(reloadedTop.y), 0);
+
+    // Dropping a small-height lyric (26 px < MIN_GEOMETRY_HEIGHT * 2112) stays valid and flush.
+    const bigMon = {x: 0, y: 0, width: 3840, height: 2112};
+    const committedTiny = commitLyricGeometry({x: 200, y: bigMon.height - 26, width: 800, height: 26}, bigMon, 26, 'separate', false);
+    assert.ok(committedTiny.height >= 0.02);
+    const reloadedTiny = normalizedLyricBox(committedTiny, bigMon, 26, verticalAnchorFor(committedTiny.cy, 'separate', false));
+    assert.equal(Math.round(reloadedTiny.y + reloadedTiny.height), bigMon.height);
+
+    // snapBox does not inflate small-height lyrics to MIN_BOX_HEIGHT when snapping flush to the bottom.
+    const snappedSmall = snapBox({x: 200, y: rightMon.height - 38, width: 500, height: 32}, rightMon, 12);
+    assert.equal(snappedSmall.box.height, 32);
+    assert.equal(snappedSmall.box.y + snappedSmall.box.height, rightMon.height);
 });

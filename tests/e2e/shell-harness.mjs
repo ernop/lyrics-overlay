@@ -5,7 +5,7 @@
 // system bus. Only dconf-service is activatable, and the harness refuses to
 // continue unless dconf writes land in the temp dir.
 
-import {execFile, spawn} from 'node:child_process';
+import {execFile} from 'node:child_process';
 import fs from 'node:fs';
 import http from 'node:http';
 import os from 'node:os';
@@ -13,7 +13,7 @@ import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {promisify} from 'node:util';
 
-import {dconfServiceDir, isolatedEnv, realDconf, startBus} from '../isolated-session.mjs';
+import {dconfServiceDir, isolatedEnv, realDconf, spawnTied, startBus} from '../isolated-session.mjs';
 
 const run = promisify(execFile);
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -68,11 +68,20 @@ export async function startHarness({answers, extraSettings = {}, xwayland = fals
 
     const processes = [];
     const heartbeats = new Set();
-    const cleanup = () => {
+    // Stops the children, newest first, and waits until each has exited, so
+    // none is left running on a runtime dir that close() then deletes.
+    const cleanup = async () => {
         for (const timer of heartbeats)
             clearInterval(timer);
-        for (const child of processes.reverse())
+        for (const child of processes.reverse()) {
+            if (child.exitCode !== null || child.signalCode !== null)
+                continue;
+            const exited = new Promise(resolve => child.once('exit', resolve));
             child.kill('SIGTERM');
+            const killer = setTimeout(() => child.kill('SIGKILL'), 5000);
+            await exited;
+            clearTimeout(killer);
+        }
     };
     try {
         const sessionBus = await startBus(tmp, 'session', env, services);
@@ -137,7 +146,7 @@ export default class UnsafeForTests extends Extension {
         let service = null;
         /** Starts the service and resolves once it accepts HTTP. */
         const startService = () => new Promise((resolve, reject) => {
-            const started = spawn('gjs', ['-m', path.join(root, 'tests', 'service-under-gc.js'), '--settings', settingsPath],
+            const started = spawnTied('gjs', ['-m', path.join(root, 'tests', 'service-under-gc.js'), '--settings', settingsPath],
                 {env, stdio: ['ignore', 'pipe', 'pipe']});
             processes.push(started);
             service = started;
@@ -174,7 +183,7 @@ export default class UnsafeForTests extends Extension {
 
         let shellLog = '';
         const shellArgs = ['--headless', '--wayland', ...(xwayland ? [] : ['--no-x11']), '--virtual-monitor', `${MONITOR.width}x${MONITOR.height}`];
-        const shell = spawn('gnome-shell', shellArgs,
+        const shell = spawnTied('gnome-shell', shellArgs,
             {env, stdio: ['ignore', 'pipe', 'pipe']});
         shell.stdout.on('data', data => { shellLog += data; });
         shell.stderr.on('data', data => { shellLog += data; });
@@ -206,7 +215,7 @@ export default class UnsafeForTests extends Extension {
             if (socket)
                 desktopEnv.WAYLAND_DISPLAY = socket;
             await new Promise((resolve, reject) => {
-                const started = spawn('gjs', ['-m', path.join(root, 'tests', 'desktop-under-gc.js')],
+                const started = spawnTied('gjs', ['-m', path.join(root, 'tests', 'desktop-under-gc.js')],
                     {env: desktopEnv, stdio: ['ignore', 'pipe', 'pipe']});
                 processes.push(started);
                 desktop = started;
@@ -306,7 +315,7 @@ export default class UnsafeForTests extends Extension {
                 const countExpr = `global.display.list_all_windows().filter(window =>
                     window.get_title() === ${JSON.stringify(title)} && window.get_compositor_private()?.visible === true).length`;
                 const before = await evalJs(countExpr);
-                processes.push(spawn('gjs', ['-m', program, title],
+                processes.push(spawnTied('gjs', ['-m', program, title],
                     {env: {...env, WAYLAND_DISPLAY: socket, GDK_BACKEND: 'wayland'}, stdio: 'ignore'}));
                 await waitFor(async () => (await evalJs(countExpr)) > before, `the window "${title}"`);
             },
@@ -332,9 +341,8 @@ export default class UnsafeForTests extends Extension {
             },
             stopService,
             async close() {
-                cleanup();
+                await cleanup();
                 stub.server.close();
-                await sleep(300);
                 const realEnabled = (await run('gsettings', ['get', 'org.gnome.shell', 'enabled-extensions'])).stdout;
                 if (realEnabled.includes(HELPER_UUID))
                     throw new Error('the real enabled-extensions list holds the test helper; restore it');
@@ -342,7 +350,7 @@ export default class UnsafeForTests extends Extension {
             },
         };
     } catch (error) {
-        cleanup();
+        await cleanup();
         throw error;
     }
 }

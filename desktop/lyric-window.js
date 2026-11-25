@@ -11,9 +11,12 @@
 // - Hover: nothing visually, no cursor change; empty space stays click-through.
 // - Plain primary press: fires onClick() immediately on press; never drags.
 // - Secondary press: fires onContextMenu() immediately on press.
-// - Ctrl+drag: moves smoothly across monitors with magnetic center/edge snap
-//   (Shift bypasses snap; Escape cancels; Ctrl+press without movement does
-//   nothing). Outline, snap guides and HUD appear only during an active drag.
+// - Ctrl+drag on the body: moves a frozen, steady frame 1:1 across monitors
+//   with magnetic center/edge snap (Shift bypasses snap; Escape cancels;
+//   Ctrl+press without movement does nothing). Incoming line updates and gaps
+//   queue until release so the frame never pops or cancels mid-drag.
+// - Ctrl+drag on the left or right edge of the lyric: resizes max wrap width
+//   live while holding the opposite edge steady (Escape cancels).
 // - Ctrl+scroll: resizes font size with debounced commit.
 
 import Cairo from 'cairo';
@@ -25,12 +28,14 @@ import Pango from 'gi://Pango';
 import PangoCairo from 'gi://PangoCairo';
 
 import {
-    boxFromGeometry, clampFontSize, expandedRenderBox,
-    geometryFromBox, movedBox, snapBox, verticalAnchorFor,
+    MIN_BOX_WIDTH, clampFontSize, commitLyricGeometry, edgeResizedBox,
+    expandedRenderBox, normalizedLyricBox, snapBox, verticalAnchorFor,
 } from '../shared/overlay-geometry.js';
-import {fitLyric, paintLyric} from '../shared/text-layout.js';
+import {fitLyric, paintLyric, singleLineHeight} from '../shared/text-layout.js';
 
 const GRIP_MARGIN = 6;
+const EDGE_ZONE = 14;
+const MIN_EDGE_INK_WIDTH = 96;
 const SNAP_THRESHOLD = 12;
 const SCROLL_STEP_RATIO = 1.06;
 const SCROLL_COMMIT_MS = 500;
@@ -47,7 +52,7 @@ const LOOK_KEYS = new Set([
     'text-border-3-color', 'text-border-3-width',
     'text-border-4-color', 'text-border-4-width',
     'text-backdrop', 'text-backdrop-color', 'text-backdrop-opacity',
-    'text-align', 'pitch-dock', 'pitch-enabled',
+    'text-align', 'lyric-max-lines', 'pitch-dock', 'pitch-enabled',
 ]);
 
 function readGeometry(settings) {
@@ -57,6 +62,10 @@ function readGeometry(settings) {
             throw new Error(`lyrics-overlay: setting "box" lacks ${key}`);
     }
     return geometry;
+}
+
+function clamp(value, low, high) {
+    return Math.min(high, Math.max(low, value));
 }
 
 function roundedRect(cr, x, y, w, h, r) {
@@ -108,7 +117,7 @@ export class LyricWindow {
             const schema = Gio.SettingsSchemaSource.get_default()?.lookup('org.gnome.desktop.interface', true);
             if (schema) {
                 this._interfaceSettings = new Gio.Settings({schema_id: 'org.gnome.desktop.interface'});
-                this._interfaceFontId = this._interfaceSettings.connect('changed::font-name', () => this._refitText());
+                this._interfaceFontId = this._interfaceSettings.connect('changed::font-name', () => this._placeBox());
             }
         } catch {
             // Optional desktop schema; falls back to 'Sans'.
@@ -121,13 +130,14 @@ export class LyricWindow {
         this._fadeStartUs = 0;
 
         this._line = {text: '', key: 'none'};
+        this._pendingLine = null;
         this._text = '';
         this._fitted = null;
         this._statusText = '';
         this._pillBox = null;
         this._shown = false;
 
-        this._dragMode = null; // null | 'pending-move' | 'move'
+        this._dragMode = null; // null | 'pending-move' | 'move' | 'pending-resize' | 'resize'
         this._drag = null;
         this._snapGuides = {x: [], y: []};
         this._box = null;
@@ -156,6 +166,7 @@ export class LyricWindow {
             Gdk.EventMask.BUTTON_PRESS_MASK
             | Gdk.EventMask.BUTTON_RELEASE_MASK
             | Gdk.EventMask.POINTER_MOTION_MASK
+            | Gdk.EventMask.LEAVE_NOTIFY_MASK
             | Gdk.EventMask.SCROLL_MASK
             | Gdk.EventMask.SMOOTH_SCROLL_MASK,
         );
@@ -166,6 +177,15 @@ export class LyricWindow {
         this._area.connect('button-press-event', (_w, ev) => this._onButtonPress(ev));
         this._area.connect('motion-notify-event', (_w, ev) => this._onMotion(ev));
         this._area.connect('button-release-event', (_w, ev) => this._onButtonRelease(ev));
+        this._area.connect('leave-notify-event', () => {
+            if (!this._dragMode)
+                this._setCursor(null);
+            return false;
+        });
+        this._area.connect('grab-broken-event', () => {
+            this._cancelDrag();
+            return false;
+        });
         this._area.connect('scroll-event', (_w, ev) => this._onScroll(ev));
         this._win.connect('key-press-event', (_w, ev) => this._onKeyPress(ev));
         this._win.connect('map-event', () => {
@@ -205,6 +225,8 @@ export class LyricWindow {
     }
 
     get visible() {
+        if (this._dragMode)
+            return this._shown;
         return this._shown && (Boolean(this._fitted) || Boolean(this._pillBox));
     }
 
@@ -246,12 +268,18 @@ export class LyricWindow {
 
     /** @param {{text: string, key: string, ruby?: Array<[string, string]>}} line */
     setLine(line) {
+        if (this._dragMode) {
+            this._pendingLine = line;
+            return;
+        }
         const previous = this._line;
         this._line = line;
-        if (line.key !== previous.key)
+        if (line.key !== previous.key) {
             this._crossTo(line.text);
-        else if (line.text !== this._text || JSON.stringify(line.ruby ?? null) !== JSON.stringify(previous.ruby ?? null))
+        } else if (line.text !== this._text
+            || JSON.stringify(line.ruby ?? null) !== JSON.stringify(previous.ruby ?? null)) {
             this._fitAndResize(line.text);
+        }
         this._computeStatusPill();
         this._syncWindowVisible();
         this._applyInputShape();
@@ -271,7 +299,7 @@ export class LyricWindow {
 
     previewFontSize(size) {
         this._fontSizePreview = clampFontSize(size);
-        this._refitText();
+        this._placeBox();
     }
 
     commitFontSize() {
@@ -284,6 +312,10 @@ export class LyricWindow {
 
     // ----- layout
 
+    _isActiveDrag() {
+        return this._dragMode === 'move' || this._dragMode === 'resize';
+    }
+
     _monitorIndexSetting() {
         return this._monitors.indexForSetting(this._settings.get_int('box-monitor'));
     }
@@ -292,35 +324,47 @@ export class LyricWindow {
         return this._monitors.workArea(monitorIndex);
     }
 
-    _anchor() {
-        const area = this._workArea(this._monitorIndex);
-        const cy = (this._box.y + this._box.height / 2 - area.y) / area.height;
+    _anchorFor(box = this._box, monitorIndex = this._monitorIndex) {
+        const area = this._workArea(monitorIndex);
+        const cy = (box.y + box.height / 2 - area.y) / area.height;
         const pitchDock = this._settings.get_string('pitch-dock');
         const pitchEnabled = this._settings.get_boolean('pitch-enabled');
         return verticalAnchorFor(cy, pitchDock, pitchEnabled);
     }
 
+    _anchor() {
+        return this._anchorFor(this._box, this._monitorIndex);
+    }
+
+    _singleLineHeight(width = 600) {
+        return singleLineHeight(this._measure, this._textParams(Math.max(160, Math.round(width)), 1));
+    }
+
     _placeBox() {
-        if (this._dragMode === 'move')
+        if (this._dragMode)
             return;
         const monitorIndex = this._monitorIndexSetting();
-        this._setBox(boxFromGeometry(readGeometry(this._settings), this._workArea(monitorIndex)), monitorIndex);
+        const area = this._workArea(monitorIndex);
+        const geometry = readGeometry(this._settings);
+        const pitchDock = this._settings.get_string('pitch-dock');
+        const pitchEnabled = this._settings.get_boolean('pitch-enabled');
+        const anchor = verticalAnchorFor(geometry.cy, pitchDock, pitchEnabled);
+        const baseH = this._singleLineHeight(geometry.width * area.width);
+        const box = normalizedLyricBox(geometry, area, baseH, anchor);
+        this._setBox(box, monitorIndex);
     }
 
     _setBox(box, monitorIndex) {
-        const widthChanged = !this._box || Math.round(box.width) !== Math.round(this._box.width);
-        const heightChanged = !this._box || Math.round(box.height) !== Math.round(this._box.height);
         this._box = box;
         this._monitorIndex = monitorIndex;
-        const anchor = this._anchor();
-        const anchorChanged = this._fitted && this._fitted.spec.anchor !== anchor;
-        if (widthChanged || heightChanged || anchorChanged || !this._renderBox) {
-            this._refitText();
-        } else {
-            const required = this._fitted ? this._fitted.requiredHeight : 0;
-            this._applyRenderBox(expandedRenderBox(this._box, required, anchor, this._workArea(this._monitorIndex)));
-        }
-        this._onBoxChanged(box, monitorIndex);
+        this._refitText();
+    }
+
+    _notifyDockBox() {
+        const rb = this._renderBox ?? this._box;
+        if (!rb)
+            return;
+        this._onBoxChanged({...rb}, this._monitorIndex);
     }
 
     _applyRenderBox(renderBox) {
@@ -339,11 +383,11 @@ export class LyricWindow {
         this._win.move(x, y);
         this._computeStatusPill();
         this._applyInputShape();
-        if (this._dragMode === 'move')
+        if (this._isActiveDrag())
             this._area.queue_draw();
     }
 
-    _textParams(width, height) {
+    _textParams(width, height, overrides = {}) {
         const s = this._settings;
         const family = s.get_string('font-family') || defaultDesktopFontFamily(this._interfaceSettings);
         return {
@@ -361,30 +405,34 @@ export class LyricWindow {
             backdropColor: s.get_string('text-backdrop-color'),
             backdropOpacity: s.get_double('text-backdrop-opacity'),
             align: s.get_string('text-align'),
-            anchor: this._anchor(),
+            anchor: this._box ? this._anchor() : 'bottom',
             ruby: s.get_boolean('text-furigana') ? (this._line.ruby ?? null) : null,
+            maxLines: s.get_int('lyric-max-lines'),
+            contentFit: false,
             width,
             height,
+            ...overrides,
         };
     }
 
     _fitAndResize(text) {
         this._text = text;
-        const width = Math.max(1, Math.round(this._box.width));
-        const baseHeight = Math.max(1, Math.round(this._box.height));
         const anchor = this._anchor();
         const area = this._workArea(this._monitorIndex);
         if (!text) {
             this._fitted = null;
             this._applyRenderBox(this._box);
+            this._notifyDockBox();
             return;
         }
-        let fitted = fitLyric(this._measure, text, this._textParams(width, baseHeight));
+        const width = Math.max(1, Math.round(this._box.width));
+        let fitted = fitLyric(this._measure, text, this._textParams(width, 1, {anchor}));
         const renderBox = expandedRenderBox(this._box, fitted.requiredHeight, anchor, area);
-        this._applyRenderBox(renderBox);
-        if (Math.round(renderBox.height) !== baseHeight)
-            fitted = fitLyric(this._measure, text, this._textParams(Math.round(renderBox.width), Math.round(renderBox.height)));
+        if (Math.round(renderBox.height) !== Math.round(fitted.surfaceHeight))
+            fitted = fitLyric(this._measure, text, this._textParams(width, Math.round(renderBox.height), {anchor}));
         this._fitted = fitted;
+        this._applyRenderBox(renderBox);
+        this._notifyDockBox();
     }
 
     _refitText() {
@@ -495,7 +543,7 @@ export class LyricWindow {
         const rw = Math.max(1, Math.round(this._renderBox.width));
         const rh = Math.max(1, Math.round(this._renderBox.height));
         const region = new Cairo.Region();
-        if (this._dragMode === 'move') {
+        if (this._isActiveDrag()) {
             region.unionRectangle({x: 0, y: 0, width: rw, height: rh});
         } else {
             const target = this._fitted ? this._fitted.inkBox : this._pillBox;
@@ -512,25 +560,20 @@ export class LyricWindow {
     }
 
     _onSettingChanged(key) {
-        if (key === 'box' || key === 'box-monitor') {
+        if (key === 'box' || key === 'box-monitor' || LOOK_KEYS.has(key))
             this._placeBox();
-            return;
-        }
-        if (LOOK_KEYS.has(key))
-            this._refitText();
     }
 
     // ----- drawing
 
     _hudSummary() {
-        if (this._dragMode !== 'move' || !this._box)
+        if (!this._isActiveDrag() || !this._renderBox)
             return '';
         const area = this._workArea(this._monitorIndex);
-        const w = Math.round(this._box.width);
-        const h = Math.round(this._box.height);
-        const wp = Math.round(this._box.width / area.width * 100);
-        const hp = Math.round(this._box.height / area.height * 100);
-        return `${w}\u00d7${h} px (${wp}%\u00d7${hp}%) \u00b7 ${Math.round(this.fontSize)} px`;
+        const w = Math.round(this._renderBox.width);
+        const wp = Math.round(this._renderBox.width / Math.max(1, area.width) * 100);
+        const prefix = this._dragMode === 'resize' ? 'Width ' : '';
+        return `${prefix}${w} px (${wp}%) \u00b7 ${Math.round(this.fontSize)} px`;
     }
 
     _onDraw(cr) {
@@ -552,7 +595,7 @@ export class LyricWindow {
             this._paintStatusPill(cr);
         }
 
-        if (this._dragMode === 'move' && this._renderBox)
+        if (this._isActiveDrag() && this._renderBox)
             this._paintOutline(cr, Math.round(this._renderBox.width), Math.round(this._renderBox.height));
 
         return false;
@@ -593,26 +636,67 @@ export class LyricWindow {
         cr.setLineWidth(1.5);
         cr.stroke();
 
+        // Left/right wrap-width edge grip bars (active edge highlights yellow during resize).
+        const gripH = Math.max(14, Math.min(34, Math.round(height * 0.45)));
+        const gripY = Math.round((height - gripH) / 2);
+        const activeEdges = this._dragMode === 'resize' ? (this._drag?.zone?.edges ?? {}) : {};
+        for (const [side, gx] of [['left', 3.5], ['right', width - 3.5]]) {
+            const active = Boolean(activeEdges[side]);
+            cr.setSourceRGBA(0, 0, 0, 0.85);
+            cr.setLineWidth(active ? 6 : 5);
+            cr.setLineCap(Cairo.LineCap.ROUND);
+            cr.moveTo(gx, gripY);
+            cr.lineTo(gx, gripY + gripH);
+            cr.stroke();
+            if (active)
+                cr.setSourceRGBA(0.98, 0.8, 0.08, 0.98);
+            else
+                cr.setSourceRGBA(1, 1, 1, 0.95);
+            cr.setLineWidth(active ? 3 : 2.2);
+            cr.moveTo(gx, gripY);
+            cr.lineTo(gx, gripY + gripH);
+            cr.stroke();
+        }
+        cr.setLineCap(Cairo.LineCap.BUTT);
+
         const area = this._workArea(this._monitorIndex);
         const centerX = area.x + area.width / 2;
         const centerY = area.y + area.height / 2;
+        cr.setSourceRGBA(0.98, 0.8, 0.08, 0.95);
+        cr.setLineWidth(2.5);
         if (this._snapGuides.x.some(gx => Math.abs(gx - centerX) <= 1)) {
-            cr.setSourceRGBA(0.98, 0.8, 0.08, 0.95);
-            cr.setLineWidth(2);
             cr.moveTo(Math.round(width / 2) + 0.5, 4);
             cr.lineTo(Math.round(width / 2) + 0.5, height - 4);
             cr.stroke();
         }
+        if (this._snapGuides.x.some(gx => Math.abs(gx - area.x) <= 1)) {
+            cr.moveTo(2.5, 4);
+            cr.lineTo(2.5, height - 4);
+            cr.stroke();
+        }
+        if (this._snapGuides.x.some(gx => Math.abs(gx - (area.x + area.width)) <= 1)) {
+            cr.moveTo(width - 2.5, 4);
+            cr.lineTo(width - 2.5, height - 4);
+            cr.stroke();
+        }
         if (this._snapGuides.y.some(gy => Math.abs(gy - centerY) <= 1)) {
-            cr.setSourceRGBA(0.98, 0.8, 0.08, 0.95);
-            cr.setLineWidth(2);
             cr.moveTo(4, Math.round(height / 2) + 0.5);
             cr.lineTo(width - 4, Math.round(height / 2) + 0.5);
             cr.stroke();
         }
+        if (this._snapGuides.y.some(gy => Math.abs(gy - area.y) <= 1)) {
+            cr.moveTo(4, 2.5);
+            cr.lineTo(width - 4, 2.5);
+            cr.stroke();
+        }
+        if (this._snapGuides.y.some(gy => Math.abs(gy - (area.y + area.height)) <= 1)) {
+            cr.moveTo(4, height - 2.5);
+            cr.lineTo(width - 4, height - 2.5);
+            cr.stroke();
+        }
 
         const hudText = this._hudSummary();
-        if (hudText && height >= 40 && width >= 150) {
+        if (hudText && height >= 34 && width >= 150) {
             const layout = PangoCairo.create_layout(cr);
             const desc = new Pango.FontDescription();
             desc.set_family('Sans');
@@ -626,7 +710,7 @@ export class LyricWindow {
             const pillW = Math.min(width - 24, logical.width + padX * 2);
             const pillH = logical.height + padY * 2;
             const px = 14;
-            const py = 10;
+            const py = Math.max(4, Math.min(10, Math.round((height - pillH) / 2)));
             roundedRect(cr, px, py, pillW, pillH, 5);
             cr.setSourceRGBA(0, 0, 0, 0.9);
             cr.fillPreserve();
@@ -653,6 +737,20 @@ export class LyricWindow {
         gdkWin.set_cursor(cursor);
     }
 
+    _zoneAt(localX) {
+        if (!this._fitted || !this._renderBox)
+            return 'move';
+        const ink = this._fitted.inkBox;
+        if (!ink || ink.width < MIN_EDGE_INK_WIDTH)
+            return 'move';
+        const zone = Math.min(EDGE_ZONE, Math.floor(ink.width * 0.16));
+        if (localX <= ink.x + zone)
+            return {edges: {left: true}};
+        if (localX >= ink.x + ink.width - zone)
+            return {edges: {right: true}};
+        return 'move';
+    }
+
     _onButtonPress(ev) {
         if (ev.get_event_type() !== Gdk.EventType.BUTTON_PRESS)
             return true;
@@ -673,44 +771,134 @@ export class LyricWindow {
             return true;
         }
 
+        const [, lx] = ev.get_coords();
         const [, rx, ry] = ev.get_root_coords();
-        this._dragMode = 'pending-move';
-        this._drag = {press: {x: rx, y: ry}, start: {...this._box}, monitorIndex: this._monitorIndex};
+        const zone = this._zoneAt(lx);
+        const startBox = {...(this._renderBox ?? this._box)};
+        const startArea = this._workArea(this._monitorIndex);
+        this._stopFade();
+        this._dragMode = zone === 'move' ? 'pending-move' : 'pending-resize';
+        this._drag = {
+            zone,
+            press: {x: rx, y: ry},
+            startBox,
+            currentH: startBox.height,
+            startMonitorIndex: this._monitorIndex,
+            startArea,
+            startFracW: startBox.width / Math.max(1, startArea.width),
+            grabFracX: clamp((rx - startBox.x) / Math.max(1, startBox.width), 0, 1),
+            grabOffsetY: ry - startBox.y,
+            monitorIndex: this._monitorIndex,
+            anchor: this._anchorFor(startBox, this._monitorIndex),
+        };
         this._snapGuides = {x: [], y: []};
         return true;
     }
 
     _onMotion(ev) {
-        if (!this._dragMode || !this._drag)
+        if (!this._dragMode || !this._drag) {
+            const [, state] = ev.get_state();
+            const ctrl = Boolean(state & Gdk.ModifierType.CONTROL_MASK);
+            if (!ctrl) {
+                this._setCursor(null);
+                return false;
+            }
+            const [, lx] = ev.get_coords();
+            const zone = this._zoneAt(lx);
+            this._setCursor(zone === 'move' ? 'move' : zone.edges.left ? 'w-resize' : 'e-resize');
             return false;
+        }
+        const drag = this._drag;
         const [, rx, ry] = ev.get_root_coords();
         const [, state] = ev.get_state();
         const noSnap = Boolean(state & Gdk.ModifierType.SHIFT_MASK);
-        const dx = rx - this._drag.press.x;
-        const dy = ry - this._drag.press.y;
+        const dx = rx - drag.press.x;
+        const dy = ry - drag.press.y;
 
-        if (this._dragMode === 'pending-move') {
+        if (this._dragMode === 'pending-move' || this._dragMode === 'pending-resize') {
             const threshold = Gtk.Settings.get_default()?.gtk_drag_threshold ?? 8;
             if (Math.abs(dx) <= threshold && Math.abs(dy) <= threshold)
                 return true;
-            this._dragMode = 'move';
-            this._setCursor('grabbing');
+            if (this._dragMode === 'pending-move') {
+                this._dragMode = 'move';
+                this._setCursor('grabbing');
+            } else {
+                this._dragMode = 'resize';
+                this._setCursor(drag.zone.edges.left ? 'w-resize' : 'e-resize');
+            }
             this._applyInputShape();
         }
 
+        if (this._dragMode === 'resize') {
+            const area = this._workArea(drag.monitorIndex);
+            const resized = edgeResizedBox(drag.startBox, drag.zone.edges, dx, 0, area);
+            const nextW = Math.max(1, Math.round(resized.width));
+            let nextH = drag.startBox.height;
+            if (this._text) {
+                const fitted = fitLyric(this._measure, this._text, this._textParams(nextW, 1, {anchor: drag.anchor}));
+                nextH = Math.min(area.height, Math.max(1, Math.round(fitted.requiredHeight)));
+                this._fitted = fitted;
+            }
+            let nextY;
+            if (drag.anchor === 'bottom')
+                nextY = drag.startBox.y + drag.startBox.height - nextH;
+            else if (drag.anchor === 'top')
+                nextY = drag.startBox.y;
+            else
+                nextY = drag.startBox.y + (drag.startBox.height - nextH) / 2;
+            nextY = clamp(nextY, area.y, area.y + area.height - nextH);
+            this._snapGuides = {x: [], y: []};
+            this._applyRenderBox({x: resized.x, y: nextY, width: nextW, height: nextH});
+            this._notifyDockBox();
+            this._area.queue_draw();
+            return true;
+        }
+
+        // Active body move: keep drag frame steady (zero refits or resizes on same monitor).
         const under = this._monitors.indexAtPoint(rx, ry);
         if (under >= 0)
-            this._drag.monitorIndex = under;
-        const area = this._workArea(this._drag.monitorIndex);
-        const raw = movedBox(this._drag.start, dx, dy, area);
+            drag.monitorIndex = under;
+        const area = this._workArea(drag.monitorIndex);
+        let rawW;
+        let rawH;
+        let rawX;
+        let rawY;
+        if (drag.monitorIndex === drag.startMonitorIndex) {
+            rawW = drag.startBox.width;
+            rawH = Math.min(drag.currentH, area.height);
+            rawX = drag.startBox.x + dx;
+            rawY = drag.startBox.y + dy;
+        } else {
+            rawW = clamp(Math.round(drag.startFracW * area.width), Math.min(MIN_BOX_WIDTH, area.width), area.width);
+            rawH = Math.min(drag.currentH, area.height);
+            rawX = rx - drag.grabFracX * rawW;
+            rawY = ry - drag.grabOffsetY;
+        }
+        // Only refit frozen text if crossing onto a monitor with a different width.
+        if (this._text && Math.round(rawW) !== Math.round(this._renderBox.width)) {
+            const fitted = fitLyric(this._measure, this._text, this._textParams(Math.round(rawW), 1, {anchor: drag.anchor}));
+            this._fitted = fitted;
+            drag.currentH = Math.min(area.height, Math.max(1, Math.round(fitted.requiredHeight)));
+            rawH = drag.currentH;
+        }
+        const clamped = {
+            x: clamp(rawX, area.x, area.x + area.width - rawW),
+            y: clamp(rawY, area.y, area.y + area.height - rawH),
+            width: rawW,
+            height: rawH,
+        };
+        let nextBox;
         if (noSnap) {
             this._snapGuides = {x: [], y: []};
-            this._setBox(raw, this._drag.monitorIndex);
+            nextBox = clamped;
         } else {
-            const snapped = snapBox(raw, area, SNAP_THRESHOLD);
+            const snapped = snapBox(clamped, area, SNAP_THRESHOLD);
             this._snapGuides = snapped.guides;
-            this._setBox(snapped.box, this._drag.monitorIndex);
+            nextBox = snapped.box;
         }
+        this._monitorIndex = drag.monitorIndex;
+        this._applyRenderBox(nextBox);
+        this._notifyDockBox();
         this._area.queue_draw();
         return true;
     }
@@ -719,7 +907,7 @@ export class LyricWindow {
         const [, button] = ev.get_button();
         if (button !== 1 || !this._dragMode)
             return true;
-        if (this._dragMode === 'move')
+        if (this._isActiveDrag())
             this._onMotion(ev);
         this._finishDrag(true);
         return true;
@@ -740,22 +928,34 @@ export class LyricWindow {
     }
 
     _finishDrag(commit) {
-        const wasMoving = this._dragMode === 'move';
+        const wasActive = this._isActiveDrag();
         const drag = this._drag;
+        const pendingLine = this._pendingLine;
         this._dragMode = null;
         this._drag = null;
+        this._pendingLine = null;
         this._snapGuides = {x: [], y: []};
         this._setCursor(null);
-        if (wasMoving && drag) {
-            const moved = ['x', 'y', 'width', 'height'].some(k => this._box[k] !== drag.start[k]);
-            if (commit && moved) {
-                const geometry = geometryFromBox(this._box, this._workArea(drag.monitorIndex));
-                this._settings.set_int('box-monitor', drag.monitorIndex === this._monitors.primaryIndex ? -1 : drag.monitorIndex);
+        if (wasActive && drag && this._renderBox) {
+            const changed = this._monitorIndex !== drag.startMonitorIndex
+                || ['x', 'y', 'width', 'height'].some(k => Math.round(this._renderBox[k]) !== Math.round(drag.startBox[k]));
+            if (commit && changed) {
+                const area = this._workArea(this._monitorIndex);
+                const geometry = commitLyricGeometry(
+                    this._renderBox,
+                    area,
+                    this._singleLineHeight(this._renderBox.width),
+                    this._settings.get_string('pitch-dock'),
+                    this._settings.get_boolean('pitch-enabled'),
+                );
+                this._settings.set_int('box-monitor', this._monitorIndex === this._monitors.primaryIndex ? -1 : this._monitorIndex);
                 this._settings.set_value('box', new GLib.Variant('a{sd}', geometry));
-            } else if (moved) {
-                this._placeBox();
             }
+            this._placeBox();
         }
+        if (pendingLine)
+            this.setLine(pendingLine);
+        this._syncWindowVisible();
         this._applyInputShape();
         this._area.queue_draw();
     }
