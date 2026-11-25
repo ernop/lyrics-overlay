@@ -233,6 +233,22 @@ export function startHttp({port, hostname, files, core, browser, addon, settings
                     duration: json.duration,
                     text: json.text,
                 };
+            else if (json.op === 'generateScore')
+                cmd = {
+                    op: 'generateScore',
+                    force: Boolean(json.force),
+                    quality: json.quality,
+                    freshAudio: Boolean(json.freshAudio),
+                };
+            else if (json.op === 'analyzeSong' || json.op === 'refreshAll')
+                cmd = {op: json.op, quality: json.quality};
+            else if (json.op === 'editScore')
+                cmd = {
+                    op: 'editScore',
+                    videoId: typeof json.videoId === 'string' ? json.videoId : null,
+                    patch: json.patch,
+                    edits: json.edits,
+                };
             respondJson(message, 200, core.command(cmd));
             return;
         }
@@ -256,12 +272,11 @@ export function startHttp({port, hostname, files, core, browser, addon, settings
             return;
         }
         case '/api/score/edit': {
-            const body = readJson(message);
-            if (!body || typeof body !== 'object' || Array.isArray(body))
+            if (!json || typeof json !== 'object' || Array.isArray(json))
                 throw new RequestError(400, 'score edit must be a JSON object');
             const outcome = core.editScore({
-                videoId: typeof body.videoId === 'string' ? body.videoId : null,
-                edits: body.edits ?? {},
+                videoId: typeof json.videoId === 'string' ? json.videoId : null,
+                edits: json.edits ?? {},
             });
             respondJson(message, outcome.ok ? 200 : 400, outcome);
             return;

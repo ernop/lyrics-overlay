@@ -314,7 +314,7 @@ process.stdout.write(${JSON.stringify(JSON.stringify(makeFakeTranscript()))} + '
         const fontsLoaded = await Promise.race([document.fonts.ready.then(() => true),
             new Promise(resolve => setTimeout(() => resolve(false), ${FONTS_CHECK_MS}))]);
         const filled = fontsLoaded && Boolean(document.querySelector('#stage canvas')) &&
-            document.querySelectorAll('.settings-group').length === 2 &&
+            document.querySelectorAll('.settings-group').length === 3 &&
             Boolean(document.getElementById('song')) &&
             document.querySelectorAll('.fonts button').length > 1 &&
             document.querySelectorAll('[aria-label="Microphones"] button').length === 3 &&

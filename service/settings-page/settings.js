@@ -64,6 +64,7 @@ const model = {
     pitchPreview: null,
     stageSync: null,
     lyricsModal: null,
+    scoreModal: null,
     actionError: '',
     connectionError: '',
 };
@@ -211,6 +212,8 @@ async function post(path, body) {
         showBanner(error.message);
     }
 }
+
+const command = body => post('/api/command', body);
 
 async function pollSettings() {
     if (model.sending || model.pending.size)
@@ -364,7 +367,7 @@ const percent = value => `${Math.round(value * 100)}%`;
 function buildTopBar() {
     const songTitle = el('span', {class: 'topbar-title'}, 'No song playing');
     const statusPill = el('span', {class: 'pill'}, 'Idle');
-    const markMusicBtn = pressButton('This is a music video', () => post('/api/command', {op: 'lookUp'}), {
+    const markMusicBtn = pressButton('This is a music video', () => command({op: 'lookUp'}), {
         class: 'primary compact',
         hidden: 'hidden',
     });
@@ -1252,7 +1255,6 @@ function buildSongDeck() {
     const setsCount = el('span', {class: 'pill'}, '0 sets');
     const emptySets = el('p', {class: 'note'}, 'No lyric candidates loaded for the current video.');
 
-    const command = body => post('/api/command', body);
     const markMusic = pressButton('This is a music video', () => command({op: 'lookUp'}), {class: 'primary compact', hidden: 'hidden'});
     const publishBtn = pressButton('Edit & publish', () => model.lyricsModal?.open('edit'), {
         class: 'compact',
@@ -1591,8 +1593,8 @@ function buildLyricsModal() {
         reader.style.setProperty('--reader-size', `${readerPx}px`);
         sizeReadout.textContent = `${readerPx} px`;
     }, {class: 'compact', 'aria-label': 'Larger lyrics text'});
-    const nudgeFastBtn = pressButton('\u22120.5 s', () => post('/api/command', {op: 'tooFast'}), {class: 'compact', title: 'Lyrics too fast'});
-    const nudgeSlowBtn = pressButton('+0.5 s', () => post('/api/command', {op: 'tooSlow'}), {class: 'compact', title: 'Lyrics too slow'});
+    const nudgeFastBtn = pressButton('\u22120.5 s', () => command({op: 'tooFast'}), {class: 'compact', title: 'Lyrics too fast'});
+    const nudgeSlowBtn = pressButton('+0.5 s', () => command({op: 'tooSlow'}), {class: 'compact', title: 'Lyrics too slow'});
     const offsetReadout = el('span', {class: 'pill'}, '0.0 s');
     const timingGroup = el('div', {class: 'modal-toolbar-group'}, offsetReadout, nudgeFastBtn, nudgeSlowBtn);
     const readToolbar = el('div', {class: 'modal-toolbar'},

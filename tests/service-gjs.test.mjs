@@ -200,8 +200,9 @@ test('the gjs service looks up lyrics, serves state and accepts shell commands',
     assert.ok(pageOps.includes('generateFromScratch'), 'settings page wires generateFromScratch');
     for (const op of pageOps)
         assert.ok(PAGE_COMMAND_OPS.has(op), `PAGE_COMMAND_OPS must allow settings page command "${op}"`);
-    for (const script of ['/preview.js', '/shared/scales.js', '/shared/text-ink.js',
-        '/shared/lyrics-status.js', '/shared/overlay-geometry.js', '/shared/pitch-layout.js'])
+    for (const script of ['/preview.js', '/lead-sheet.js', '/shared/scales.js', '/shared/text-ink.js',
+        '/shared/lyrics-status.js', '/shared/overlay-geometry.js', '/shared/pitch-layout.js',
+        '/shared/score-layout.js', '/shared/score-midi.js'])
         assert.match((await request(port, {urlPath: script})).headers['content-type'], /^text\/javascript/u, script);
     assert.match(settingsScript.headers['content-type'], /^text\/javascript/u, '/settings.js');
     const icon = await request(port, {urlPath: '/favicon.svg'});
@@ -487,4 +488,66 @@ setTimeout(() => {
     await waitFor(async () => JSON.parse((await request(port)).body).state.lyrics === 'timed', 'from-scratch lyrics finished');
     assert.doesNotMatch(serviceLog, /Generated opening line/u, 'service logs must never print lyric text');
     assert.doesNotMatch(serviceLog, /CRITICAL|WARNING|Error/u, serviceLog);
+});
+
+test('the gjs service forwards generateScore quality via /api/command and saves edits via /api/score/edit', async t => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'lyrics-overlay-score-http-'));
+    t.after(() => fs.rmSync(dir, {recursive: true, force: true}));
+    const stubScore = path.join(dir, 'stub-score.mjs');
+    const argvLog = path.join(dir, 'argv.json');
+    fs.writeFileSync(stubScore, `#!/usr/bin/env node
+import fs from 'node:fs';
+const qIdx = process.argv.indexOf('--quality');
+const quality = qIdx >= 0 ? process.argv[qIdx + 1] : 'standard';
+const log = fs.existsSync(${JSON.stringify(argvLog)}) ? JSON.parse(fs.readFileSync(${JSON.stringify(argvLog)}, 'utf8')) : [];
+log.push({quality, freshAudio: process.argv.includes('--fresh-audio')});
+fs.writeFileSync(${JSON.stringify(argvLog)}, JSON.stringify(log));
+process.stderr.write('stage:melody\\n');
+process.stdout.write(JSON.stringify({
+    ok: true,
+    quality,
+    duration: 24,
+    bpm: 120,
+    meter: [4, 4],
+    beats: [0, 0.5, 1, 1.5, 2, 2.5, 3, 3.5],
+    downbeats: [0, 2],
+    key: {root: 0, type: 'major', margin: 0.25},
+    notes: [
+        {id: 'n1', start: 0, end: 1, midi: 60, conf: 0.9, voice: 0},
+        {id: 'n2', start: 1, end: 2, midi: 64, conf: 0.9, voice: 0},
+    ],
+    chords: [{time: 0, symbol: 'C'}],
+    voicesDetected: 1,
+}) + '\\n');
+`);
+    const {port} = await startService(t, {
+        scoreGenerator: {
+            command: [process.execPath, stubScore],
+            device: 'cpu',
+            whisperModel: 'large-v3',
+            maxDurationSeconds: 900,
+            gpuGate: null,
+        },
+    });
+    const media = {videoId: 'scorevid123', currentTime: 0.5, duration: 24, paused: false, ended: false, stalled: false, playbackRate: 1, muted: false, volume: 1, adShowing: false};
+    const metadata = {host: 'www.youtube.com', videoId: 'scorevid123', title: 'Piano Etude', author: 'Studio Band - Topic', lengthSeconds: 24,
+        category: 'Music', musicVideoType: '', description: 'Provided to YouTube by Label\n\nPiano Etude \u00b7 Studio Band\n\nStudies\n\n\u2117 2026 Label',
+        musicCards: [], mediaSession: null, ytmByline: ''};
+    assert.equal((await report(port, {tabId: 11, sampledAt: Date.now(), heartbeatMs: 5000, media, metadata, next: null})).status, 204);
+
+    const hq = await pagePost(port, '/api/command', {op: 'generateScore', force: true, quality: 'high'});
+    assert.equal(hq.status, 200);
+    assert.deepEqual(JSON.parse(hq.body), {ok: true});
+    const ready = await waitFor(async () => {
+        const answer = JSON.parse((await request(port)).body);
+        return answer.state.score?.status === 'ready' ? answer : null;
+    }, 'high-quality score extraction');
+    assert.equal(ready.state.score.quality, 'high', '/api/command must forward quality="high" to generateScore');
+    assert.deepEqual(JSON.parse(fs.readFileSync(argvLog, 'utf8')), [{quality: 'high', freshAudio: false}]);
+
+    const edit = await pagePost(port, '/api/score/edit', {videoId: 'scorevid123', edits: {tempoMul: 2}});
+    assert.equal(edit.status, 200);
+    const editBody = JSON.parse(edit.body);
+    assert.equal(editBody.ok, true);
+    assert.equal(editBody.score.edits.tempoMul, 2);
 });
