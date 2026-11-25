@@ -807,7 +807,7 @@ test('manual LRCLIB search and local .lrc/.txt import select lyrics immediately 
         answers: {
             'Band|Song One': [],
             'Real Artist|Real Song': [
-                record(42, {trackName: 'Real Song', artistName: 'Real Artist', albumName: 'Deluxe', duration: 210}),
+                record(42, {trackName: 'Real Song', artistName: 'Real Artist', albumName: 'Deluxe', duration: 201}),
             ],
         },
         generate: () => ({
@@ -1103,4 +1103,119 @@ test('download progress, GPU wait reason, and streaming early subtitles preview 
     assert.equal(h.core.lyricsFor('oratorio001').timed, true);
     assert.deepEqual(h.updatedVideos, ['oratorio001']);
 });
+
+test('length-mismatched timed LRCLIB entries demote to plain for alignment, and gross mismatches are rejected', async () => {
+    const genCalls = [];
+    const h = harness({
+        answers: {
+            'Band|Intro Cut': [
+                // 25 s shorter than the 225 s music video, and missing plainLyrics (must extract from syncedLyrics).
+                record(10, {trackName: 'Intro Cut', duration: 200, plainLyrics: '', syncedLyrics: '[00:05.00] Verse one\n[00:10.00] Verse two'}),
+            ],
+            'Band|Overrun Song': [
+                // Declared 200 s, but sung lyrics run 35 s past the end of the track.
+                record(11, {trackName: 'Overrun Song', duration: 200, plainLyrics: 'Late line', syncedLyrics: '[00:10.00] Early\n[03:55.00] Past end'}),
+            ],
+            'Band|Short Track': [
+                // 150 s song attached via Music card to a 7200 s concert video.
+                record(12, {trackName: 'Short Track', duration: 150, plainLyrics: 'Short song', syncedLyrics: '[00:05.00] Short song'}),
+            ],
+        },
+        generate: req => {
+            genCalls.push({videoId: req.videoId, plainLyrics: req.plainLyrics});
+            return {promise: new Promise(() => {}), cancel: () => {}};
+        },
+    });
+
+    // Moderate mismatch (25 s off on 225 s video): demoted to plain, triggers Whisper Mode A alignment with extracted text.
+    const introMeta = metadata('vintro1', {
+        title: 'Intro Cut',
+        lengthSeconds: 225,
+        description: 'Provided to YouTube by Label\n\nIntro Cut \u00b7 Band\n\nAlbum\n\n\u2117 2001 Label',
+    });
+    h.report(1, {sampledAt: h.now, media: media('vintro1', {currentTime: 6, duration: 225.1}), metadata: introMeta});
+    await h.flush();
+    assert.equal(h.lastState().lyrics, 'generating');
+    assert.equal(h.lastLine().text, '', 'out-of-sync LRCLIB timestamps must not display');
+    assert.equal(h.lastState().candidates[0].timed, false);
+    assert.equal(h.lastState().candidates[0].matches, true);
+    assert.deepEqual(genCalls, [{videoId: 'vintro1', plainLyrics: 'Verse one\nVerse two'}]);
+
+    // Timestamp overrun (same 200 s duration, but sung lyric at 235 s): demoted to plain and aligned.
+    const overrunMeta = metadata('vover1', {
+        title: 'Overrun Song',
+        lengthSeconds: 200,
+        description: 'Provided to YouTube by Label\n\nOverrun Song \u00b7 Band\n\nAlbum\n\n\u2117 2001 Label',
+    });
+    h.report(1, {sampledAt: h.now, media: media('vover1', {currentTime: 10, duration: 200}), metadata: overrunMeta});
+    await h.flush();
+    assert.equal(h.lastState().lyrics, 'generating');
+    assert.equal(h.lastState().candidates[0].timed, false);
+    assert.deepEqual(genCalls[1], {videoId: 'vover1', plainLyrics: 'Late line'});
+
+    // Gross mismatch (150 s LRCLIB on 7200 s concert video): rejected outright (matches: false, no lyrics).
+    const concertMeta = metadata('vlongcard1', {
+        title: 'Full Live Concert',
+        author: 'Uploader',
+        category: 'Music',
+        lengthSeconds: 7200,
+        description: '',
+        musicCards: [{title: 'Short Track', artist: 'Band', album: 'Album'}],
+    });
+    h.report(1, {sampledAt: h.now, media: media('vlongcard1', {currentTime: 10, duration: 7200}), metadata: concertMeta});
+    await h.flush();
+    assert.equal(h.lastState().lyrics, 'none');
+    assert.equal(h.lastState().chosen, null);
+    assert.equal(h.lastState().candidates[0].matches, false);
+    assert.equal(h.lastState().candidates[0].timed, false);
+    assert.equal(h.lastLine().text, '');
+});
+
+test('preloaded next videos re-rank from cache once exact playback duration arrives, ignoring ad durations', async () => {
+    const h = harness({answers: {
+        'Band|Song One': [record(1)],
+        'Other Band|Song Two': [
+            record(20, {trackName: 'Song Two', artistName: 'Other Band', duration: 200}),
+            record(21, {trackName: 'Song Two', artistName: 'Other Band', duration: 199}),
+            record(22, {trackName: 'Song Two', artistName: 'Other Band', duration: 196.8}),
+        ],
+    }});
+    // Preload uses YouTube's rounded "+1 s" lengthText (200 s for a 198.6 s song).
+    const next = {videoId: 'v9', title: 'Song Two', byline: 'Other Band - Topic', durationSeconds: 200, host: 'www.youtube.com'};
+    h.report(7, {sampledAt: h.now, media: media('v1'), metadata: metadata('v1'), next});
+    await h.flush();
+    await h.flush();
+    assert.deepEqual(h.searches, ['Band|Song One', 'Other Band|Song Two']);
+    assert.equal(h.saved.videos.get('v9').candidates[0].id, 20, 'preload ranked against 200 s');
+    assert.equal(h.saved.videos.get('v9').candidates.find(c => c.id === 22).timed, false, '196.8 s > 2 s from 200 s');
+
+    // During a 15 s ad before v9 starts, media.duration (15) is ignored and lengthSeconds (199) is used.
+    const v9Meta = metadata('v9', {
+        title: 'Song Two',
+        author: 'Other Band - Topic',
+        lengthSeconds: 199,
+        description: 'Provided to YouTube by Label\n\nSong Two \u00b7 Other Band\n\nAlbum\n\n\u2117 2001 Label',
+    });
+    h.report(7, {sampledAt: h.now, media: media('v9', {duration: 15, adShowing: true}), metadata: v9Meta});
+    await h.flush();
+    assert.equal(h.searches.length, 2, 're-ranking reuses the cached search with zero extra LRCLIB requests');
+    assert.equal(h.saved.videos.get('v9').lookup.duration, 199);
+    assert.equal(h.lastState().chosen.id, 21, '199 s beats 200 s once real lengthSeconds arrives');
+    assert.equal(h.saved.videos.get('v9').candidates.find(c => c.id === 22).timed, false, '196.8 s still > 2 s from rounded 199 s');
+
+    // Once the ad ends and real float media.duration (198.6 s) arrives, 196.8 s is within ±2 s and 199 s still wins.
+    h.report(7, {sampledAt: h.now, media: media('v9', {duration: 198.6, adShowing: false}), metadata: v9Meta});
+    await h.flush();
+    assert.equal(h.searches.length, 2);
+    assert.equal(h.lastState().chosen.id, 21);
+    assert.equal(h.saved.videos.get('v9').candidates.find(c => c.id === 22).timed, true, '196.8 s promoted back to timed at 198.6 s');
+    assert.equal(h.saved.videos.get('v9').lookup.duration, 198.6);
+
+    // Subsequent heartbeats at the same duration do not re-run lookup.
+    const logsBefore = h.logs.length;
+    h.report(7, {sampledAt: h.now + 5000, media: media('v9', {currentTime: 5, duration: 198.6}), metadata: v9Meta});
+    await h.flush();
+    assert.equal(h.logs.length, logsBefore);
+});
+
 

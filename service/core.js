@@ -11,7 +11,8 @@ import {parseSyncedLyrics, plainLyricsFromSynced, shiftSyncedLyrics} from '../sh
 import {generateLrcFromTranscript} from '../shared/lyric-align.js';
 import {OFFSET_STEP_SECONDS, displayAt, nudgedOffset} from '../shared/lyric-display.js';
 import {
-    buildLookupCandidates, candidateKey, chooseAutomatic, rankRecords, searchSettlesLookup,
+    buildLookupCandidates, candidateKey, chooseAutomatic, rankRecords, recordHasTimed,
+    searchSettlesLookup,
 } from '../shared/lyric-text.js';
 import {SCALES} from '../shared/scales.js';
 import {deriveIdentity, deriveNextIdentity, describeIdentity} from '../shared/song-identity.js';
@@ -21,7 +22,10 @@ import {
     selectReferenceLyrics, summarizeIngest, upsertVocalFusedCandidate,
 } from './ingest.js';
 
-export const SEARCH_VERSION = 1;
+// v2: enforce ±2 s timed duration gate, demote moderate mismatches to plain,
+// reject gross duration mismatches, and rank against exact playback duration.
+export const SEARCH_VERSION = 2;
+export const DURATION_RESCORE_THRESHOLD_SECONDS = 0.25;
 export const GENERATE_VERSION = 1;
 export const SCORE_VERSION = 2;
 // The indicator stays this long after YouTube stops sounding.
@@ -122,8 +126,25 @@ function parseImportedLyrics(filename, rawText, identity) {
     };
 }
 
+function exactDurationFor(session, identity) {
+    const metaDur = Number(identity?.durationSeconds) || 0;
+    if (!(metaDur > 0))
+        return 0;
+    const media = session?.media;
+    const mediaDur = media && media.videoId === session.videoId && !media.adShowing
+        ? (Number(media.duration) || 0)
+        : 0;
+    // Prefer the player's float duration when it agrees with YouTube's rounded
+    // lengthSeconds, avoiding ad or mid-switch durations and live DVR drift.
+    if (mediaDur > 0 && Math.abs(mediaDur - metaDur) <= 2)
+        return mediaDur;
+    return metaDur;
+}
+
 function storedCandidate(entry) {
     const {record} = entry;
+    const synced = recordHasTimed(record) ? record.syncedLyrics : null;
+    const plain = (record.plainLyrics || '').trim() || (synced ? plainLyricsFromSynced(synced) : '');
     return {
         id: record.id,
         trackName: record.trackName || record.name || '',
@@ -131,8 +152,8 @@ function storedCandidate(entry) {
         albumName: record.albumName || '',
         duration: Number(record.duration) || 0,
         instrumental: Boolean(record.instrumental),
-        plainLyrics: (record.plainLyrics || '').trim(),
-        syncedLyrics: entry.timed ? record.syncedLyrics : null,
+        plainLyrics: plain,
+        syncedLyrics: entry.timed ? synced : null,
         score: Math.round(entry.score * 1000) / 1000,
         matches: entry.matches,
         timed: entry.timed,
@@ -551,11 +572,24 @@ export class LyricsCore {
             record.userRequested = true;
             this._userRequestedNow = session.videoId;
             this._deps.store.saveVideo(record);
-            this._enqueue({videoId: session.videoId, identity: session.identity, force: command.op === 'searchAgain', current: true});
+            this._enqueue({
+                videoId: session.videoId,
+                identity: session.identity,
+                duration: exactDurationFor(session, session.identity),
+                force: command.op === 'searchAgain',
+                current: true,
+            });
             if (session.next) {
                 const nextIdentity = this._video(session.next.videoId).identity ?? deriveNextIdentity(session.next);
-                if (nextIdentity.musical)
-                    this._enqueue({videoId: session.next.videoId, identity: nextIdentity, force: false, current: false});
+                if (nextIdentity.musical) {
+                    this._enqueue({
+                        videoId: session.next.videoId,
+                        identity: nextIdentity,
+                        duration: Number(nextIdentity.durationSeconds) || 0,
+                        force: false,
+                        current: false,
+                    });
+                }
             }
             this._refresh();
             return {ok: true};
@@ -572,6 +606,7 @@ export class LyricsCore {
             this._enqueue({
                 videoId: session.videoId,
                 identity: session.identity,
+                duration: exactDurationFor(session, session.identity),
                 force: false,
                 current: true,
                 customCandidates: [{artist, title}],
@@ -739,7 +774,13 @@ export class LyricsCore {
             }
             // Consult LRCLIB fresh (within rate-limit budget) first so its words & timing
             // hints fuse with the vocal-isolated audio run.
-            this._enqueue({videoId: session.videoId, identity: session.identity, force: true, current: true});
+            this._enqueue({
+                videoId: session.videoId,
+                identity: session.identity,
+                duration: exactDurationFor(session, session.identity),
+                force: true,
+                current: true,
+            });
             this._maybeRunPendingRefreshAll();
             this._refresh();
             return {ok: true};
@@ -938,7 +979,7 @@ export class LyricsCore {
                 timed: Boolean(effective.timed),
                 custom: Boolean(effective.custom),
                 generated: effective.generated ?? null,
-                syncedLyrics: effective.syncedLyrics ?? '',
+                syncedLyrics: effective.timed ? (effective.syncedLyrics ?? '') : '',
                 bakedSyncedLyrics,
                 plainLyrics: effective.plainLyrics || (bakedSyncedLyrics ? plainLyricsFromSynced(bakedSyncedLyrics) : ''),
                 lines,
@@ -1158,12 +1199,19 @@ export class LyricsCore {
         return lines;
     }
 
-    _lookupWanted(record, identity, force, now) {
+    _lookupWanted(record, identity, force, now, {duration = 0, current = true} = {}) {
         if (force || !record.lookup || record.lookup.version !== SEARCH_VERSION)
             return true;
         const keys = buildLookupCandidates(identity).map(candidateKey);
         if (keys.some(key => !record.lookup.queries.includes(key)) && record.lookup.status !== 'timed')
             return true;
+        // Re-rank cached results once playback supplies a sharper duration
+        // than a preloaded "next" listing (whose lengthText is often +1 s).
+        if (current && duration > 0 && record.candidates.length > 0 && record.lookup.status !== 'error') {
+            const prevDuration = record.lookup.duration;
+            if (!Number.isFinite(prevDuration) || Math.abs(prevDuration - duration) >= DURATION_RESCORE_THRESHOLD_SECONDS)
+                return true;
+        }
         if (record.lookup.status === 'error')
             return now - record.lookup.at > ERROR_RECHECK_MS;
         if (record.lookup.status === 'none' || record.lookup.status === 'plain')
@@ -1175,24 +1223,40 @@ export class LyricsCore {
         if (!session.identity)
             return;
         const record = this._video(session.videoId);
-        if (session.identity.musical || record.userRequested)
-            this._enqueue({videoId: session.videoId, identity: session.identity, force: false, current: true});
+        if (session.identity.musical || record.userRequested) {
+            this._enqueue({
+                videoId: session.videoId,
+                identity: session.identity,
+                duration: exactDurationFor(session, session.identity),
+                force: false,
+                current: true,
+            });
+        }
         if ((session.identity.musical || record.userRequested) && session.next) {
             const nextIdentity = this._video(session.next.videoId).identity ?? deriveNextIdentity(session.next);
-            if (nextIdentity.musical)
-                this._enqueue({videoId: session.next.videoId, identity: nextIdentity, force: false, current: false});
+            if (nextIdentity.musical) {
+                this._enqueue({
+                    videoId: session.next.videoId,
+                    identity: nextIdentity,
+                    duration: Number(nextIdentity.durationSeconds) || 0,
+                    force: false,
+                    current: false,
+                });
+            }
         }
     }
 
-    /** @param {{videoId: string, identity: object, force: boolean, current: boolean, customCandidates?: Array<{artist: string, title: string}>}} request */
+    /** @param {{videoId: string, identity: object, duration?: number, force: boolean, current: boolean, customCandidates?: Array<{artist: string, title: string}>}} request */
     _enqueue(request) {
         const now = this._deps.clock.now();
         const isCustom = Array.isArray(request.customCandidates) && request.customCandidates.length > 0;
+        const duration = Number(request.duration) || Number(request.identity?.durationSeconds) || 0;
         if (!isCustom && this._running?.videoId === request.videoId && !request.force)
             return;
-        if (!isCustom && !this._lookupWanted(this._video(request.videoId), request.identity, request.force, now))
+        if (!isCustom && !this._lookupWanted(this._video(request.videoId), request.identity, request.force, now,
+            {duration, current: Boolean(request.current)}))
             return;
-        let job = {...request, queuedAt: now};
+        let job = {...request, duration, queuedAt: now};
         const existing = this._queue.findIndex(entry => entry.videoId === request.videoId);
         if (existing >= 0) {
             const earlier = this._queue[existing];
@@ -1200,6 +1264,7 @@ export class LyricsCore {
                 ...job,
                 force: earlier.force || request.force,
                 current: earlier.current || request.current,
+                duration: request.current ? duration : (earlier.current ? earlier.duration : (duration || earlier.duration)),
                 queuedAt: earlier.queuedAt,
                 customCandidates: job.customCandidates ?? earlier.customCandidates,
             };
@@ -1278,7 +1343,7 @@ export class LyricsCore {
         const {store, search, clock, log} = this._deps;
         const isCustom = Array.isArray(job.customCandidates) && job.customCandidates.length > 0;
         const candidates = isCustom ? job.customCandidates : buildLookupCandidates(job.identity);
-        const duration = job.identity.durationSeconds;
+        const duration = job.duration > 0 ? job.duration : (Number(job.identity.durationSeconds) || 0);
         const answered = [];
         let searched = 0;
         let cachedCount = 0;
@@ -1331,7 +1396,7 @@ export class LyricsCore {
         if (!answered.length) {
             const status = failures ? 'error' : 'none';
             if (!isCustom || !record.lookup)
-                record.lookup = {status, at: clock.now(), queries: mergedQueries, version: SEARCH_VERSION};
+                record.lookup = {status, at: clock.now(), queries: mergedQueries, version: SEARCH_VERSION, duration};
             store.saveVideo(record);
             return {outcome: status, searched, cached: cachedCount};
         }
@@ -1355,7 +1420,7 @@ export class LyricsCore {
         const rankedAll = kept.map(candidate => ({record: candidate, score: candidate.score, matches: candidate.matches, timed: candidate.timed}));
         const autoId = chooseAutomatic(isCustom ? rankedAll : ranked, []);
         const auto = kept.find(candidate => candidate.id === autoId);
-        record.lookup = {status: auto ? (auto.timed ? 'timed' : 'plain') : 'none', at: clock.now(), queries: mergedQueries, version: SEARCH_VERSION};
+        record.lookup = {status: auto ? (auto.timed ? 'timed' : 'plain') : 'none', at: clock.now(), queries: mergedQueries, version: SEARCH_VERSION, duration};
         store.saveVideo(record);
         return {outcome: record.lookup.status, searched, cached: cachedCount};
     }

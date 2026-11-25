@@ -7,7 +7,7 @@ import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {promisify} from 'node:util';
 
-import {LyricsCore} from '../service/core.js';
+import {LyricsCore, SEARCH_VERSION} from '../service/core.js';
 
 const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const scriptPath = path.join(root, 'service', 'furigana.py');
@@ -141,7 +141,7 @@ test('LyricsCore prewarms and attaches ruby only when furigana is enabled', asyn
         version: 1,
         videoId,
         identity: {videoId, title: 'Sakura', artist: 'Artist', durationSeconds: 200, musical: true, reliable: true},
-        lookup: {status: 'timed', at: now, queries: ['artist|sakura'], version: 1},
+        lookup: {status: 'timed', at: now, queries: ['artist|sakura'], version: SEARCH_VERSION, duration: 200},
         generated: null,
         candidates: [{
             id: 42,

@@ -44,7 +44,7 @@ export function lrcText(candidate) {
 }
 
 function sentKey(candidate, lrc) {
-    return lrc ? `${LRC_FORMAT}:${candidate.id}` : '';
+    return lrc ? `${LRC_FORMAT}:${candidate.id}${candidate.timed ? '' : ':plain'}` : '';
 }
 
 export class ArchiveSync {
@@ -105,7 +105,7 @@ export class ArchiveSync {
                 return this._updatePresence({sounding: [], open: []});
             return this._chain;
         }
-        const signature = `${state.videoId} ${state.sounding ? 'heard' : 'quiet'} ${state.chosen?.id ?? 'none'}`;
+        const signature = `${state.videoId} ${state.sounding ? 'heard' : 'quiet'} ${state.chosen?.id ?? 'none'} ${state.chosen?.timed ? 't' : 'p'}`;
         if (signature !== this._lastSignature) {
             this._lastSignature = signature;
             const {videoId, sounding} = state;

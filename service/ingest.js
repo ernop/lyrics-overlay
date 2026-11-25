@@ -27,11 +27,8 @@ export function selectReferenceLyrics(record, effective = null) {
     if (effective && !effective.generated && !effective.instrumental && (effective.syncedLyrics || effective.plainLyrics))
         return effective;
     const rankedNonGen = (record.candidates ?? []).filter(c =>
-        !c.generated && !c.instrumental && !rejected.has(c.id) && (c.syncedLyrics || c.plainLyrics));
-    const timed = rankedNonGen.find(c => c.timed && c.matches) ?? rankedNonGen.find(c => c.timed);
-    if (timed)
-        return timed;
-    return rankedNonGen.find(c => c.matches) ?? rankedNonGen[0] ?? null;
+        !c.generated && !c.instrumental && c.matches && !rejected.has(c.id) && (c.syncedLyrics || c.plainLyrics));
+    return rankedNonGen.find(c => c.timed) ?? rankedNonGen[0] ?? null;
 }
 
 export function referencePlainLyrics(candidate) {

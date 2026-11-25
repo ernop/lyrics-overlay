@@ -95,7 +95,7 @@ function setup({store = memoryStore(), client = fakeClient(), lyrics = new Map()
 }
 
 const state = (videoId, {sounding = true, chosen = null} = {}) =>
-    ({active: true, sounding, videoId, chosen: chosen ? {id: chosen.id} : null});
+    ({active: true, sounding, videoId, chosen: chosen ? {id: chosen.id, timed: Boolean(chosen.timed)} : null});
 const inactive = () => ({active: false, sounding: false, videoId: null, chosen: null});
 
 test('lrcText writes LRC tags and the timed lines, plain lines without times, and nothing without words', () => {
@@ -295,4 +295,18 @@ test('observeVideoLyrics forwards newly generated lyrics for a previously heard 
     assert.equal(client.calls.at(-1)[0], 'lyrics');
     assert.equal(client.calls.at(-1)[1], 'bgconcert01');
     assert.match(client.calls.at(-1)[2], /\[00:05\.00\] Comfort ye/u);
+});
+
+test('demoting the same candidate id from timed to plain resends plain lyrics to ytarchive', async () => {
+    const {sync, client, lyrics, store} = setup();
+    lyrics.set('demotedvid1', timed);
+    await sync.observe(state('demotedvid1', {chosen: timed}));
+    assert.equal(store.records.get('demotedvid1').lyricsKey, `${LRC_FORMAT}:77`);
+
+    const demoted = {...timed, timed: false, syncedLyrics: null};
+    lyrics.set('demotedvid1', demoted);
+    await sync.observe(state('demotedvid1', {chosen: demoted}));
+    assert.equal(client.calls.at(-1)[0], 'lyrics');
+    assert.equal(client.calls.at(-1)[2], lrcText(demoted));
+    assert.equal(store.records.get('demotedvid1').lyricsKey, `${LRC_FORMAT}:77:plain`);
 });

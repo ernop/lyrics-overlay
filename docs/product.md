@@ -509,6 +509,29 @@ from scratch when they are not.
   cover. A quoted phrase followed by a separator, a bracket or the end of
   the title is the song's title: `"The Lantern on the Hill" - Folk song`
   is looked up as "The Lantern on the Hill".
+- **Duration-gated LRCLIB matching (owner, 2026-11-25).** Trusting synced
+  timestamps is separated from trusting lyric text (`shared/lyric-text.js`,
+  `SEARCH_VERSION = 2`):
+  - **Timed acceptance (`±2 s`):** LRCLIB synced lyrics are auto-accepted as
+    timed only when `|record.duration - songDuration| <= 2 s` (matching
+    LRCLIB's own `/api/get` window for whole-second rounding and platform
+    fade/silence tails), `record.duration > 0`, and the last spoken lyric line
+    does not overrun `songDuration + 2 s` (ignoring trailing blank and credit
+    lines). Early-stopping across query variants requires the same ±2 s fit.
+  - **Moderate mismatch (`2 s` to `min(60 s, 40%)`):** Timed LRCLIB records
+    outside ±2 s (such as music videos with intros/outros or live cuts) are
+    demoted to plain text (extracting plain lines from `syncedLyrics` if
+    `plainLyrics` is empty) so local Whisper Mode A aligns those exact words
+    onto the actual audio instead of playing out-of-sync timestamps.
+  - **Gross mismatch (`> 60 s` or `> 40%`):** Rejected as non-matching
+    (`matches: false`), preventing multi-hour videos whose description carries
+    a Music card for one song from attaching that short song's lyrics.
+  - **Exact playback duration & preload re-scoring:** Scoring uses a smooth
+    decay `1 / (1 + diff / 10)` (no 20 s flat floor) against the player's
+    float `media.duration` when playing and not in an ad (falling back to
+    `lengthSeconds` otherwise). Videos preloaded from YouTube's rounded `next`
+    `lengthText` re-rank from the local search cache (zero extra LRCLIB
+    requests) once real playback duration arrives.
 - **Lookup pacing (2026-11-10).** Only the sounding tab looks up lyrics,
   and queued lookups for tabs that stopped mattering are dropped. A search
   waits at most 12 s (usually under 1 s); up to four query variants run one

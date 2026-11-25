@@ -276,7 +276,8 @@ Only when `ytarchiveUrl` is set (`null` in settings.example.json).
   `[al:]` and `[length:]` tags, then the timed lines, or the plain ones when
   the set is untimed): `POST /api/lyrics {video_id, lrc}`, with `lrc: null`
   when no set with words remains. It is sent again only when the set in use
-  changes (`lyricsKey`, `<LRC_FORMAT>:<candidate id>`; raising `LRC_FORMAT`
+  changes (`lyricsKey`, `<LRC_FORMAT>:<candidate id>` or
+  `<LRC_FORMAT>:<candidate id>:plain` when untimed; raising `LRC_FORMAT`
   resends every song's file the next time it plays).
 - When the owner stops hearing a video that was added, `ArchiveSync` sends
   `POST <ytarchiveUrl>/api/played-stop {video_id}` so ytarchive can end an
@@ -383,7 +384,16 @@ GSettings too, and the page shows them at its next poll (each second).
   offset. Written atomically, only when they change.
 - **Lookups** queue per video, current video first, then the next one.
   Search answers are cached by query (`searches/<sha1>.json`) and the budget
-  windows persist in `budget.json`.
+  windows persist in `budget.json`. `SEARCH_VERSION = 2` ranks candidates with
+  `shared/lyric-text.js` against the player's float `media.duration` (when not
+  in an ad and within 2 s of `lengthSeconds`, else `lengthSeconds`), stores
+  the ranking duration on `record.lookup.duration`, and re-ranks from the
+  search cache with zero extra LRCLIB calls if playback reveals a duration
+  differing by at least 0.25 s from a preloaded `next` lookup. Timed LRCLIB
+  records outside `MAX_TIMED_DURATION_DIFF_SECONDS` (2 s) or with spoken lines
+  past `duration + 2 s` demote to plain; records outside
+  `min(60 s, 40%)` fail `recordMatchesIdentity` (and are skipped by
+  `selectReferenceLyrics`).
 - **Outputs**: a state summary and the one line to show, each emitted only
   when it changes; timers wake the core exactly when the next line starts
   or a tab next lapses, never by polling.

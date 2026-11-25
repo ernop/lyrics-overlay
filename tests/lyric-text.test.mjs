@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 
 import {
     artistSimilarity, buildLookupCandidates, chooseAutomatic, cleanArtistName, cleanSongTitle,
-    normalizeComparisonText, rankRecords, recordMatchesIdentity, scoreRecord, searchSettlesLookup,
+    durationFitsPlain, durationFitsTimed, maxSpokenTimestampSeconds, normalizeComparisonText,
+    rankRecords, recordMatchesIdentity, scoreRecord, searchSettlesLookup,
     stripVersionQualifiers, tokenSimilarity,
 } from '../shared/lyric-text.js';
 
@@ -86,35 +87,76 @@ const record = (id, trackName, artistName, duration, synced) => ({
     plainLyrics: 'words', syncedLyrics: synced ? '[00:01.00] words' : null,
 });
 
-test('scores keep voice-wei weights: title 0.6, artist 0.25, duration 0.15', () => {
+test('scores keep title 0.6, artist 0.25, duration 0.15 with smooth decay beyond 20 s', () => {
     const candidate = {artist: 'Rick Astley', title: 'Never Gonna Give You Up'};
     assert.equal(scoreRecord(record(1, 'Never Gonna Give You Up', 'Rick Astley', 213, true), candidate, 213), 1);
     assert.equal(scoreRecord(record(1, 'Never Gonna Give You Up', 'Rick Astley', 223, true), candidate, 213), 0.6 + 0.25 + 0.075);
     assert.equal(scoreRecord(record(1, 'Never Gonna Give You Up', 'Rick Astley', 0, true), candidate, 213), 0.6 + 0.25 + 0.075);
     assert.equal(scoreRecord(record(1, 'Never Gonna Give You Up', '', 213, true), {artist: '', title: candidate.title}, 213), 0.6 + 0.55 * 0.25 + 0.15);
+    const diff21 = scoreRecord(record(1, 'Never Gonna Give You Up', 'Rick Astley', 234, true), candidate, 213);
+    const diff59 = scoreRecord(record(1, 'Never Gonna Give You Up', 'Rick Astley', 272, true), candidate, 213);
+    const diff92 = scoreRecord(record(1, 'Never Gonna Give You Up', 'Rick Astley', 305, true), candidate, 213);
+    assert.ok(diff21 > diff59 && diff59 > diff92, 'closer duration must always outrank farther duration');
 });
 
-test('identity match compares version-stripped titles too', () => {
+test('identity match compares version-stripped titles and rejects gross duration mismatches', () => {
     assert.ok(recordMatchesIdentity(record(1, 'Help!', 'The Beatles', 140, true), {artist: 'The Beatles', title: 'Help! (Remastered 2009)'}));
     assert.ok(!recordMatchesIdentity(record(1, 'Help!', 'Other Band', 140, true), {artist: 'The Beatles', title: 'Help!'}));
+    assert.ok(recordMatchesIdentity(record(1, 'Help!', 'The Beatles', 200, true), {artist: 'The Beatles', title: 'Help!'}, 225));
+    assert.ok(!recordMatchesIdentity(record(1, 'Help!', 'The Beatles', 150, true), {artist: 'The Beatles', title: 'Help!'}, 7200));
+    assert.ok(!recordMatchesIdentity(record(1, 'Help!', 'The Beatles', 90, true), {artist: 'The Beatles', title: 'Help!'}, 60));
+    assert.equal(durationFitsPlain(record(1, 'Help!', 'The Beatles', 0, false), 200), true);
 });
 
-test('timed identity matches win over stronger plain ones; rejections are skipped', () => {
+test('durationFitsTimed requires ±2 s duration match and no spoken lines past the track end', () => {
+    assert.equal(durationFitsTimed(record(1, 'Song', 'Artist', 200, true), 200), true);
+    assert.equal(durationFitsTimed(record(1, 'Song', 'Artist', 202, true), 200), true);
+    assert.equal(durationFitsTimed(record(1, 'Song', 'Artist', 198.1, true), 200), true);
+    assert.equal(durationFitsTimed(record(1, 'Song', 'Artist', 202.1, true), 200), false);
+    assert.equal(durationFitsTimed(record(1, 'Song', 'Artist', 203, true), 200), false);
+    assert.equal(durationFitsTimed(record(1, 'Song', 'Artist', 0, true), 200), false);
+    assert.equal(durationFitsTimed(record(1, 'Song', 'Artist', 200, true), 0), true);
+
+    const overrun = {...record(1, 'Song', 'Artist', 200, true), syncedLyrics: '[00:10.00] Line\n[03:45.00] Way past end'};
+    assert.equal(maxSpokenTimestampSeconds(overrun.syncedLyrics), 225);
+    assert.equal(durationFitsTimed(overrun, 200), false);
+
+    // Trailing blank lines and credit lines past the end do not disqualify valid timing.
+    const trailingCredits = {
+        ...record(1, 'Song', 'Artist', 200, true),
+        syncedLyrics: '[00:10.00] Line\n[03:15.00] Last sung line\n[03:25.00]\n[03:30.00] Songwriters: Someone',
+    };
+    assert.equal(maxSpokenTimestampSeconds(trailingCredits.syncedLyrics), 195);
+    assert.equal(durationFitsTimed(trailingCredits, 200), true);
+});
+
+test('within-±2 s timed matches win over plain ones; moderate mismatches demote to plain; gross mismatches fail', () => {
     const candidate = {artist: 'Artist', title: 'Song'};
     const ranked = rankRecords([{candidate, records: [
         record(1, 'Song', 'Artist', 200, false),
-        record(2, 'Song', 'Artist', 230, true),
-        record(3, 'Other', 'Artist', 200, true),
+        record(2, 'Song', 'Artist', 201.5, true),
+        record(3, 'Song', 'Artist', 230, true),
+        record(4, 'Song', 'Artist', 255, true),
+        record(5, 'Song', 'Artist', 400, true),
+        record(6, 'Other', 'Artist', 200, true),
     ]}], 200);
-    assert.deepEqual(ranked.map(entry => entry.record.id), [1, 2, 3]);
+    assert.deepEqual(ranked.map(entry => entry.record.id), [2, 1, 3, 4, 5, 6]);
+    assert.equal(ranked.find(e => e.record.id === 2).timed, true);
+    assert.equal(ranked.find(e => e.record.id === 3).timed, false);
+    assert.equal(ranked.find(e => e.record.id === 3).matches, true);
+    assert.equal(ranked.find(e => e.record.id === 5).matches, false);
     assert.equal(chooseAutomatic(ranked, []), 2);
     assert.equal(chooseAutomatic(ranked, [2]), 1);
-    assert.equal(chooseAutomatic(ranked, [1, 2]), null);
+    assert.equal(chooseAutomatic(ranked, [1, 2]), 3);
+    assert.equal(chooseAutomatic(ranked, [1, 2, 3, 4]), null);
 });
 
-test('a strong timed match settles the lookup; a weak one does not', () => {
+test('a strong length-matched timed hit settles the lookup; a mismatched-length one does not', () => {
     const candidate = {artist: 'Artist', title: 'Song'};
     assert.ok(searchSettlesLookup([record(1, 'Song', 'Artist', 200, true)], candidate, 200));
+    assert.ok(searchSettlesLookup([record(1, 'Song', 'Artist', 201.8, true)], candidate, 200));
     assert.ok(!searchSettlesLookup([record(1, 'Song', 'Artist', 200, false)], candidate, 200));
-    assert.ok(!searchSettlesLookup([record(1, 'Song Two Three', 'Artist', 260, true)], candidate, 200));
+    assert.ok(!searchSettlesLookup([record(1, 'Song', 'Artist', 210, true)], candidate, 200));
+    assert.ok(!searchSettlesLookup([record(1, 'Song', 'Artist', 260, true)], candidate, 200));
+    assert.ok(!searchSettlesLookup([record(1, 'Song Two Three', 'Artist', 200, true)], candidate, 200));
 });

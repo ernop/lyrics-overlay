@@ -1,7 +1,11 @@
 // Song identity comparison, lookup candidates and LRCLIB record ranking.
 // Adopted from voice-wei's player-lyrics.js (scores, thresholds, timed-first
 // choice) and refined for YouTube metadata: Unicode-aware comparison,
-// version-qualifier stripping, multi-artist credits and VEVO channel names.
+// version-qualifier stripping, multi-artist credits, VEVO channel names and
+// duration gating (trust LRCLIB timestamps only within ±2 s; demote moderate
+// mismatches to plain text for local alignment; reject gross mismatches).
+
+import {parseSyncedLyrics} from './lrc.js';
 
 export const MIN_TITLE_IDENTITY_SCORE = 0.6;
 export const MIN_ARTIST_IDENTITY_SCORE = 0.6;
@@ -11,6 +15,15 @@ export const EXACT_TIMED_EARLY_STOP_SCORE = 0.98;
 // candidates are noisier spellings of the same song.
 export const STRONG_TIMED_STOP_SCORE = 0.85;
 export const MAX_LOOKUP_CANDIDATES = 4;
+// Maximum duration difference to auto-trust LRCLIB timestamps directly.
+// Matches LRCLIB's /api/get ±2 s window: covers whole-second rounding and
+// platform fade/silence tails while rejecting different cuts or intros.
+export const MAX_TIMED_DURATION_DIFF_SECONDS = 2;
+// Maximum duration difference to still keep an LRCLIB record as plain lyrics
+// (e.g. a music video with an intro or a live cut for local Whisper alignment).
+// Beyond this, the record is rejected as a different recording or compilation.
+export const MAX_PLAIN_DURATION_DIFF_SECONDS = 60;
+export const MAX_PLAIN_DURATION_RATIO = 0.4;
 
 const NOISE_TOKENS = new Set([
     'feat', 'featuring', 'ft', 'official', 'video', 'audio', 'lyrics', 'lyric',
@@ -164,18 +177,50 @@ export function recordHasTimed(record) {
     return typeof record.syncedLyrics === 'string' && record.syncedLyrics.trim() !== '';
 }
 
+export function maxSpokenTimestampSeconds(syncedLyrics) {
+    let max = 0;
+    for (const line of parseSyncedLyrics(syncedLyrics)) {
+        if (line.text && line.time > max)
+            max = line.time;
+    }
+    return max;
+}
+
+export function durationFitsTimed(record, expectedDurationSeconds) {
+    if (!recordHasTimed(record))
+        return false;
+    if (!(expectedDurationSeconds > 0))
+        return true;
+    const duration = Number(record.duration) || 0;
+    if (!(duration > 0))
+        return false;
+    if (Math.abs(duration - expectedDurationSeconds) > MAX_TIMED_DURATION_DIFF_SECONDS)
+        return false;
+    return maxSpokenTimestampSeconds(record.syncedLyrics) <= expectedDurationSeconds + MAX_TIMED_DURATION_DIFF_SECONDS;
+}
+
+export function durationFitsPlain(record, expectedDurationSeconds) {
+    if (!(expectedDurationSeconds > 0))
+        return true;
+    const duration = Number(record.duration) || 0;
+    if (!(duration > 0))
+        return true;
+    const maxDiff = Math.min(MAX_PLAIN_DURATION_DIFF_SECONDS, expectedDurationSeconds * MAX_PLAIN_DURATION_RATIO);
+    return Math.abs(duration - expectedDurationSeconds) <= maxDiff;
+}
+
 function titleSimilarity(record, title) {
     return Math.max(
         tokenSimilarity(recordTitle(record), title),
         tokenSimilarity(stripVersionQualifiers(recordTitle(record)), stripVersionQualifiers(title)));
 }
 
-export function recordMatchesIdentity(record, candidate) {
+export function recordMatchesIdentity(record, candidate, expectedDurationSeconds = 0) {
     if (titleSimilarity(record, candidate.title) < MIN_TITLE_IDENTITY_SCORE)
         return false;
-    if (!candidate.artist)
-        return true;
-    return artistSimilarity(record.artistName || '', candidate.artist) >= MIN_ARTIST_IDENTITY_SCORE;
+    if (candidate.artist && artistSimilarity(record.artistName || '', candidate.artist) < MIN_ARTIST_IDENTITY_SCORE)
+        return false;
+    return durationFitsPlain(record, expectedDurationSeconds);
 }
 
 export function scoreRecord(record, candidate, expectedDurationSeconds) {
@@ -184,12 +229,12 @@ export function scoreRecord(record, candidate, expectedDurationSeconds) {
     const duration = Number(record.duration) || 0;
     let durationScore = 0.5;
     if (expectedDurationSeconds > 0 && duration > 0)
-        durationScore = Math.max(0, 1 - Math.abs(duration - expectedDurationSeconds) / 20);
+        durationScore = 1 / (1 + Math.abs(duration - expectedDurationSeconds) / 10);
     return titleScore * 0.6 + artistScore * 0.25 + durationScore * 0.15;
 }
 
 export function isExactStrongTimedMatch(record, candidate, expectedDurationSeconds) {
-    if (!candidate.artist || expectedDurationSeconds <= 0 || !recordHasTimed(record))
+    if (!candidate.artist || expectedDurationSeconds <= 0 || !durationFitsTimed(record, expectedDurationSeconds))
         return false;
     if (normalizeComparisonText(recordTitle(record)) !== normalizeComparisonText(candidate.title))
         return false;
@@ -201,7 +246,8 @@ export function isExactStrongTimedMatch(record, candidate, expectedDurationSecon
 /** True when this search's answer makes the remaining candidates pointless. */
 export function searchSettlesLookup(records, candidate, expectedDurationSeconds) {
     return records.some(record => isExactStrongTimedMatch(record, candidate, expectedDurationSeconds) ||
-        (recordHasTimed(record) && recordMatchesIdentity(record, candidate) &&
+        (durationFitsTimed(record, expectedDurationSeconds) &&
+            recordMatchesIdentity(record, candidate, expectedDurationSeconds) &&
             scoreRecord(record, candidate, expectedDurationSeconds) >= STRONG_TIMED_STOP_SCORE));
 }
 
@@ -214,11 +260,16 @@ export function rankRecords(answered, expectedDurationSeconds) {
     const byId = new Map();
     for (const {candidate, records} of answered) {
         for (const record of records) {
+            const duration = Number(record.duration) || 0;
+            const durationDiff = expectedDurationSeconds > 0 && duration > 0
+                ? Math.abs(duration - expectedDurationSeconds)
+                : Infinity;
             const ranked = {
                 record,
                 score: scoreRecord(record, candidate, expectedDurationSeconds),
-                matches: recordMatchesIdentity(record, candidate),
-                timed: recordHasTimed(record),
+                matches: recordMatchesIdentity(record, candidate, expectedDurationSeconds),
+                timed: durationFitsTimed(record, expectedDurationSeconds),
+                durationDiff,
             };
             const existing = byId.get(record.id);
             if (!existing || rankOrder(ranked, existing) < 0)
@@ -231,8 +282,12 @@ export function rankRecords(answered, expectedDurationSeconds) {
 function rankOrder(a, b) {
     if (a.matches !== b.matches)
         return a.matches ? -1 : 1;
+    if (a.matches && a.timed !== b.timed)
+        return a.timed ? -1 : 1;
     if (a.score !== b.score)
         return b.score - a.score;
+    if (a.durationDiff !== b.durationDiff)
+        return a.durationDiff - b.durationDiff;
     if (a.timed !== b.timed)
         return a.timed ? -1 : 1;
     return 0;

@@ -29,6 +29,14 @@ test('ingest: selectReferenceLyrics prefers human LRCLIB or custom lyrics over g
     const picked = selectReferenceLyrics(rec, rec.candidates[0]);
     assert.equal(picked?.id, 'lrclib-timed');
     assert.equal(referencePlainLyrics(picked), 'Synced human text');
+
+    const onlyUnmatched = {
+        rejectedIds: [],
+        candidates: [
+            {id: 'bad-dur', timed: false, matches: false, plainLyrics: 'Wrong 3-minute song on 2-hour video'},
+        ],
+    };
+    assert.equal(selectReferenceLyrics(onlyUnmatched, null), null);
 });
 
 test('ingest: buildVocalFusedCandidate + upsertVocalFusedCandidate preserves LRCLIB sets intact', () => {
